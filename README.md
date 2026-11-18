@@ -84,7 +84,10 @@ rider-server run                 # UDP 47900 + relay ports 47901-47999
 rider-server info                # prints the fingerprint for the commands below
 ```
 
-`deploy/rider-server.service` is a hardened systemd unit for it. Then, once per device:
+To install or upgrade it on a Linux server with systemd, copy the `rider-server`
+binary next to `deploy/install.sh` and `deploy/rider-server.service` and run
+`sudo bash install.sh <public-ip>`. It sets up the hardened unit, opens the UDP
+ports in ufw and prints the fingerprint. Then, once per device:
 
 ```powershell
 rider-host   set-server vps.example.com <server-fingerprint>   # host; restart the service after

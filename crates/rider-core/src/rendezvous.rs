@@ -87,6 +87,9 @@ pub enum PeerMsg {
     Register { version: u32, local: Vec<SocketAddr>, allowed: Vec<Fingerprint>, pairing: bool },
     /// Client: ask to be connected to a host.
     Connect { version: u32, target: Target, local: Vec<SocketAddr> },
+    /// Client: which of these hosts are online? Only hosts that allow this
+    /// client can show as online; the rest always read as offline.
+    Status { version: u32, hosts: Vec<Fingerprint> },
 }
 
 /// Server → peer.
@@ -111,6 +114,10 @@ pub enum ServerMsg {
     },
     Error {
         message: String,
+    },
+    /// To a client: answer to `Status`, in the same order.
+    Online {
+        online: Vec<bool>,
     },
 }
 

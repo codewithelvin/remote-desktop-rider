@@ -13,6 +13,7 @@ mod rendezvous;
 mod service;
 mod session;
 mod system;
+mod ui;
 mod video;
 
 use anyhow::{Context, Result, bail};
@@ -26,6 +27,9 @@ use std::sync::Arc;
 #[derive(Parser)]
 #[command(name = "rider-host", version, about = "Remote Desktop Rider host agent (run as administrator)")]
 struct Cli {
+    /// Machine-readable output for the desktop app (JSON lines; answers on stdin).
+    #[arg(long, global = true, hide = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -90,6 +94,9 @@ enum ServiceCmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.json {
+        ui::enable();
+    }
     let cmd = cli.cmd.unwrap_or(Cmd::Run { pair: false });
     let headless = match &cmd {
         Cmd::Agent => Some("agent"),
@@ -143,6 +150,14 @@ fn main() -> Result<()> {
             cfg.save()?;
             println!("PIN saved (a running host picks it up immediately).");
         }
+        Cmd::Clients if ui::json() => {
+            let list: Vec<_> = cfg
+                .trusted_clients
+                .iter()
+                .map(|c| serde_json::json!({ "name": c.name, "fingerprint": c.fingerprint, "paired_at": c.paired_at }))
+                .collect();
+            println!("{}", serde_json::Value::Array(list));
+        }
         Cmd::Clients => {
             if cfg.trusted_clients.is_empty() {
                 println!("No paired devices. Run `rider-host pair` to add one.");
@@ -168,9 +183,22 @@ fn main() -> Result<()> {
             };
             cfg.save()?;
             match &cfg.server {
-                Some(s) => println!("Rendezvous server set to {}. Restart the host or service to apply.", s.addr),
-                None => println!("Rendezvous server disabled. Restart the host or service to apply."),
+                Some(s) => println!("Rendezvous server set to {} (a running host switches within seconds).", s.addr),
+                None => println!("Rendezvous server disabled."),
             }
+        }
+        Cmd::Info if ui::json() => {
+            let identity = Identity::load_or_create(&dir)?;
+            let info = serde_json::json!({
+                "name": cfg.name,
+                "fingerprint": rider_core::identity::fp_hex(&identity.fingerprint()),
+                "port": cfg.port,
+                "pin_set": cfg.has_pin(),
+                "paired": cfg.trusted_clients.len(),
+                "server": cfg.server,
+                "service": service::status(),
+            });
+            println!("{info}");
         }
         Cmd::Info => {
             let identity = Identity::load_or_create(&dir)?;
@@ -223,6 +251,10 @@ fn service_status() -> &'static str {
 fn init_logging(file: Option<std::path::PathBuf>) -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
     match file {
+        // JSON mode: stdout carries events for the app, so logs go to stderr.
+        None if ui::json() => {
+            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::io::stderr).init()
+        }
         None => tracing_subscriber::fmt().with_env_filter(filter).init(),
         Some(path) => {
             std::fs::create_dir_all(path.parent().context("log path has no parent")?)?;
@@ -275,12 +307,20 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
                 .with_context(|| format!("cannot listen on UDP {port} (is another host running?)"))?,
         );
         let endpoint = socket.endpoint.clone();
-        if let Some(server) = server.clone() {
-            tokio::spawn(rendezvous::run(state.clone(), socket.clone(), server, mode != Mode::Agent));
-        }
+        tokio::spawn(rendezvous::run(state.clone(), socket.clone(), mode != Mode::Agent));
+        let quit = if ui::json() { ui::start_input() } else { Arc::new(tokio::sync::Notify::new()) };
 
         tracing::info!("host \"{name}\" listening on UDP {port}, fingerprint {fp}");
-        if mode != Mode::Agent {
+        ui::emit(serde_json::json!({
+            "event": "listening",
+            "name": name,
+            "port": port,
+            "fingerprint": fp,
+            "addresses": rider_core::rendezvous::local_candidates(port),
+            "server": server.as_ref().map(|s| &s.addr),
+            "pairing": pairing,
+        }));
+        if mode != Mode::Agent && !ui::json() {
             println!("Remote Desktop Rider host \"{name}\"");
             println!("  listening on UDP {port}");
             println!("  host fingerprint {fp}");
@@ -307,6 +347,7 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
                     break;
                 }
                 _ = tokio::signal::ctrl_c() => break,
+                _ = quit.notified() => break,
             }
         }
         endpoint.close(0u32.into(), b"host shutting down");

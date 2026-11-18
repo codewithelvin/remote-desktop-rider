@@ -183,6 +183,12 @@ async fn pair(
         bail!("pairing request while pairing is closed");
     }
     let code = rider_core::sas::compute(conn, &state.identity.fingerprint(), client_fp)?;
+    if crate::ui::json() {
+        crate::ui::emit(serde_json::json!({
+            "event": "request", "device": device_name, "from": conn.remote_address(), "code": code,
+        }));
+        return finish_pairing(state, send, recv, client_fp, device_name, crate::ui::answer()).await;
+    }
     println!();
     println!("  ┌──────────────────────────────────────────────────────┐");
     println!("  │  PAIRING REQUEST from \"{device_name}\"");
@@ -198,11 +204,27 @@ async fn pair(
     use std::io::Write;
     let _ = std::io::stdout().flush();
 
-    let operator = tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
-        matches!(line.trim(), "y" | "Y" | "yes")
-    });
+    let operator = async {
+        tokio::task::spawn_blocking(|| {
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            matches!(line.trim(), "y" | "Y" | "yes")
+        })
+        .await
+        .unwrap_or(false)
+    };
+    finish_pairing(state, send, recv, client_fp, device_name, operator).await
+}
+
+/// Wait for both the operator and the client to confirm, then trust the client.
+async fn finish_pairing(
+    state: &Arc<HostState>,
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+    client_fp: &Fingerprint,
+    device_name: &str,
+    operator: impl std::future::Future<Output = bool>,
+) -> Result<()> {
     let client = async {
         match read_msg::<ClientMsg>(recv).await {
             Ok(Some(ClientMsg::PairConfirm { accepted })) => accepted,
@@ -210,9 +232,11 @@ async fn pair(
         }
     };
     let (operator_ok, client_ok) = tokio::join!(operator, client);
-    let accepted = operator_ok.unwrap_or(false) && client_ok;
+    let accepted = operator_ok && client_ok;
     write_msg(send, &HostMsg::PairResult { accepted }).await?;
     if !accepted {
+        let by = if operator_ok { "the other device" } else { "this computer" };
+        crate::ui::emit(serde_json::json!({ "event": "declined", "by": by }));
         bail!("pairing declined");
     }
     {
@@ -223,6 +247,12 @@ async fn pair(
     state.close_pairing();
     *state.config_mtime.lock().unwrap() = config_mtime();
     state.paired.notify_one();
+    crate::ui::emit(
+        serde_json::json!({ "event": "paired", "device": device_name, "fingerprint": rider_core::identity::fp_hex(client_fp) }),
+    );
+    if crate::ui::json() {
+        return Ok(());
+    }
     println!("  Paired with \"{device_name}\" ({}). Pairing window closed.", fp_short(client_fp));
     Ok(())
 }

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/rider-core", "crates/rider-media", "crates/rider-host", "crates/rider-client", "crates/rider-server"]
+members = [
+  "crates/rider-core", "crates/rider-media", "crates/rider-host", "crates/rider-client", "crates/rider-server", "crates/rider-app",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +17,7 @@ quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 postcard = { version = "1", features = ["use-std"] }
 toml = "0.9"
 sha2 = "0.10"
@@ -64,6 +67,30 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 debug = 1
+
+# Third-party crates (GUI, tooling): split codegen for 2-3x faster release
+# builds; a settings window gains nothing from single-unit optimization.
+# Workspace crates are not matched by "*" and keep codegen-units = 1.
+[profile.release.package."*"]
+codegen-units = 16
+
+# The desktop app is UI only (sessions run in rider-client): build it fast too.
+[profile.release.package.rider-app]
+codegen-units = 16
+
+# Hot path (transport, crypto, async runtime): keep fully optimized.
+[profile.release.package.quinn]
+codegen-units = 1
+[profile.release.package.quinn-proto]
+codegen-units = 1
+[profile.release.package.quinn-udp]
+codegen-units = 1
+[profile.release.package.rustls]
+codegen-units = 1
+[profile.release.package.ring]
+codegen-units = 1
+[profile.release.package.tokio]
+codegen-units = 1
 
 # Pixel conversion loops are hot even in debug builds.
 [profile.dev.package."*"]

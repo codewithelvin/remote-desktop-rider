@@ -38,7 +38,7 @@ routers and NAT, **with no VPN, port forwarding or router setup**.
 | Unattended Windows service + SYSTEM session agent, login screen / UAC, Ctrl+Alt+End | done, verified on a clean Windows 11 VM |
 | Static C runtime (runs on clean Windows without the VC++ redistributable) | done (found by VM test) |
 | Connect across the internet (rendezvous / relay) | done; verified between VMs, real-NAT test open |
-| One app with a window (no terminal) | **not started** |
+| One app with a window (no terminal) | **in progress**: app works; installer, tray, auto-update next |
 
 ## Milestone 1: Verify unattended access on a clean Windows (done, 2026-11-18)
 
@@ -129,6 +129,26 @@ Merge `rider-host` and `rider-client` into one installer and one tray app
 - Host side: incoming-session notification and the red banner (exists).
 - Installer (MSI or signed setup.exe), Start-menu entry, auto-start tray,
   auto-update from your server; code signing so SmartScreen does not warn.
+
+**Part 1 (done):** `RemoteDesktopRider.exe` (egui on DirectX 12 / WARP).
+
+- [x] Computers list with online dots (new server `Status` query that answers
+      only for hosts that allow the asking device), last connected, Connect with
+      PIN (viewer runs as a separate `rider-client` process), Remove
+- [x] Add computer: pairing code or address, verification code, Yes/No
+- [x] Settings: this device, server address + fingerprint
+- [x] This computer: remote access state; "Manage" relaunches elevated (one UAC
+      prompt) and drives `rider-host --json`: remote access on/off, PIN, devices
+      with Remove, Add a device (code + verification), server
+- [x] Host applies `set-server` live; `rider-client` is now a library + CLI
+- [x] Production server `rdm.codex.az` (51.210.43.4) deployed with `deploy/install.sh`;
+      direct and relayed sessions verified from the internet (relay adds ~0 ms
+      over the 2x path latency)
+- [ ] Click-through test of every dialog (only the main window and CLI paths were run so far)
+- [ ] `rdm.codex.az` DNS record is behind Cloudflare's proxy (UDP blocked): switch to DNS only
+
+**Part 2:** session toolbar, tray + autostart, installer, auto-update via
+`https://rdm.codex.az`, code signing.
 
 ## Milestone 4: Performance on poor links
 

@@ -163,6 +163,19 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             check_version(version, &mut send).await?;
             serve_host(server, conn, fp, send, recv, local, allowed, pairing).await
         }
+        Some(PeerMsg::Status { version, mut hosts }) => {
+            check_version(version, &mut send).await?;
+            hosts.truncate(256);
+            let reply = if server.rate_limited(conn.remote_address().ip()) {
+                ServerMsg::Error { message: "too many requests; try again in a minute".into() }
+            } else {
+                ServerMsg::Online { online: server.online(&fp, &hosts) }
+            };
+            write_msg(&mut send, &reply).await?;
+            let _ = send.finish();
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+            Ok(())
+        }
         Some(PeerMsg::Connect { version, target, local }) => {
             check_version(version, &mut send).await?;
             let reply = connect(server, conn, fp, target, local).await;
@@ -261,6 +274,13 @@ impl Server {
         };
         codes.insert(code.clone(), (fp, now));
         Some(code)
+    }
+
+    /// Online state of `hosts` as seen by `client`: a host that does not
+    /// allow this client reads as offline, so nothing leaks to strangers.
+    fn online(&self, client: &Fingerprint, hosts: &[Fingerprint]) -> Vec<bool> {
+        let registered = self.hosts.lock().unwrap();
+        hosts.iter().map(|fp| registered.get(fp).is_some_and(|h| h.allowed.contains(client))).collect()
     }
 
     fn rate_limited(&self, ip: IpAddr) -> bool {

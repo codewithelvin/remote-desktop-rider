@@ -12,19 +12,35 @@ use std::time::Duration;
 
 /// How often the allow-list, pairing state and LAN addresses are re-checked.
 const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
+const SERVER_CHANGED: &str = "server setting changed";
 
-/// Run forever, reconnecting with exponential backoff (1 s .. 30 s).
+fn configured(state: &HostState) -> Option<ServerRef> {
+    state.refresh();
+    state.config.lock().unwrap().server.clone()
+}
+
+/// Run forever, reconnecting with exponential backoff (1 s .. 30 s). The
+/// server comes from the live config: `set-server` applies without restart.
 /// `interactive`: print the pairing code to the console (not for the agent).
-pub async fn run(state: Arc<HostState>, socket: Arc<PeerSocket>, server: ServerRef, interactive: bool) {
+pub async fn run(state: Arc<HostState>, socket: Arc<PeerSocket>, interactive: bool) {
     let mut backoff = Duration::from_secs(1);
     let mut last_error = String::new();
     loop {
+        let Some(server) = configured(&state) else {
+            tokio::time::sleep(UPDATE_INTERVAL).await;
+            continue;
+        };
         let started = std::time::Instant::now();
         if let Err(e) = session(&state, &socket, &server, interactive).await {
             let msg = format!("{e:#}");
+            if msg == SERVER_CHANGED {
+                backoff = Duration::from_secs(1);
+                continue;
+            }
             // Log each distinct failure once instead of every retry.
             if msg != last_error {
                 tracing::warn!("rendezvous server {}: {msg}", server.addr);
+                crate::ui::emit(serde_json::json!({ "event": "server_error", "server": server.addr, "message": msg }));
                 last_error = msg;
             }
         }
@@ -72,7 +88,10 @@ async fn session(
             msg = read_msg::<ServerMsg>(&mut recv) => match msg? {
                 Some(ServerMsg::Registered { public, pairing_code }) => {
                     tracing::info!("registered with {} as {public}", server.addr);
-                    if interactive && pairing_code.is_some() && pairing_code != shown_code {
+                    crate::ui::emit(serde_json::json!({
+                        "event": "registered", "server": server.addr, "public": public, "code": pairing_code,
+                    }));
+                    if interactive && !crate::ui::json() && pairing_code.is_some() && pairing_code != shown_code {
                         let code = pairing_code.as_deref().unwrap_or_default();
                         println!("  Pairing code (via {}):  {code}", server.addr);
                         println!("    On the client run:  rider-client pair {code}");
@@ -85,10 +104,14 @@ async fn session(
                     tokio::spawn(async move { socket.punch(&candidates, relay.as_ref()).await });
                 }
                 Some(ServerMsg::Error { message }) => bail!("{message}"),
-                Some(ServerMsg::Ready { .. }) => {}
+                Some(ServerMsg::Ready { .. } | ServerMsg::Online { .. }) => {}
                 None => bail!("server closed the connection"),
             },
             _ = tick.tick() => {
+                if configured(state).as_ref() != Some(server) {
+                    conn.close(0u32.into(), b"reconfigured");
+                    bail!(SERVER_CHANGED);
+                }
                 let now = current(state, socket.port());
                 if now != reg {
                     write_msg(&mut send, &register(&now)).await?;
