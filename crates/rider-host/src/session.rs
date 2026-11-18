@@ -3,7 +3,7 @@
 use crate::banner::{self, Banner};
 use crate::capture;
 use crate::config::HostConfig;
-use crate::input::Injector;
+use crate::input::{self, InputEvent};
 use crate::video::{self, VideoCmd, VideoConfig, VideoPacket, VideoStats};
 use anyhow::{Context, Result, bail};
 use rider_core::identity::{Fingerprint, Identity, fp_short};
@@ -22,8 +22,12 @@ const PAIRING_WINDOW: Duration = Duration::from_secs(600);
 
 pub struct HostState {
     pub config: Mutex<HostConfig>,
+    /// Modification time of the loaded config file; used for hot reload.
+    config_mtime: Mutex<Option<std::time::SystemTime>>,
     pub identity: Identity,
     pairing_until: Mutex<Option<Instant>>,
+    /// Signalled after a successful pairing (`rider-host pair` then exits).
+    pub paired: tokio::sync::Notify,
     busy: AtomicBool,
     auth: Mutex<AuthGuard>,
 }
@@ -38,10 +42,29 @@ impl HostState {
     pub fn new(config: HostConfig, identity: Identity, pairing: bool) -> Self {
         Self {
             config: Mutex::new(config),
+            config_mtime: Mutex::new(config_mtime()),
             identity,
             pairing_until: Mutex::new(pairing.then(|| Instant::now() + PAIRING_WINDOW)),
+            paired: tokio::sync::Notify::new(),
             busy: AtomicBool::new(false),
             auth: Mutex::new(AuthGuard::default()),
+        }
+    }
+
+    /// Reload the config if it changed on disk, so `set-pin`, `revoke` and
+    /// other management commands apply to a running host immediately.
+    fn refresh(&self) {
+        let now = config_mtime();
+        let mut seen = self.config_mtime.lock().unwrap();
+        if now != *seen {
+            match HostConfig::load() {
+                Ok(c) => {
+                    *self.config.lock().unwrap() = c;
+                    *seen = now;
+                    tracing::info!("configuration reloaded");
+                }
+                Err(e) => tracing::warn!("ignoring unreadable config change: {e:#}"),
+            }
         }
     }
 
@@ -64,8 +87,13 @@ impl std::fmt::Debug for HostState {
     }
 }
 
+fn config_mtime() -> Option<std::time::SystemTime> {
+    HostConfig::path().ok().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok())
+}
+
 impl rider_core::tls::ClientTrust for HostTrust {
     fn is_allowed(&self, fp: &Fingerprint) -> bool {
+        self.0.refresh();
         self.0.pairing_open() || self.0.config.lock().unwrap().trusted().contains(fp)
     }
 }
@@ -178,6 +206,8 @@ async fn pair(
         cfg.save()?;
     }
     state.close_pairing();
+    *state.config_mtime.lock().unwrap() = config_mtime();
+    state.paired.notify_one();
     println!("  Paired with \"{device_name}\" ({}). Pairing window closed.", fp_short(client_fp));
     Ok(())
 }
@@ -286,14 +316,14 @@ async fn stream(
     };
 
     // Input.
-    let injector = Arc::new(Mutex::new(Injector::new(list[0].clone())));
+    let input = input::spawn(list[0].clone());
     let mouse = {
         let conn = conn.clone();
-        let injector = injector.clone();
+        let input = input.clone();
         tokio::spawn(async move {
             while let Ok(d) = conn.read_datagram().await {
                 if let Ok(m) = decode::<MouseMove>(&d) {
-                    injector.lock().unwrap().mouse_move(m.seq, m.x, m.y);
+                    input.send(InputEvent::Move { seq: m.seq, x: m.x, y: m.y });
                 }
             }
         })
@@ -391,15 +421,21 @@ async fn stream(
                 ClientMsg::Ping { client_us } => {
                     let _ = out_tx.send(HostMsg::Pong { client_us, host_us: rider_core::now_us() });
                 }
-                ClientMsg::Key { scancode, extended, down } => injector.lock().unwrap().key(scancode, extended, down),
-                ClientMsg::MouseButton { button, down } => injector.lock().unwrap().mouse_button(button, down),
-                ClientMsg::MouseWheel { dx, dy } => injector.lock().unwrap().wheel(dx, dy),
+                ClientMsg::Key { scancode, extended, down } => input.send(InputEvent::Key { scancode, extended, down }),
+                ClientMsg::MouseButton { button, down } => input.send(InputEvent::Button { button, down }),
+                ClientMsg::MouseWheel { dx, dy } => input.send(InputEvent::Wheel { dx, dy }),
+                ClientMsg::SendSas => {
+                    tracing::info!("Ctrl+Alt+Del requested by {name}");
+                    if let Err(e) = tokio::task::spawn_blocking(crate::system::send_sas).await? {
+                        tracing::warn!("Ctrl+Alt+Del failed: {e:#}");
+                    }
+                }
                 ClientMsg::RequestKeyframe => {
                     let _ = cmd_tx.send(VideoCmd::Keyframe);
                 }
                 ClientMsg::SelectMonitor { index } => {
                     if let Some(m) = list.get(index as usize) {
-                        injector.lock().unwrap().set_monitor(m.clone());
+                        input.send(InputEvent::Monitor(m.clone()));
                         let _ = cmd_tx.send(VideoCmd::SelectMonitor(index as usize));
                         let _ = out_tx.send(HostMsg::Monitors { list: list.clone(), active: index });
                     }
@@ -436,7 +472,7 @@ async fn stream(
     for t in [sender, mouse, clip_fwd, files, ticker, writer] {
         t.abort();
     }
-    injector.lock().unwrap().release_all();
+    drop(input); // the input thread releases held keys once the mouse task is gone too
     let _ = tokio::task::spawn_blocking(move || video_thread.join()).await;
     result
 }
@@ -471,7 +507,7 @@ async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) 
         .filter(|n| !n.is_empty() && *n != "." && *n != "..")
         .context("invalid file name")?
         .to_string();
-    let dir = std::path::PathBuf::from(std::env::var("USERPROFILE")?).join("Downloads").join("Rider");
+    let dir = crate::system::incoming_files_dir()?;
     tokio::fs::create_dir_all(&dir).await?;
     let mut path = dir.join(&name);
     let mut i = 1;

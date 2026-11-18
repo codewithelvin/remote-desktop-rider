@@ -7,6 +7,7 @@
 //!   Ctrl+Alt+Shift+M  next monitor
 //!   Ctrl+Alt+Shift+F  toggle fullscreen
 //!   Ctrl+Alt+Shift+Q  disconnect
+//!   Ctrl+Alt+End      Ctrl+Alt+Del on the host (login screen, lock screen)
 //!   Drag and drop a file onto the window to send it to the host.
 
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
@@ -127,6 +128,13 @@ impl App {
     /// Returns true if the key press was a local shortcut.
     fn shortcut(&mut self, el: &ActiveEventLoop, key: PhysicalKey) -> bool {
         let m = self.modifiers;
+        // Ctrl+Alt+End = Ctrl+Alt+Del on the host (same convention as RDP); the
+        // real Ctrl+Alt+Del is always captured by the local machine.
+        if m.control_key() && m.alt_key() && key == PhysicalKey::Code(KeyCode::End) {
+            self.release_keys();
+            self.net.send(ClientMsg::SendSas);
+            return true;
+        }
         if !(m.control_key() && m.alt_key() && m.shift_key()) {
             return false;
         }

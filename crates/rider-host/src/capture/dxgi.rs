@@ -62,6 +62,9 @@ impl DxgiCapturer {
     }
 
     fn duplicate(&mut self) -> Result<()> {
+        // After a desktop switch (login screen, UAC) duplication only works
+        // from a thread attached to the new input desktop.
+        crate::system::follow_input_desktop();
         unsafe {
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
             let output = factory.EnumAdapters1(self.adapter_idx)?.EnumOutputs(self.output_idx)?;

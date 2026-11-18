@@ -34,15 +34,27 @@ Fast, secure 1:1 remote desktop for Windows, built to stay responsive on
 
 ## Usage
 
+All host commands need an **elevated** terminal (Run as administrator): the
+host's private key and trust store live in `%ProgramData%\RemoteDesktopRider`,
+readable only by SYSTEM and Administrators.
+
 On the **host** (the machine to be controlled):
 
 ```powershell
-rider-host set-pin           # once
-rider-host pair              # once per new client device; then Ctrl+C
-rider-host                   # normal operation: paired devices + PIN
+rider-host set-pin             # once
+rider-host service install     # unattended access: login screen, UAC, after reboot
+rider-host pair                # once per new client device (pauses the service meanwhile)
 ```
 
-Allow `rider-host.exe` through Windows Firewall (UDP 47800) when prompted.
+`service install` copies the binary to `%ProgramFiles%\RemoteDesktopRider`, so
+only administrators can replace what runs as SYSTEM. It also adds a firewall
+rule for UDP 47800, registers auto-restart on failure, and allows Ctrl+Alt+Del
+from services. `rider-host service status|stop|start|uninstall` manage it, and
+`set-pin`, `revoke` and `clients` apply to the running service immediately.
+Logs: `%ProgramData%\RemoteDesktopRider\host\logs`.
+
+Without the service, `rider-host` (or `rider-host run --pair`) serves from the
+terminal until Ctrl+C.
 
 On the **client**:
 
@@ -55,13 +67,24 @@ In the viewer:
 
 | Shortcut | Action |
 |---|---|
+| `Ctrl+Alt+End` | Ctrl+Alt+Del on the host (login / lock screen) |
 | `Ctrl+Alt+Shift+M` | next monitor |
 | `Ctrl+Alt+Shift+F` | toggle fullscreen |
 | `Ctrl+Alt+Shift+Q` | disconnect |
-| drag a file onto the window | send it to the host (`Downloads\Rider`) |
+| drag a file onto the window | send it to the host user's `Downloads\Rider` |
 
 Text clipboard syncs both ways automatically. The title bar shows fps, RTT,
 estimated capture-to-screen latency, decode/encode time and the active encoder.
+
+## How unattended access works
+
+A service running in session 0 can't see the screen. The `RemoteDesktopRider`
+service (LocalSystem) therefore launches `rider-host agent` **as SYSTEM inside
+the active console session** and relaunches it whenever that session changes
+(logon, logoff, user switch) or the agent exits. The agent runs in a
+kill-on-close job object, so it never outlives the service. Its capture and
+input threads follow the *input desktop*, which is how they reach the login
+screen, lock screen and UAC prompts. Ctrl+Alt+Del is generated with `SendSAS`.
 
 ## Layout
 
@@ -69,7 +92,8 @@ estimated capture-to-screen latency, decode/encode time and the active encoder.
 crates/
   rider-core    identity, pinned TLS, pairing code, protocol, clipboard, pixel conversion
   rider-media   Media Foundation H.264 encoder (hardware first) and decoder
-  rider-host    capture (DXGI, GDI fallback), video pipeline, input injection, banner, sessions
+  rider-host    capture (DXGI, GDI fallback), video pipeline, input injection, banner,
+                sessions, Windows service + SYSTEM session agent
   rider-client  CLI, network session, in-order decoder thread, viewer window
 ```
 
@@ -77,14 +101,11 @@ Build: `cargo build --release` (needs Rust stable and the MSVC build tools).
 
 ## Roadmap
 
-1. **Unattended service.** A Windows service that runs the agent in the active
-   session as SYSTEM, so it works on the login screen, UAC prompts and after
-   reboots. It also moves the config to `%ProgramData%` with a SYSTEM-only ACL.
-2. **Reachability.** A self-hosted rendezvous server with UDP hole punching, plus
+1. **Reachability.** A self-hosted rendezvous server with UDP hole punching, plus
    an end-to-end encrypted relay as fallback. The relay cannot read or MITM
    sessions because the keys are pinned.
-3. **GPU path:** D3D11 BGRA→NV12 on the host, DXVA decode and D3D presentation on
+2. **GPU path:** D3D11 BGRA→NV12 on the host, DXVA decode and D3D presentation on
    the client. This removes ~5–10 ms of CPU conversion per frame.
-4. FEC for keyframes on lossy links; intra-refresh instead of keyframes.
-5. Host→client file transfer, cursor shape sync, a low-level keyboard hook for
+3. FEC for keyframes on lossy links; intra-refresh instead of keyframes.
+4. Host→client file transfer, cursor shape sync, a low-level keyboard hook for
    Win/Alt+Tab, audio.

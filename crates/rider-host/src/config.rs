@@ -42,11 +42,23 @@ impl Default for HostConfig {
 }
 
 impl HostConfig {
+    /// Machine-wide state: `%ProgramData%\RemoteDesktopRider\host`, shared by
+    /// the service agent (SYSTEM) and elevated management commands.
     pub fn dir() -> Result<PathBuf> {
-        rider_core::data_dir("host")
+        let base = std::env::var_os("ProgramData").context("ProgramData is not set")?;
+        Ok(PathBuf::from(base).join("RemoteDesktopRider").join("host"))
     }
 
-    fn path() -> Result<PathBuf> {
+    /// Create the state directory and restrict it to SYSTEM + Administrators
+    /// (it holds the host's private key and the trust store). Call once at startup.
+    pub fn init_dir() -> Result<PathBuf> {
+        let dir = Self::dir()?;
+        crate::system::secure_dir(dir.parent().context("state dir has no parent")?)?;
+        crate::system::secure_dir(&dir)?;
+        Ok(dir)
+    }
+
+    pub fn path() -> Result<PathBuf> {
         Ok(Self::dir()?.join("host.toml"))
     }
 

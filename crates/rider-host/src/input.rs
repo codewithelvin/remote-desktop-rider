@@ -1,15 +1,21 @@
-//! Input injection with SendInput. Keys are sent as hardware scan codes, so
-//! the host's own keyboard layout applies (same as a physical keyboard).
+//! Input injection with SendInput on a dedicated thread.
+//!
+//! Keys are sent as hardware scan codes, so the host's own keyboard layout
+//! applies, as with a physical keyboard. The thread follows the *input
+//! desktop*, so input also reaches the login screen and UAC prompts when the
+//! host runs as the SYSTEM agent.
 
 use rider_core::proto::{MonitorInfo, MouseButton};
 use std::collections::HashSet;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const XBUTTON1: u32 = 1;
 const XBUTTON2: u32 = 2;
 
-pub struct Injector {
+struct Injector {
     monitor: MonitorInfo,
     last_seq: u32,
     /// Keys/buttons currently held by the remote side; released on disconnect.
@@ -17,9 +23,63 @@ pub struct Injector {
     held_buttons: HashSet<u8>,
 }
 
+pub enum InputEvent {
+    Move { seq: u32, x: u16, y: u16 },
+    Button { button: MouseButton, down: bool },
+    Wheel { dx: i32, dy: i32 },
+    Key { scancode: u16, extended: bool, down: bool },
+    Monitor(MonitorInfo),
+}
+
+/// Cheap, cloneable handle; the thread exits (releasing every held key and
+/// button) once all handles are dropped.
+#[derive(Clone)]
+pub struct InputHandle(Sender<InputEvent>);
+
+impl InputHandle {
+    pub fn send(&self, ev: InputEvent) {
+        let _ = self.0.send(ev);
+    }
+}
+
+pub fn spawn(monitor: MonitorInfo) -> InputHandle {
+    let (tx, rx) = channel();
+    std::thread::Builder::new()
+        .name("rider-input".into())
+        .spawn(move || run(rx, Injector::new(monitor)))
+        .expect("spawn input thread");
+    InputHandle(tx)
+}
+
+/// How often to re-check which desktop receives input.
+const DESKTOP_RECHECK: Duration = Duration::from_millis(250);
+
+fn run(rx: Receiver<InputEvent>, mut inj: Injector) {
+    crate::system::follow_input_desktop();
+    let mut checked = Instant::now();
+    for ev in rx {
+        if checked.elapsed() >= DESKTOP_RECHECK {
+            crate::system::follow_input_desktop();
+            checked = Instant::now();
+        }
+        match ev {
+            InputEvent::Move { seq, x, y } => inj.mouse_move(seq, x, y),
+            InputEvent::Button { button, down } => inj.mouse_button(button, down),
+            InputEvent::Wheel { dx, dy } => inj.wheel(dx, dy),
+            InputEvent::Key { scancode, extended, down } => inj.key(scancode, extended, down),
+            InputEvent::Monitor(m) => inj.monitor = m,
+        }
+    }
+    // `inj` drops here and releases anything still held.
+}
+
 fn send(inputs: &[INPUT]) {
-    unsafe {
-        SendInput(inputs, std::mem::size_of::<INPUT>() as i32);
+    // SAFETY: `inputs` is a valid slice of fully initialised INPUT structs.
+    let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+    // Fails when the input desktop changed under us (e.g. a UAC prompt appeared).
+    if sent == 0 && crate::system::follow_input_desktop() {
+        // SAFETY: as above.
+        unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
     }
 }
 
@@ -46,17 +106,13 @@ fn button_flags(b: MouseButton, down: bool) -> (MOUSE_EVENT_FLAGS, u32) {
 }
 
 impl Injector {
-    pub fn new(monitor: MonitorInfo) -> Self {
+    fn new(monitor: MonitorInfo) -> Self {
         Self { monitor, last_seq: 0, held_keys: HashSet::new(), held_buttons: HashSet::new() }
-    }
-
-    pub fn set_monitor(&mut self, m: MonitorInfo) {
-        self.monitor = m;
     }
 
     /// Absolute move; `x`/`y` are 0..=65535 across the streamed monitor.
     /// Datagrams can arrive out of order, so stale positions are dropped.
-    pub fn mouse_move(&mut self, seq: u32, x: u16, y: u16) {
+    fn mouse_move(&mut self, seq: u32, x: u16, y: u16) {
         if seq.wrapping_sub(self.last_seq) > u32::MAX / 2 && self.last_seq != 0 {
             return;
         }
@@ -75,7 +131,7 @@ impl Injector {
         }
     }
 
-    pub fn mouse_button(&mut self, b: MouseButton, down: bool) {
+    fn mouse_button(&mut self, b: MouseButton, down: bool) {
         let id = b as u8;
         if down {
             self.held_buttons.insert(id);
@@ -86,7 +142,7 @@ impl Injector {
         send(&[mouse(flags, 0, 0, data)]);
     }
 
-    pub fn wheel(&mut self, dx: i32, dy: i32) {
+    fn wheel(&mut self, dx: i32, dy: i32) {
         if dy != 0 {
             send(&[mouse(MOUSEEVENTF_WHEEL, 0, 0, dy as u32)]);
         }
@@ -95,7 +151,7 @@ impl Injector {
         }
     }
 
-    pub fn key(&mut self, scancode: u16, extended: bool, down: bool) {
+    fn key(&mut self, scancode: u16, extended: bool, down: bool) {
         if down {
             self.held_keys.insert((scancode, extended));
         } else {
@@ -105,7 +161,7 @@ impl Injector {
     }
 
     /// Release everything the remote side was holding (avoids stuck Ctrl/Shift).
-    pub fn release_all(&mut self) {
+    fn release_all(&mut self) {
         for (sc, ext) in std::mem::take(&mut self.held_keys) {
             send(&[key_input(sc, ext, false)]);
         }

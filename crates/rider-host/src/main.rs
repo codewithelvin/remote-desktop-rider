@@ -1,13 +1,20 @@
 //! Remote Desktop Rider - host agent (the machine being controlled).
+//!
+//! Modes:
+//! * interactive: `rider-host run` / `rider-host pair` in an elevated terminal;
+//! * unattended: `rider-host service install` registers a Windows service that
+//!   keeps a SYSTEM agent (`rider-host agent`) running in the console session.
 
 mod banner;
 mod capture;
 mod config;
 mod input;
+mod service;
 mod session;
+mod system;
 mod video;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use config::HostConfig;
 use rider_core::identity::{Identity, fp_from_hex, fp_short};
@@ -16,7 +23,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "rider-host", version, about = "Remote Desktop Rider host agent")]
+#[command(name = "rider-host", version, about = "Remote Desktop Rider host agent (run as administrator)")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -24,13 +31,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Accept connections from paired devices (default).
+    /// Accept connections from paired devices in this terminal (default).
     Run {
         /// Also accept ONE new device for pairing (window closes after 10 minutes).
         #[arg(long)]
         pair: bool,
     },
-    /// Same as `run --pair`.
+    /// Pair one new device, then exit. Pauses the background service meanwhile.
     Pair,
     /// Set or change the session PIN every connection must provide.
     SetPin,
@@ -40,26 +47,68 @@ enum Cmd {
     Revoke { device: String },
     /// Show this host's identity and settings.
     Info,
+    /// Manage the unattended-access Windows service.
+    Service {
+        #[command(subcommand)]
+        action: ServiceCmd,
+    },
+    /// Internal: the session agent launched by the service.
+    #[command(hide = true)]
+    Agent,
+}
+
+#[derive(Subcommand)]
+enum ServiceCmd {
+    /// Install (or upgrade) and start the service. Works at the login screen and after reboots.
+    Install,
+    /// Stop and remove the service (pairings are kept).
+    Uninstall,
+    Start,
+    Stop,
+    Status,
+    /// Internal: entry point used by the Service Control Manager.
+    #[command(hide = true)]
+    Run,
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into()),
-        )
-        .init();
+    let cli = Cli::parse();
+    let cmd = cli.cmd.unwrap_or(Cmd::Run { pair: false });
+    let headless = match &cmd {
+        Cmd::Agent => Some("agent"),
+        Cmd::Service { action: ServiceCmd::Run } => Some("service"),
+        _ => None,
+    };
+
+    // The host's key and trust store are machine-wide and admin-only.
+    system::require_elevated()?;
+    let dir = HostConfig::init_dir()?;
+    init_logging(headless.map(|name| dir.join("logs").join(format!("{name}.log"))))?;
+
     // Physical pixels everywhere: capture, monitor rects and SendInput must agree.
+    // SAFETY: called once at startup, before any window is created.
     unsafe {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
 
-    let cli = Cli::parse();
     let mut cfg = HostConfig::load()?;
-    let identity = Identity::load_or_create(&HostConfig::dir()?)?;
-
-    match cli.cmd.unwrap_or(Cmd::Run { pair: false }) {
+    match cmd {
+        Cmd::Service { action } => match action {
+            ServiceCmd::Run => service::dispatch()?,
+            ServiceCmd::Install => {
+                if !cfg.has_pin() {
+                    bail!("set a PIN first: `rider-host set-pin`");
+                }
+                Identity::load_or_create(&dir)?;
+                service::install(cfg.port)?;
+            }
+            ServiceCmd::Uninstall => service::uninstall()?,
+            ServiceCmd::Start => service::set_running(true)?,
+            ServiceCmd::Stop => service::set_running(false)?,
+            ServiceCmd::Status => println!("{}", service_status()),
+        },
         Cmd::SetPin => {
             let pin = rpassword::prompt_password("New PIN (min 6 characters): ")?;
             if pin.chars().count() < 6 {
@@ -70,7 +119,7 @@ fn main() -> Result<()> {
             }
             cfg.set_pin(&pin)?;
             cfg.save()?;
-            println!("PIN saved.");
+            println!("PIN saved (a running host picks it up immediately).");
         }
         Cmd::Clients => {
             if cfg.trusted_clients.is_empty() {
@@ -90,23 +139,91 @@ fn main() -> Result<()> {
             println!("Removed {removed} device(s).");
         }
         Cmd::Info => {
+            let identity = Identity::load_or_create(&dir)?;
             println!("Host name:    {}", cfg.name);
             println!("Fingerprint:  {}", fp_short(&identity.fingerprint()));
             println!("Port (UDP):   {}", cfg.port);
             println!("PIN set:      {}", if cfg.has_pin() { "yes" } else { "NO - run `rider-host set-pin`" });
             println!("Paired:       {} device(s)", cfg.trusted_clients.len());
-            println!("Config dir:   {}", HostConfig::dir()?.display());
+            println!("Service:      {}", service_status());
+            println!("State dir:    {}", dir.display());
         }
-        Cmd::Pair => serve(cfg, identity, true)?,
-        Cmd::Run { pair } => serve(cfg, identity, pair)?,
+        Cmd::Pair => {
+            let _paused = service::Paused::service()?;
+            serve(cfg, Identity::load_or_create(&dir)?, Mode::PairOnce)?;
+        }
+        Cmd::Run { pair } => {
+            if service::status() == Some(true) {
+                bail!(
+                    "the background service is running and already accepts connections.\n\
+                     Use `rider-host pair` to add a device, or `rider-host service stop` first."
+                );
+            }
+            let mode = if pair { Mode::Interactive { pairing: true } } else { Mode::Interactive { pairing: false } };
+            serve(cfg, Identity::load_or_create(&dir)?, mode)?;
+        }
+        Cmd::Agent => {
+            if !cfg.has_pin() {
+                tracing::error!("no PIN set; the agent will not accept connections. Run `rider-host set-pin`.");
+                // Avoid a tight restart loop in the supervisor.
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                return Ok(());
+            }
+            serve(cfg, Identity::load_or_create(&dir)?, Mode::Agent)?;
+        }
     }
     Ok(())
 }
 
-fn serve(cfg: HostConfig, identity: Identity, pairing: bool) -> Result<()> {
+fn service_status() -> &'static str {
+    match service::status() {
+        Some(true) => "installed, running",
+        Some(false) => "installed, stopped",
+        None => "not installed",
+    }
+}
+
+/// Console logging for interactive use; a file (capped at 10 MB) for the
+/// service and agent, which have no console.
+fn init_logging(file: Option<std::path::PathBuf>) -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
+    match file {
+        None => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        Some(path) => {
+            std::fs::create_dir_all(path.parent().context("log path has no parent")?)?;
+            let truncate = std::fs::metadata(&path).is_ok_and(|m| m.len() > 10 * 1024 * 1024);
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(!truncate)
+                .write(true)
+                .truncate(truncate)
+                .open(&path)?;
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(f))
+                .init();
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Interactive {
+        pairing: bool,
+    },
+    /// Pair one device and exit.
+    PairOnce,
+    /// Headless SYSTEM agent launched by the service.
+    Agent,
+}
+
+fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
     if !cfg.has_pin() {
         bail!("no PIN set. Run `rider-host set-pin` first - every session must provide it.");
     }
+    let pairing = matches!(mode, Mode::PairOnce | Mode::Interactive { pairing: true });
     let port = cfg.port;
     let name = cfg.name.clone();
     let fp = fp_short(&identity.fingerprint());
@@ -115,16 +232,20 @@ fn serve(cfg: HostConfig, identity: Identity, pairing: bool) -> Result<()> {
     tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async move {
         let trust = Arc::new(HostTrust(state.clone()));
         let server_cfg = rider_core::tls::server_config(&state.identity, trust)?;
-        let endpoint = quinn::Endpoint::server(server_cfg, SocketAddr::from(([0, 0, 0, 0], port)))?;
+        let endpoint = quinn::Endpoint::server(server_cfg, SocketAddr::from(([0, 0, 0, 0], port)))
+            .with_context(|| format!("cannot listen on UDP {port} (is another host running?)"))?;
 
-        println!("Remote Desktop Rider host \"{name}\"");
-        println!("  listening on UDP {port}");
-        println!("  host fingerprint {fp}");
-        if pairing {
-            println!("  PAIRING OPEN for 10 minutes. On the client run:");
-            println!("    rider-client pair <this-ip>:{port}");
+        tracing::info!("host \"{name}\" listening on UDP {port}, fingerprint {fp}");
+        if mode != Mode::Agent {
+            println!("Remote Desktop Rider host \"{name}\"");
+            println!("  listening on UDP {port}");
+            println!("  host fingerprint {fp}");
+            if pairing {
+                println!("  PAIRING OPEN for 10 minutes. On the client run:");
+                println!("    rider-client pair <this-ip>:{port}");
+            }
+            println!("Press Ctrl+C to stop.");
         }
-        println!("Press Ctrl+C to stop.");
 
         loop {
             tokio::select! {
@@ -132,10 +253,16 @@ fn serve(cfg: HostConfig, identity: Identity, pairing: bool) -> Result<()> {
                     let Some(incoming) = incoming else { break };
                     tokio::spawn(session::handle(state.clone(), incoming));
                 }
+                _ = state.paired.notified(), if mode == Mode::PairOnce => {
+                    // Let the client receive the result before closing.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    break;
+                }
                 _ = tokio::signal::ctrl_c() => break,
             }
         }
         endpoint.close(0u32.into(), b"host shutting down");
+        endpoint.wait_idle().await;
         anyhow::Ok(())
     })
 }

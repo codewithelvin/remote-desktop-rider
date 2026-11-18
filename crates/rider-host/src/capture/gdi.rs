@@ -23,6 +23,7 @@ unsafe impl Send for GdiCapturer {}
 
 impl GdiCapturer {
     pub fn new(m: &MonitorInfo) -> Result<Self> {
+        crate::system::follow_input_desktop();
         unsafe {
             let screen = GetDC(None);
             if screen.is_invalid() {

@@ -74,6 +74,8 @@ pub enum ClientMsg {
         dx: i32,
         dy: i32,
     },
+    /// Ctrl+Alt+Del on the host (cannot be sent as normal keystrokes).
+    SendSas,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
