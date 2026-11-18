@@ -29,6 +29,16 @@ pub fn data_dir(role: &str) -> anyhow::Result<std::path::PathBuf> {
     Ok(dir)
 }
 
+/// Read a secret as one line from stdin (for `--pin-stdin`, scripts and
+/// automation). The trailing newline is stripped; an empty secret is an error.
+pub fn secret_from_stdin() -> anyhow::Result<String> {
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let secret = line.trim_end_matches(['\r', '\n']).to_owned();
+    anyhow::ensure!(!secret.is_empty(), "no PIN on stdin");
+    Ok(secret)
+}
+
 /// This machine's name, used as a default device name.
 pub fn machine_name() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".into())

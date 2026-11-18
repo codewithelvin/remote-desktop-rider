@@ -1,0 +1,8 @@
+# Link the C runtime statically: the host must run on any Windows machine
+# (including fresh installs and the login-screen agent) without requiring
+# the Visual C++ Redistributable (vcruntime140.dll).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

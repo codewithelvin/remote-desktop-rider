@@ -115,6 +115,10 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming) {
     state.busy.store(false, Ordering::SeqCst);
     match result {
         Ok(()) => tracing::info!("{remote}: session ended"),
+        // The client closing the connection normally (e.g. after pairing) is not a fault.
+        Err(e) if matches!(conn.close_reason(), Some(quinn::ConnectionError::ApplicationClosed(_))) => {
+            tracing::info!("{remote}: closed by client ({e:#})")
+        }
         Err(e) => tracing::warn!("{remote}: {e:#}"),
     }
     conn.close(0u32.into(), b"bye");
@@ -296,7 +300,8 @@ async fn stream(
         stop: stop.clone(),
     });
 
-    let sender = {
+    // Completes when the video thread exits (its channel closes).
+    let mut sender = {
         let conn = conn.clone();
         let inflight = inflight.clone();
         let expired = expired.clone();
@@ -460,6 +465,12 @@ async fn stream(
     let result = tokio::select! {
         r = control => r,
         e = conn.closed() => { tracing::info!("connection closed: {e}"); Ok(()) }
+        _ = &mut sender => {
+            let why = stats.failure.lock().unwrap().clone().unwrap_or_else(|| "video stopped".into());
+            let _ = out_tx.send(HostMsg::Bye { reason: format!("host video failed: {why}") });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Err(anyhow::anyhow!("video pipeline stopped: {why}"))
+        }
         _ = kicked => {
             tracing::info!("disconnected by the local user");
             let _ = out_tx.send(HostMsg::Bye { reason: "the host user ended the session".into() });

@@ -41,6 +41,8 @@ pub struct VideoStats {
     /// Captures skipped because the network was still busy.
     pub congestion_skips: AtomicU32,
     pub encoder: Mutex<String>,
+    /// Why the pipeline stopped, if it failed (reported to the client).
+    pub failure: Mutex<Option<String>>,
 }
 
 pub struct VideoConfig {
@@ -66,8 +68,10 @@ pub fn spawn(p: Pipeline) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("rider-video".into())
         .spawn(move || {
+            let stats = p.stats.clone();
             if let Err(e) = run(p) {
                 tracing::error!("video pipeline stopped: {e:#}");
+                *stats.failure.lock().unwrap() = Some(format!("{e:#}"));
             }
         })
         .expect("spawn video thread")

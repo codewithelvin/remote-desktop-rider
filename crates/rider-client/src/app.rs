@@ -22,9 +22,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{Fullscreen, Window, WindowId};
 
@@ -126,11 +126,14 @@ impl App {
     }
 
     /// Returns true if the key press was a local shortcut.
-    fn shortcut(&mut self, el: &ActiveEventLoop, key: PhysicalKey) -> bool {
+    fn shortcut(&mut self, el: &ActiveEventLoop, event: &KeyEvent) -> bool {
+        let key = event.physical_key;
         let m = self.modifiers;
         // Ctrl+Alt+End = Ctrl+Alt+Del on the host (same convention as RDP); the
         // real Ctrl+Alt+Del is always captured by the local machine.
-        if m.control_key() && m.alt_key() && key == PhysicalKey::Code(KeyCode::End) {
+        // Match by meaning too: the numpad End key (NumLock off) counts, as on laptops.
+        let end = key == PhysicalKey::Code(KeyCode::End) || event.logical_key == Key::Named(NamedKey::End);
+        if m.control_key() && m.alt_key() && end {
             self.release_keys();
             self.net.send(ClientMsg::SendSas);
             return true;
@@ -263,7 +266,7 @@ impl ApplicationHandler<UiEvent> for App {
                     return;
                 }
                 let down = event.state == ElementState::Pressed;
-                if down && self.shortcut(el, event.physical_key) {
+                if down && self.shortcut(el, &event) {
                     return;
                 }
                 let Some(sc) = event.physical_key.to_scancode() else { return };

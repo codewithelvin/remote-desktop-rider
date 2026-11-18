@@ -1,0 +1,55 @@
+# Windows 11 test host for Remote Desktop Rider's unattended service.
+#
+#   cargo build --release            # from the repo root
+#   cd test/vm && vagrant up         # installs the service with a TEST PIN
+#   vagrant reload                   # once: UAC enabled by provisioning takes effect
+#
+# Pair (two terminals; compare the codes, both answer y):
+#   vagrant winrm -c '"y" | & "C:\Program Files\RemoteDesktopRider\rider-host.exe" pair'
+#   rider-client pair 192.168.56.50 --name vm
+# Connect (PIN: rider-test-pin; VM user/password: vagrant/vagrant):
+#   rider-client connect vm
+# Inspect service, agent and logs:
+#   vagrant winrm -c 'powershell -ExecutionPolicy Bypass -File C:\rider-test\check.ps1'
+#
+# Provisioning runs elevated over WinRM, as an administrator would.
+# The VM shows a GUI so you can watch the login screen, lock screen and UAC.
+
+TEST_PIN = ENV.fetch("RIDER_TEST_PIN", "rider-test-pin")
+HOST_IP = "192.168.56.50"
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "gusztavvargadr/windows-11"
+  config.vm.hostname = "rider-vm"
+  config.vm.communicator = "winrm"
+  config.vm.boot_timeout = 900
+  config.vm.network "private_network", ip: HOST_IP
+
+  # Only the release binaries are shared; the service copies its own to Program Files.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "../../target/release", "C:/rider"
+  # Helper scripts: check.ps1 (service/agent/logs), lock.ps1 (Win+L),
+  # uac.ps1 (elevation prompt), leftovers.ps1 (after uninstall).
+  config.vm.synced_folder "guest", "C:/rider-test"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "rider-test-host"
+    vb.gui = true
+    vb.memory = 6144
+    vb.cpus = 4
+    vb.customize ["modifyvm", :id, "--graphicscontroller", "vboxsvga", "--vram", "128"]
+    vb.customize ["modifyvm", :id, "--clipboard-mode", "disabled"]
+  end
+
+  config.vm.provision "rider", type: "shell", privileged: true, env: { "RIDER_PIN" => TEST_PIN }, inline: <<~'PS1'
+    $ErrorActionPreference = "Stop"
+    $exe = "C:\rider\rider-host.exe"
+    $env:RIDER_PIN | & $exe set-pin --pin-stdin
+    if ($LASTEXITCODE) { throw "set-pin failed" }
+    & $exe service install
+    if ($LASTEXITCODE) { throw "service install failed" }
+    & $exe info
+    # The box disables UAC; enable it so elevation prompts can be tested.
+    Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name EnableLUA -Value 1
+  PS1
+end

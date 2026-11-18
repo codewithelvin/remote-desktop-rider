@@ -12,9 +12,9 @@ use crate::system;
 use anyhow::{Context, Result, bail};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::{self, TryRecvError};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Security::{
     DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TOKEN_ALL_ACCESS, TokenPrimary, TokenSessionId,
 };
@@ -24,8 +24,8 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId;
 use windows::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, PROCESS_INFORMATION, STARTUPINFOW,
-    TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, CreateEventW, CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, PROCESS_INFORMATION,
+    STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 use windows::core::{PCWSTR, PWSTR};
 use windows_service::service::{
@@ -88,7 +88,7 @@ pub fn install(port: u16) -> Result<()> {
     let exe = dir.join("rider-host.exe");
     let current = std::env::current_exe()?;
     if current != exe {
-        std::fs::copy(&current, &exe).with_context(|| format!("copying binary to {}", exe.display()))?;
+        replace_binary(&current, &exe)?;
     }
 
     let info = ServiceInfo {
@@ -206,6 +206,37 @@ impl Drop for Paused {
     }
 }
 
+/// Copy `src` over `dst`, which may still be locked for a moment by exiting
+/// service/agent processes. Falls back to renaming the old file aside, which
+/// Windows allows even while it is running; leftovers are removed next time.
+fn replace_binary(src: &Path, dst: &Path) -> Result<()> {
+    if let Some(dir) = dst.parent()
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().ends_with(".old") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::copy(src, dst) {
+            Ok(_) => return Ok(()),
+            Err(e) if e.raw_os_error() == Some(32) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) if e.raw_os_error() == Some(32) => {
+                let aside = dst.with_extension(format!("{}.old", std::process::id()));
+                std::fs::rename(dst, &aside).with_context(|| format!("{} is locked: {e}", dst.display()))?;
+                std::fs::copy(src, dst).with_context(|| format!("copying binary to {}", dst.display()))?;
+                return Ok(());
+            }
+            Err(e) => return Err(e).with_context(|| format!("copying binary to {}", dst.display())),
+        }
+    }
+}
+
 fn firewall_allow(exe: &Path, port: u16) -> Result<()> {
     firewall_remove();
     let status = std::process::Command::new("netsh")
@@ -295,6 +326,9 @@ impl Drop for Agent {
         // SAFETY: valid process handle owned by `self`, closed exactly once.
         unsafe {
             let _ = TerminateProcess(self.process, 0);
+            // Termination is asynchronous; wait so the binary is unlocked
+            // by the time the service reports Stopped (upgrades replace it).
+            let _ = WaitForSingleObject(self.process, 5000);
             let _ = CloseHandle(self.process);
         }
     }
@@ -302,6 +336,9 @@ impl Drop for Agent {
 
 fn supervise(stop: &mpsc::Receiver<()>) -> Result<()> {
     let job = kill_on_close_job()?;
+    // Auto-reset; the default DACL of a SYSTEM process admits only SYSTEM and Administrators.
+    // SAFETY: valid name, no security attributes.
+    let sas = unsafe { CreateEventW(None, false, false, system::SAS_EVENT)? };
     let exe = std::env::current_exe()?;
     let mut agent: Option<Agent> = None;
     let mut last_spawn = Instant::now() - RESPAWN_DELAY;
@@ -322,14 +359,23 @@ fn supervise(stop: &mpsc::Receiver<()>) -> Result<()> {
                 Err(e) => tracing::error!("cannot start agent in session {session}: {e:#}"),
             }
         }
-        match stop.recv_timeout(Duration::from_millis(500)) {
-            Err(RecvTimeoutError::Timeout) => {}
+        // Wake promptly for Ctrl+Alt+Del requests from the agent.
+        // SAFETY: valid event handle owned by this function.
+        if unsafe { WaitForSingleObject(sas, 500) } == WAIT_OBJECT_0 {
+            match system::send_sas_direct() {
+                Ok(()) => tracing::info!("Ctrl+Alt+Del sent"),
+                Err(e) => tracing::warn!("Ctrl+Alt+Del failed: {e:#}"),
+            }
+        }
+        match stop.try_recv() {
+            Err(TryRecvError::Empty) => {}
             _ => break,
         }
     }
     drop(agent);
-    // SAFETY: job handle created above, closed once.
+    // SAFETY: handles created above, closed once.
     unsafe {
+        let _ = CloseHandle(sas);
         let _ = CloseHandle(job);
     }
     Ok(())

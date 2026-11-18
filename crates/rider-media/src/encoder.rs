@@ -126,7 +126,8 @@ impl H264Encoder {
             }
 
             let out_info = mft.GetOutputStreamInfo(out_id)?;
-            mft.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)?;
+            // No FLUSH here: nothing is queued yet, and the Microsoft software
+            // encoder rejects a flush before streaming starts (E_FAIL).
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
 

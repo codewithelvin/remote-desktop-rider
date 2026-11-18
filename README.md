@@ -101,11 +101,13 @@ Build: `cargo build --release` (needs Rust stable and the MSVC build tools).
 
 ## Roadmap
 
-1. **Reachability.** A self-hosted rendezvous server with UDP hole punching, plus
-   an end-to-end encrypted relay as fallback. The relay cannot read or MITM
-   sessions because the keys are pinned.
-2. **GPU path:** D3D11 BGRA→NV12 on the host, DXVA decode and D3D presentation on
-   the client. This removes ~5–10 ms of CPU conversion per frame.
-3. FEC for keyframes on lossy links; intra-refresh instead of keyframes.
-4. Host→client file transfer, cursor shape sync, a low-level keyboard hook for
-   Win/Alt+Tab, audio.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan, including the target
+end-user experience. In short:
+
+1. ~~Verify unattended access on a clean Windows VM~~: done (`test/vm/`).
+2. Connect across the internet: self-hosted rendezvous server, NAT hole punching,
+   end-to-end encrypted relay fallback.
+3. One app with a window: computer list, Connect button, "Allow remote access",
+   pairing by ID and code, installer.
+4. Performance on poor links: GPU conversion/decoding, FEC, intra-refresh.
+5. Host→client files, cursor shapes, Win-key capture, audio, audit log.

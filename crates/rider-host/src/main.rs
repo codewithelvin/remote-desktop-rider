@@ -40,7 +40,11 @@ enum Cmd {
     /// Pair one new device, then exit. Pauses the background service meanwhile.
     Pair,
     /// Set or change the session PIN every connection must provide.
-    SetPin,
+    SetPin {
+        /// Read the PIN from one line of stdin instead of prompting.
+        #[arg(long)]
+        pin_stdin: bool,
+    },
     /// List paired devices.
     Clients,
     /// Remove a paired device by name or fingerprint prefix.
@@ -109,13 +113,18 @@ fn main() -> Result<()> {
             ServiceCmd::Stop => service::set_running(false)?,
             ServiceCmd::Status => println!("{}", service_status()),
         },
-        Cmd::SetPin => {
-            let pin = rpassword::prompt_password("New PIN (min 6 characters): ")?;
+        Cmd::SetPin { pin_stdin } => {
+            let pin = if pin_stdin {
+                rider_core::secret_from_stdin()?
+            } else {
+                let pin = rpassword::prompt_password("New PIN (min 6 characters): ")?;
+                if rpassword::prompt_password("Repeat PIN: ")? != pin {
+                    bail!("PINs do not match");
+                }
+                pin
+            };
             if pin.chars().count() < 6 {
                 bail!("PIN must be at least 6 characters");
-            }
-            if rpassword::prompt_password("Repeat PIN: ")? != pin {
-                bail!("PINs do not match");
             }
             cfg.set_pin(&pin)?;
             cfg.save()?;

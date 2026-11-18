@@ -31,7 +31,12 @@ enum Cmd {
         name: Option<String>,
     },
     /// Connect to a paired host by name or address.
-    Connect { host: String },
+    Connect {
+        host: String,
+        /// Read the PIN from one line of stdin instead of prompting.
+        #[arg(long)]
+        pin_stdin: bool,
+    },
     /// List paired hosts.
     List,
     /// Forget a paired host.
@@ -76,13 +81,14 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(pair(&mut cfg, &identity, &addr, name))?;
         }
-        Cmd::Connect { host } => {
+        Cmd::Connect { host, pin_stdin } => {
             let known = cfg
                 .find(&host)
                 .cloned()
                 .with_context(|| format!("\"{host}\" is not paired. Run `rider-client pair <address>` first."))?;
             let rt = tokio::runtime::Runtime::new()?;
-            let session = rt.block_on(connect(&cfg, &identity, &known))?;
+            let piped = if pin_stdin { Some(rider_core::secret_from_stdin()?) } else { None };
+            let session = rt.block_on(connect(&cfg, &identity, &known, piped))?;
             app::run(rt, session, known.name)?;
         }
     }
@@ -175,18 +181,28 @@ async fn pair(cfg: &mut ClientConfig, identity: &Identity, addr: &str, alias: Op
     Ok(())
 }
 
-async fn connect(cfg: &ClientConfig, identity: &Identity, host: &KnownHost) -> Result<net::Session> {
+/// `piped`: PIN from `--pin-stdin`, tried once; otherwise up to three prompts.
+async fn connect(
+    cfg: &ClientConfig,
+    identity: &Identity,
+    host: &KnownHost,
+    mut piped: Option<String>,
+) -> Result<net::Session> {
+    let attempts = if piped.is_some() { 1 } else { 3 };
     let pinned = fp_from_hex(&host.fingerprint)?;
     let conn = open(identity, &host.addr, Some(pinned)).await?;
     let (mut send, mut recv, _) = hello(&conn, &cfg.device_name, false).await?;
-    for attempt in 1..=3 {
-        let pin = tokio::task::spawn_blocking(|| rpassword::prompt_password("PIN: ")).await??;
+    for attempt in 1..=attempts {
+        let pin = match piped.take() {
+            Some(pin) => pin,
+            None => tokio::task::spawn_blocking(|| rpassword::prompt_password("PIN: ")).await??,
+        };
         write_msg(&mut send, &ClientMsg::Auth { pin }).await?;
         match read_msg::<HostMsg>(&mut recv).await? {
             Some(HostMsg::AuthResult { ok: true, .. }) => return Ok(net::Session { conn, send, recv }),
             Some(HostMsg::AuthResult { ok: false, message }) => {
                 eprintln!("{message}");
-                if attempt == 3 || message.contains("later") {
+                if attempt == attempts || message.contains("later") {
                     break;
                 }
             }

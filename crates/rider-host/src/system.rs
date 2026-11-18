@@ -21,6 +21,7 @@ use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQue
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS, HDESK, OpenInputDesktop, SetThreadDesktop,
 };
+use windows::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
 use windows::Win32::UI::Shell::{GetUserProfileDirectoryW, IsUserAnAdmin};
 use windows::core::{BOOL, HSTRING, PWSTR, s, w};
 
@@ -161,8 +162,29 @@ pub fn incoming_files_dir() -> Result<PathBuf> {
     Ok(profile.join("Downloads").join("Rider"))
 }
 
-/// Simulate Ctrl+Alt+Del (secure attention sequence) on the host.
+/// Named event the service waits on to generate Ctrl+Alt+Del for the agent.
+/// Created by the service (SYSTEM), so only SYSTEM and Administrators can signal it.
+pub const SAS_EVENT: windows::core::PCWSTR = w!(r"Global\RemoteDesktopRider-SAS");
+
+/// Ctrl+Alt+Del (secure attention sequence) on the host.
+///
+/// Windows honours `SendSAS` only when called from a service, so the agent
+/// asks the service through [`SAS_EVENT`]; without the service it is tried
+/// directly.
 pub fn send_sas() -> Result<()> {
+    // SAFETY: valid event name; the handle is closed after use.
+    unsafe {
+        if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, SAS_EVENT) {
+            let r = SetEvent(event);
+            let _ = CloseHandle(event);
+            return r.context("signalling the service");
+        }
+    }
+    send_sas_direct()
+}
+
+/// Call `SendSAS` in this process (effective only inside a service).
+pub fn send_sas_direct() -> Result<()> {
     // SAFETY: SendSAS has signature `void SendSAS(BOOL AsUser)`; the symbol is
     // looked up by name from the system's sas.dll.
     unsafe {
