@@ -121,7 +121,10 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming) {
         conn.close(1u32.into(), b"host is busy with another session");
         return;
     }
+    // Keeps the service from installing an update during the session.
+    crate::autoupdate::mark_session(true);
     let result = run(&state, &conn, streams).await;
+    crate::autoupdate::mark_session(false);
     state.busy.store(false, Ordering::SeqCst);
     match result {
         Ok(()) => tracing::info!("{remote}: session ended"),

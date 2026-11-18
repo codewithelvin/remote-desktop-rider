@@ -159,14 +159,21 @@ pub fn set_autostart(on: bool) -> Result<()> {
 /// A per-user yes/no remembered by the app (e.g. a hint already shown).
 /// Installed copies start at sign-in unless the user turned that off: enabled
 /// once per user on first start, and kept pointing at the current executable.
+/// Running from the installed location (`%ProgramFiles%\RemoteDesktopRider`).
+pub fn installed() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            let pf = std::env::var_os("ProgramFiles")?;
+            let dir = std::path::Path::new(&pf).join("RemoteDesktopRider");
+            Some(exe.parent()?.to_string_lossy().eq_ignore_ascii_case(&dir.to_string_lossy()))
+        })
+        .unwrap_or(false)
+}
+
 pub fn default_autostart() {
-    let installed = std::env::current_exe().ok().and_then(|exe| {
-        let pf = std::env::var_os("ProgramFiles")?;
-        let dir = std::path::Path::new(&pf).join("RemoteDesktopRider");
-        Some(exe.parent()?.to_string_lossy().eq_ignore_ascii_case(&dir.to_string_lossy()))
-    });
     let first = w!("AutostartDefaulted");
-    if installed == Some(true) && !flag(first) {
+    if installed() && !flag(first) {
         set_flag(first);
         let _ = set_autostart(true);
     } else if autostart() {
@@ -181,6 +188,11 @@ pub fn flag(name: PCWSTR) -> bool {
 
 pub fn set_flag(name: PCWSTR) {
     let _ = set_value(APP_KEY, name, REG_DWORD, &1u32.to_le_bytes());
+}
+
+pub fn clear_flag(name: PCWSTR) {
+    // SAFETY: valid key and value names; a missing value is fine.
+    let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, APP_KEY, name) };
 }
 
 fn set_value(key: PCWSTR, name: PCWSTR, kind: REG_VALUE_TYPE, data: &[u8]) -> Result<()> {

@@ -303,7 +303,11 @@ fn run_service() -> Result<()> {
     };
     report(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN)?;
     tracing::info!("service started");
-    let result = supervise(&stop_rx);
+    crate::autoupdate::reopen_app_after_update();
+    let updater =
+        crate::autoupdate::Updater::start().inspect_err(|e| tracing::warn!("auto-update unavailable: {e:#}")).ok();
+    let result = supervise(&stop_rx, updater.as_ref());
+    drop(updater);
     report(ServiceState::Stopped, ServiceControlAccept::empty())?;
     tracing::info!("service stopped");
     result
@@ -334,7 +338,7 @@ impl Drop for Agent {
     }
 }
 
-fn supervise(stop: &mpsc::Receiver<()>) -> Result<()> {
+fn supervise(stop: &mpsc::Receiver<()>, updater: Option<&crate::autoupdate::Updater>) -> Result<()> {
     let job = kill_on_close_job()?;
     // Auto-reset; the default DACL of a SYSTEM process admits only SYSTEM and Administrators.
     // SAFETY: valid name, no security attributes.
@@ -351,6 +355,9 @@ fn supervise(stop: &mpsc::Receiver<()>) -> Result<()> {
                 tracing::info!("restarting agent (session {} -> {session})", old.session);
             }
             last_spawn = Instant::now();
+            if let Some(u) = updater {
+                u.reset_session();
+            }
             match spawn_agent(&exe, session, job) {
                 Ok(process) => {
                     tracing::info!("agent started in session {session}");

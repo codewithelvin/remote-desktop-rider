@@ -159,7 +159,11 @@ Merge `rider-host` and `rider-client` into one installer and one tray app
       upgrade; tested install, upgrade over a service install and uninstall
 - [x] GitHub Actions publishes every push to `main` as the next version
       (`v<major>.<minor>.<n>`) with the installer on the Releases page
-- [ ] Auto-update from the GitHub releases (public, no server needed)
+- [x] Auto-update from the GitHub releases (public, no server needed): the app
+      offers new versions (one click, one UAC prompt, reopens itself); the
+      service installs them unattended when no session is active and reopens
+      the tray app; downloads over WinHTTP (system proxy), SHA-256 verified,
+      SYSTEM's copy kept in an admin-only folder
 - [x] Session toolbar in the viewer (top edge): full screen, Ctrl+Alt+Del,
       one button per remote monitor, disconnect
 - [x] "Remember PIN on this device" (DPAPI, per Windows user): Connect opens

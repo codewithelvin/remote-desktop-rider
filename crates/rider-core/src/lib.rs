@@ -9,6 +9,7 @@ pub mod proto;
 pub mod rendezvous;
 pub mod sas;
 pub mod tls;
+pub mod update;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

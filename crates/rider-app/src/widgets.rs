@@ -70,6 +70,7 @@ pub mod icon {
     pub const WARNING: &str = "\u{E7BA}";
     pub const INFO: &str = "\u{E946}";
     pub const PLAY: &str = "\u{E768}";
+    pub const DOWNLOAD: &str = "\u{E896}";
 }
 
 fn semibold() -> FontFamily {

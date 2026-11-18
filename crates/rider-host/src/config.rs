@@ -28,6 +28,13 @@ pub struct HostConfig {
     /// Rendezvous server for reaching this host from other networks.
     #[serde(default)]
     pub server: Option<rider_core::rendezvous::ServerRef>,
+    /// Let the service install new releases by itself when nobody is connected.
+    #[serde(default = "yes")]
+    pub auto_update: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for HostConfig {
@@ -41,6 +48,7 @@ impl Default for HostConfig {
             pin_hash: String::new(),
             trusted_clients: Vec::new(),
             server: None,
+            auto_update: true,
         }
     }
 }

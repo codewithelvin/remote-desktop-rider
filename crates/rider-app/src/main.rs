@@ -16,6 +16,7 @@ mod host;
 mod pins;
 mod sys;
 mod tray;
+mod updates;
 mod widgets;
 
 use eframe::egui;

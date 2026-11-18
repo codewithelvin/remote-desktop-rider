@@ -5,6 +5,7 @@
 //! * unattended: `rider-host service install` registers a Windows service that
 //!   keeps a SYSTEM agent (`rider-host agent`) running in the console session.
 
+mod autoupdate;
 mod banner;
 mod capture;
 mod config;
@@ -67,6 +68,11 @@ enum Cmd {
         /// Stop using a server (LAN / direct connections only).
         #[arg(long, conflicts_with_all = ["addr", "fingerprint"])]
         off: bool,
+    },
+    /// Let the service install new releases by itself when nobody is connected.
+    AutoUpdate {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
     },
     /// Manage the unattended-access Windows service.
     Service {
@@ -187,6 +193,14 @@ fn main() -> Result<()> {
                 None => println!("Rendezvous server disabled."),
             }
         }
+        Cmd::AutoUpdate { state } => {
+            cfg.auto_update = state == "on";
+            cfg.save()?;
+            println!(
+                "Automatic updates {}.",
+                if cfg.auto_update { "on: installed when nobody is connected" } else { "off" }
+            );
+        }
         Cmd::Info if ui::json() => {
             let identity = Identity::load_or_create(&dir)?;
             let info = serde_json::json!({
@@ -196,6 +210,7 @@ fn main() -> Result<()> {
                 "pin_set": cfg.has_pin(),
                 "paired": cfg.trusted_clients.len(),
                 "server": cfg.server,
+                "auto_update": cfg.auto_update,
                 "service": service::status(),
             });
             println!("{info}");

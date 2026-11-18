@@ -4,6 +4,7 @@
 use crate::pins;
 use crate::sys::{self, RemoteAccess};
 use crate::tray::{self, Tray};
+use crate::updates::{self, Updater};
 use crate::widgets::{self, ACCENT, AMBER, Bus, GREEN, GREY, Tx, icon};
 use eframe::egui::{self, Align, Id, Key, Layout, Modal, RichText, ScrollArea, TextEdit, TextureHandle, Ui, vec2};
 use rider_client::PairPrompt;
@@ -105,6 +106,7 @@ pub struct ClientApp {
     autostart: bool,
     /// Frames left before hiding a window started with `--tray`.
     hide_in: u8,
+    updater: Updater,
 }
 
 impl ClientApp {
@@ -149,6 +151,7 @@ impl ClientApp {
             settings_msg: None,
             autostart: sys::autostart(),
             hide_in: if hidden { 2 } else { 0 },
+            updater: Updater::new(ctx),
         };
         app.refresh_saved_pins();
         app
@@ -641,6 +644,8 @@ impl ClientApp {
             ui.add_space(10.0);
             self.server_card(ui);
             ui.add_space(10.0);
+            self.updates_card(ui);
+            ui.add_space(10.0);
             widgets::card(ui, |ui| {
                 widgets::section(ui, icon::PLAY, "Startup");
                 if ui.checkbox(&mut self.autostart, "Start Remote Desktop Rider when I sign in").changed()
@@ -654,6 +659,96 @@ impl ClientApp {
                     "Closing the window keeps the app in the notification area. Use Quit in its menu to exit.",
                 );
             });
+        });
+    }
+
+    /// "Version x is available" above every page while there is one.
+    fn update_banner(&mut self, ui: &mut Ui) {
+        use updates::State;
+        let state = self.updater.state();
+        let release = match &state {
+            State::Available(r)
+            | State::Downloading { release: r, .. }
+            | State::Installing(r)
+            | State::Failed { release: Some(r), .. } => r.clone(),
+            _ => return,
+        };
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon::DOWNLOAD).size(18.0).color(ACCENT));
+                ui.label(RichText::new(format!("Version {} is available", release.version)).strong());
+                ui.hyperlink_to("What's new", &release.page);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &state {
+                    State::Downloading { done, .. } => {
+                        let f = *done as f32 / release.size.max(1) as f32;
+                        ui.add(
+                            egui::ProgressBar::new(f)
+                                .desired_width(220.0)
+                                .text(format!("Downloading… {:.0}%", f * 100.0)),
+                        );
+                    }
+                    State::Installing(_) => {
+                        widgets::hint(ui, "Installing… the app reopens by itself.");
+                        ui.spinner();
+                    }
+                    _ => {
+                        let label = if matches!(state, State::Failed { .. }) { "Try again" } else { "Install update" };
+                        if widgets::primary(ui, true, label).clicked() {
+                            self.updater.install(release.clone());
+                        }
+                    }
+                });
+            });
+            if let State::Failed { error, .. } = &state {
+                widgets::error(ui, error);
+            } else if matches!(state, State::Available(_)) {
+                widgets::hint(
+                    ui,
+                    "Windows asks for permission once. Open sessions from this device end while it installs.",
+                );
+            }
+        });
+        ui.add_space(12.0);
+    }
+
+    fn updates_card(&mut self, ui: &mut Ui) {
+        use updates::State;
+        widgets::card(ui, |ui| {
+            widgets::section(ui, icon::DOWNLOAD, "Updates");
+            ui.horizontal(|ui| {
+                widgets::hint(ui, "Version");
+                ui.label(updates::current().to_string());
+            });
+            if !self.updater.installed {
+                widgets::hint(ui, "Updates apply to the installed app (Program Files); this copy runs from elsewhere.");
+                return;
+            }
+            let mut auto = self.updater.auto;
+            if ui.checkbox(&mut auto, "Check for updates automatically").changed() {
+                self.updater.set_auto(auto);
+            }
+            ui.horizontal(|ui| {
+                let state = self.updater.state();
+                let checking = matches!(state, State::Checking { .. });
+                if ui.add_enabled(!checking, egui::Button::new("Check now")).clicked() {
+                    self.updater.check(true);
+                }
+                match state {
+                    State::Checking { manual: true } => {
+                        ui.spinner();
+                    }
+                    State::UpToDate => widgets::success(ui, "You have the latest version."),
+                    State::Failed { error, release: None } => widgets::error(ui, &error),
+                    State::Available(r) => {
+                        widgets::hint(ui, &format!("Version {} is available (see the top).", r.version))
+                    }
+                    _ => {}
+                }
+            });
+            widgets::hint(
+                ui,
+                "Updates come from this project's GitHub releases and are checked against their published SHA-256.",
+            );
         });
     }
 
@@ -860,6 +955,7 @@ impl eframe::App for ClientApp {
         self.close_to_tray(&ctx);
         self.handle_messages();
         self.poll_online();
+        self.updater.tick();
         // Keep timers (online polling, service state) ticking while shown.
         ctx.request_repaint_after(Duration::from_secs(2));
 
@@ -881,6 +977,7 @@ impl eframe::App for ClientApp {
                     widgets::error(ui, e);
                     return;
                 }
+                self.update_banner(ui);
                 match self.tab {
                     Tab::Computers => self.computers(ui),
                     Tab::ThisComputer => self.this_computer(ui),

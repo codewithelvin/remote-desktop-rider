@@ -41,6 +41,15 @@ built and published there automatically.
 > The installer is not code-signed yet, so Windows SmartScreen may warn about an
 > unknown publisher: click **More info → Run anyway**.
 
+**Updates install themselves.** The app checks the releases every few hours and
+shows *Version x is available → Install update* (one Windows permission prompt;
+it reopens by itself). A computer with remote access turned on also updates
+unattended: its service installs a new release when nobody is connected and is
+back online within a minute, so a PC you only reach remotely stays current.
+Every download is checked against the SHA-256 published with the release. Both
+can be turned off (Settings → Updates; Manage → Remote access), and IT can still
+deploy silently with `rdr-setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`.
+
 ## How it works
 
 <table>
@@ -143,6 +152,7 @@ only administrators can replace what runs as SYSTEM. It also adds a firewall
 rule for UDP 47800, registers auto-restart on failure, and allows Ctrl+Alt+Del
 from services. `rider-host service status|stop|start|uninstall` manage it, and
 `set-pin`, `revoke` and `clients` apply to the running service immediately.
+`rider-host auto-update on|off` controls unattended updates (on by default).
 Logs: `%ProgramData%\RemoteDesktopRider\host\logs`.
 
 Without the service, `rider-host` (or `rider-host run --pair`) serves from the
@@ -233,7 +243,7 @@ with its installer. Bump `major.minor` in `Cargo.toml` for bigger steps.
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: automatic updates, all
-monitors in one window, code signing, then performance on poor links (GPU
+See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: all monitors in one window,
+code signing, then performance on poor links (GPU
 conversion and decoding, FEC, intra-refresh) and host→client files, audio and
 an audit log.

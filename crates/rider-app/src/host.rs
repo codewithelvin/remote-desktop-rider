@@ -19,8 +19,15 @@ struct Info {
     port: u16,
     pin_set: bool,
     server: Option<ServerRef>,
+    /// Missing from older `rider-host` builds: on.
+    #[serde(default = "yes")]
+    auto_update: bool,
     /// `None`: service not installed; `Some(running)`.
     service: Option<bool>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Deserialize, Clone)]
@@ -275,6 +282,24 @@ impl HostApp {
                     }
                 }
             });
+            if info.service.is_some() {
+                let mut auto = info.auto_update;
+                if ui
+                    .add_enabled(
+                        idle,
+                        egui::Checkbox::new(&mut auto, "Install updates automatically when nobody is connected"),
+                    )
+                    .changed()
+                {
+                    let (state, done) =
+                        if auto { ("on", "Automatic updates are on.") } else { ("off", "Automatic updates are off.") };
+                    self.run("Saving…", args(&["auto-update", state]), None, done);
+                }
+                widgets::hint(
+                    ui,
+                    "Keeps a computer you only reach remotely up to date: it updates itself and is back online within a minute.",
+                );
+            }
         });
     }
 

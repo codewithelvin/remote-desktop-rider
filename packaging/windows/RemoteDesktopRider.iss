@@ -86,8 +86,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow protocol=UDP profile=any program=""{app}\rider-client.exe"""; Flags: runhidden
 Filename: "{sys}\net.exe"; Parameters: "start {#ServiceName}"; Flags: runhidden; Check: ServiceWasRunning
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: postinstall nowait skipifsilent runasoriginaluser
-; Silent upgrades: bring back the tray app if it was running.
-Filename: "{app}\{#AppExe}"; Parameters: "--tray"; Flags: nowait runasoriginaluser; Check: WizardSilent and AppWasRunning
+; Silent upgrades: bring back the app if it was running, in the tray, or with
+; its window when the update was started from it (/show=1). Under the update
+; service (SYSTEM) the app is not visible from here; the service reopens it.
+Filename: "{app}\{#AppExe}"; Parameters: "{code:RelaunchArgs}"; Flags: nowait runasoriginaluser; Check: WizardSilent and AppWasRunning
 
 [UninstallRun]
 Filename: "{app}\rider-host.exe"; Parameters: "service uninstall"; Flags: runhidden; RunOnceId: "RemoveService"
@@ -104,6 +106,14 @@ var
 function AppWasRunning: Boolean;
 begin
   Result := AppRunning;
+end;
+
+function RelaunchArgs(Param: String): String;
+begin
+  if ExpandConstant('{param:show|0}') = '1' then
+    Result := ''
+  else
+    Result := '--tray';
 end;
 
 function ServiceWasRunning: Boolean;
