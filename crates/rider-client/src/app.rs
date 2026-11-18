@@ -9,7 +9,7 @@
 //!   Ctrl+Alt+Shift+F  toggle fullscreen
 //!   Ctrl+Alt+Shift+Q  disconnect
 //!   Ctrl+Alt+End      Ctrl+Alt+Del on the host (login screen, lock screen)
-//!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc go to the host (keyhook)
+//!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc, Alt+F4 go to the host (keyhook)
 //!   Drag and drop a file onto the window to send it to the host.
 
 use crate::keyhook::KeyHook;

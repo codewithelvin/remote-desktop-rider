@@ -74,10 +74,10 @@ in **Settings → Server** on both sides.
 
 ### In a session
 
-Move the pointer to the top edge of the session window for the toolbar:
+Click the small tab at the top centre of the session window for the toolbar:
 **Full screen**, **Ctrl+Alt+Del**, one button per remote **monitor** and
-**Disconnect**. Windows key combinations (Win+R, Win+E, Win+P…), Alt+Tab and
-Alt+Esc act on the remote computer while its window is in front. Win+L and
+**Disconnect**. Windows key combinations (Win+R, Win+E, Win+P…), Alt+Tab, Alt+Esc and
+Alt+F4 act on the remote computer while its window is in front. Win+L and
 Ctrl+Alt+Del always stay on your own computer (Windows reserves them), so use
 the toolbar or `Ctrl+Alt+End` for the remote one.
 

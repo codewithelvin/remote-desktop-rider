@@ -1,5 +1,6 @@
 //! System keys for the remote computer. Windows handles the Win key, Alt+Tab,
-//! Alt+Esc and Ctrl+Esc in the shell before a window sees them, so Win+R,
+//! Alt+Esc and Ctrl+Esc in the shell before a window sees them (and Alt+F4
+//! would close the session window), so Win+R,
 //! Win+P, Win+E, Alt+Tab... would act on this computer. A low-level keyboard
 //! hook catches them while the session window is in front, sends them to the host and keeps them
 //! from this computer. Other keys go through the window as usual, so the host
@@ -23,7 +24,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_LWIN, VK_RWIN, VK_TAB};
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_F4, VK_LWIN, VK_RWIN, VK_TAB};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, LLKHF_EXTENDED,
     LLKHF_UP, MSG, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_QUIT,
@@ -115,7 +116,7 @@ impl Drop for KeyHook {
 fn system_key(vk: u32, alt: bool, ctrl: bool) -> bool {
     vk == VK_LWIN.0 as u32
         || vk == VK_RWIN.0 as u32
-        || (alt && (vk == VK_TAB.0 as u32 || vk == VK_ESCAPE.0 as u32))
+        || (alt && (vk == VK_TAB.0 as u32 || vk == VK_ESCAPE.0 as u32 || vk == VK_F4.0 as u32))
         || (ctrl && vk == VK_ESCAPE.0 as u32)
 }
 
@@ -168,6 +169,8 @@ mod tests {
         assert!(system_key(VK_RWIN.0 as u32, false, false));
         assert!(system_key(VK_TAB.0 as u32, true, false));
         assert!(system_key(VK_ESCAPE.0 as u32, false, true));
+        assert!(system_key(VK_F4.0 as u32, true, false));
+        assert!(!system_key(VK_F4.0 as u32, false, false));
         assert!(!system_key(VK_TAB.0 as u32, false, false));
         assert!(!system_key(0x50, false, false)); // P alone goes through the window
     }

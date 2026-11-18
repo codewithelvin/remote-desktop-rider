@@ -1,7 +1,10 @@
 //! Session toolbar: a small bar at the top centre of the viewer with Full
 //! screen, Ctrl+Alt+Del, one button per remote monitor and Disconnect. It shows for a few
-//! seconds when the session starts and whenever the pointer touches the top
-//! edge (a thin handle marks the spot); otherwise it stays out of the way.
+//! seconds when the session starts; after that only a small tab stays at the
+//! top centre, and clicking that tab opens the bar. It never opens just because
+//! the pointer reaches the top edge: that is where remote browser tabs and
+//! title bars are, and a bar sliding in under the pointer would take the click
+//! meant for them (e.g. turn "close tab" into Disconnect).
 //!
 //! The bar is rendered once per state (labels via GDI with Segoe UI and the
 //! Segoe MDL2 icon font, grayscale anti-aliasing) into a premultiplied ARGB
@@ -30,8 +33,11 @@ pub enum Action {
 const INTRO: Duration = Duration::from_secs(4);
 /// Stays this long after the pointer leaves it.
 const LINGER: Duration = Duration::from_millis(800);
-/// Pointer this close to the top edge (logical px) reveals the bar.
-const EDGE: f64 = 6.0;
+/// Opened by its tab but not reached by the pointer: hide again after this.
+const OPEN_WAIT: Duration = Duration::from_secs(3);
+/// The tab shown while the bar is hidden (logical px).
+const TAB_W: f64 = 56.0;
+const TAB_H: f64 = 12.0;
 
 const BG: (u8, u8, u8, u8) = (30, 31, 36, 238);
 const HOVER: (u8, u8, u8) = (62, 64, 74);
@@ -59,6 +65,12 @@ pub struct Toolbar {
     sprite: Option<Sprite>,
     /// Where the sprite was last drawn (x offset; it is always at y = 0).
     x: usize,
+    /// Horizontal centre of the last drawn frame (where the tab is).
+    centre: f64,
+    /// The pointer is on the tab, and whether it was pressed there.
+    tab_hover: bool,
+    tab_pressed: bool,
+    last: (f64, f64),
 }
 
 impl Toolbar {
@@ -73,6 +85,10 @@ impl Toolbar {
             on_bar: false,
             sprite: None,
             x: 0,
+            centre: 0.0,
+            tab_hover: false,
+            tab_pressed: false,
+            last: (-1.0, -1.0),
         }
     }
 
@@ -99,8 +115,10 @@ impl Toolbar {
 
     /// Pointer moved to (x, y) physical px. Returns true if the bar changed.
     pub fn pointer(&mut self, x: f64, y: f64) -> bool {
-        let before = (self.visible(), self.hover);
-        let on = if self.visible() { self.over_bar(x, y) } else { y <= EDGE * self.scale && self.over_span(x) };
+        self.last = (x, y);
+        let before = (self.visible(), self.hover, self.tab_hover);
+        let on = self.visible() && self.over_bar(x, y);
+        self.tab_hover = !self.visible() && self.over_tab(x, y);
         if on {
             self.on_bar = true;
             self.visible_until = None;
@@ -109,7 +127,7 @@ impl Toolbar {
             self.visible_until = Some(Instant::now() + LINGER);
         }
         self.set_hover(if self.visible() { self.hit(x, y) } else { None });
-        (self.visible(), self.hover) != before
+        (self.visible(), self.hover, self.tab_hover) != before
     }
 
     fn set_hover(&mut self, hover: Option<Action>) {
@@ -121,7 +139,9 @@ impl Toolbar {
 
     /// Pointer left the window.
     pub fn leave(&mut self) -> bool {
-        let was = self.on_bar || self.hover.is_some();
+        let was = self.on_bar || self.hover.is_some() || self.tab_hover;
+        self.tab_hover = false;
+        self.last = (-1.0, -1.0);
         if self.on_bar {
             self.visible_until = Some(Instant::now() + LINGER);
         }
@@ -132,7 +152,11 @@ impl Toolbar {
 
     /// A left-button press at the pointer: true if the bar takes it.
     pub fn press(&mut self) -> bool {
-        if !self.visible() || !self.on_bar {
+        if !self.visible() {
+            self.tab_pressed = self.tab_hover;
+            return self.tab_pressed;
+        }
+        if !self.on_bar {
             return false;
         }
         self.pressed = self.hover;
@@ -142,6 +166,16 @@ impl Toolbar {
     /// The matching release: the action to run, if released on the same button.
     /// `None` with `taken == true` means the bar swallowed the click.
     pub fn release(&mut self) -> (bool, Option<Action>) {
+        if std::mem::take(&mut self.tab_pressed) {
+            if self.tab_hover {
+                // Open; it stays while the pointer is on it (it is right there).
+                self.tab_hover = false;
+                self.visible_until = Some(Instant::now() + OPEN_WAIT);
+                let (x, y) = self.last;
+                self.pointer(x, y);
+            }
+            return (true, None);
+        }
         match self.pressed.take() {
             Some(a) => (true, (self.hover == Some(a)).then_some(a)),
             None => (self.on_bar && self.visible(), None),
@@ -157,10 +191,9 @@ impl Toolbar {
         x >= self.x as f64 && x < (self.x + w) as f64 && y >= 0.0 && y < h as f64
     }
 
-    /// Within the bar's horizontal span (where the handle sits).
-    fn over_span(&self, x: f64) -> bool {
-        let (w, _) = self.sprite_size();
-        x >= self.x as f64 && x < (self.x + w) as f64
+    fn over_tab(&self, x: f64, y: f64) -> bool {
+        let (hw, h) = (TAB_W * self.scale / 2.0, TAB_H * self.scale);
+        y >= 0.0 && y < h && (x - self.centre).abs() < hw
     }
 
     fn hit(&self, x: f64, y: f64) -> Option<Action> {
@@ -178,8 +211,9 @@ impl Toolbar {
         }
         let Some(s) = &self.sprite else { return };
         self.x = w.saturating_sub(s.w) / 2;
+        self.centre = w as f64 / 2.0;
         if !self.visible() {
-            handle(buf, w, h, self.scale);
+            tab(buf, w, h, self.scale, self.tab_hover);
             return;
         }
         for y in 0..s.h.min(h) {
@@ -197,15 +231,27 @@ impl Default for Toolbar {
     }
 }
 
-/// A short rounded line at the top centre: "there is something here".
-fn handle(buf: &mut [u32], w: usize, h: usize, scale: f64) {
-    let hw = (56.0 * scale) as usize;
-    let hh = ((4.0 * scale) as usize).max(3);
-    let x0 = w.saturating_sub(hw) / 2;
-    let px = premul(200, 202, 210, 150);
-    for y in 0..hh.min(h) {
-        for x in x0..(x0 + hw).min(w) {
-            buf[y * w + x] = blend(px, buf[y * w + x]);
+/// The closed toolbar: a small dark tab at the top centre, rounded at the
+/// bottom, with a short grip line; lighter while the pointer is on it.
+fn tab(buf: &mut [u32], w: usize, h: usize, scale: f64, hover: bool) {
+    let (tw, th) = ((TAB_W * scale).round() as usize, (TAB_H * scale).round() as usize);
+    let x0 = w.saturating_sub(tw) / 2;
+    let r = 5.0 * scale;
+    let (bg, grip) = if hover { (HOVER, 255u8) } else { ((BG.0, BG.1, BG.2), 190) };
+    let (gw, gy0) = (tw as f64 * 0.4, th as f64 * 0.35);
+    let gy1 = gy0 + (2.0 * scale).max(1.5);
+    for y in 0..th.min(h) {
+        for x in 0..tw.min(w - x0) {
+            let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
+            let (cx, cy) = (fx.clamp(r, tw as f64 - r), fy.min(th as f64 - r));
+            let a = (r - ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() + 0.5).clamp(0.0, 1.0);
+            if a == 0.0 {
+                continue;
+            }
+            let on_grip = (fx - tw as f64 / 2.0).abs() < gw / 2.0 && fy >= gy0 && fy < gy1;
+            let (cr, cg, cb) = if on_grip { (grip, grip, grip) } else { bg };
+            let d = &mut buf[y * w + x0 + x];
+            *d = blend(premul(cr, cg, cb, (BG.3 as f64 * a) as u8), *d);
         }
     }
 }
@@ -451,22 +497,30 @@ mod tests {
     }
 
     #[test]
-    fn edge_reveals_after_resize() {
+    fn top_edge_does_not_open_it_the_tab_does() {
         let mut t = Toolbar::new();
         t.set_state(1.25, false, (1, 0));
-        let mut small = vec![0u32; 1000 * 600];
-        t.draw(&mut small, 1000, 600);
+        let mut buf = vec![0u32; 1920 * 1080];
+        t.draw(&mut buf, 1920, 1080);
         // Intro over, pointer elsewhere: hidden.
         t.visible_until = None;
         t.pointer(500.0, 300.0);
         assert!(!t.visible());
-        // Full screen: larger window, new label; the bar re-centres.
-        t.set_state(1.25, true, (1, 0));
-        let mut big = vec![0u32; 1920 * 1080];
-        t.draw(&mut big, 1920, 1080);
-        assert!(t.pointer(960.0, 1.0), "touching the top edge shows it");
+        // A remote browser tab at the top edge: the bar stays closed and the
+        // click goes to the remote computer.
+        for x in [300.0, 700.0, 1100.0] {
+            t.pointer(x, 2.0);
+            assert!(!t.visible(), "top edge at {x} must not open it");
+            assert!(!t.press());
+            assert_eq!(t.release(), (false, None));
+        }
+        // Clicking the tab opens it, and the click goes nowhere else.
+        assert!(t.pointer(960.0, 4.0), "tab highlights");
+        assert!(t.press());
+        assert_eq!(t.release(), (true, None));
         assert!(t.visible());
-        t.pointer(960.0, 15.0);
+        t.draw(&mut buf, 1920, 1080);
+        t.pointer(960.0, 20.0);
         assert!(t.visible(), "stays while on it");
         t.pointer(960.0, 500.0);
         assert!(t.visible(), "lingers briefly");
