@@ -140,23 +140,74 @@ fn xrgb_row_1to1_generic(y: &[u8], uv: &[u8], out: &mut [u32]) {
     }
 }
 
-/// Nearest-neighbour scaled row; `x_map` holds the source column per output pixel.
+/// Bilinear sampling position: the two neighbouring source samples and the
+/// weight of the second one, in 1/256.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Tap {
+    a: u32,
+    b: u32,
+    f: u32,
+}
+
+/// Taps mapping `dst` output samples onto `src` input samples, pixel centres
+/// aligned: output x covers source (x + 0.5) * src / dst - 0.5. Never
+/// decreasing, and `a <= b < src`.
+fn taps(src: usize, dst: usize) -> Vec<Tap> {
+    let last = src.saturating_sub(1) as i64;
+    (0..dst as i64)
+        .map(|x| {
+            let p = ((2 * x + 1) * src as i64 * 256 / (2 * dst as i64) - 128).clamp(0, last * 256);
+            let a = p >> 8;
+            Tap { a: a as u32, b: (a + 1).min(last) as u32, f: (p & 255) as u32 }
+        })
+        .collect()
+}
+
+/// Weighted mix of `p` and `q` (weight of `q` = f/256), kept scaled by 256.
 #[inline(always)]
-fn xrgb_row_scaled_generic(y: &[u8], uv: &[u8], x_map: &[u32], out: &mut [u32]) {
-    for (o, &sx) in out.iter_mut().zip(x_map) {
-        let sx = sx as usize;
-        let cx = sx & !1;
-        *o = yuv_to_xrgb(y[sx], uv[cx], uv[cx + 1]);
+fn mix(p: u32, q: u32, f: u32) -> u32 {
+    p * (256 - f) + q * f
+}
+
+/// Vertical pass: blend two source rows into `out`, in 1/256 (fits u16).
+#[inline(always)]
+fn blend_rows_generic(a: &[u8], b: &[u8], f: u32, out: &mut [u16]) {
+    let (wa, wb) = ((256 - f) as u16, f as u16);
+    for ((o, &p), &q) in out.iter_mut().zip(a).zip(b) {
+        *o = p as u16 * wa + q as u16 * wb;
     }
 }
 
-multiversion!(fn xrgb_row_1to1(y: &[u8], uv: &[u8], out: &mut [u32]) => xrgb_row_1to1_generic);
-multiversion!(fn xrgb_row_scaled(y: &[u8], uv: &[u8], x_map: &[u32], out: &mut [u32]) => xrgb_row_scaled_generic);
+/// Horizontal pass over vertically blended rows (luma, interleaved chroma).
+/// Filtering both keeps thin text strokes and coloured edges intact where
+/// nearest-neighbour sampling drops or doubles them.
+#[inline(always)]
+fn xrgb_row_bilinear_generic(y: &[u16], uv: &[u16], xt: &[Tap], ct: &[Tap], out: &mut [u32]) {
+    // Taps never decrease (see `taps`), so the last one bounds them all: checked
+    // here once so the loop can skip per-sample bounds checks.
+    assert!(xt.last().is_none_or(|t| (t.b as usize) < y.len()), "luma tap out of range");
+    assert!(ct.last().is_none_or(|t| 2 * t.b as usize + 1 < uv.len()), "chroma tap out of range");
+    let px = |p: u16, q: u16, f: u32| ((mix(p as u32, q as u32, f) + (1 << 15)) >> 16) as u8;
+    for ((o, t), c) in out.iter_mut().zip(xt).zip(ct) {
+        // SAFETY: every index was checked against the row lengths above.
+        unsafe {
+            let l = px(*y.get_unchecked(t.a as usize), *y.get_unchecked(t.b as usize), t.f);
+            let (a, b) = (2 * c.a as usize, 2 * c.b as usize);
+            let u = px(*uv.get_unchecked(a), *uv.get_unchecked(b), c.f);
+            let v = px(*uv.get_unchecked(a + 1), *uv.get_unchecked(b + 1), c.f);
+            *o = yuv_to_xrgb(l, u, v);
+        }
+    }
+}
 
-/// Scale (nearest neighbour) and convert an NV12 frame into an XRGB
-/// destination of `dw` x `dh`, letterboxed to preserve the aspect ratio.
-/// Returns the destination rectangle covered by the image (x, y, w, h).
-/// Uses a faster path when no horizontal scaling is needed.
+multiversion!(fn blend_rows(a: &[u8], b: &[u8], f: u32, out: &mut [u16]) => blend_rows_generic);
+multiversion!(fn xrgb_row_bilinear(y: &[u16], uv: &[u16], xt: &[Tap], ct: &[Tap], out: &mut [u32]) => xrgb_row_bilinear_generic);
+multiversion!(fn xrgb_row_1to1(y: &[u8], uv: &[u8], out: &mut [u32]) => xrgb_row_1to1_generic);
+
+/// Scale (bilinear) and convert an NV12 frame into an XRGB destination of
+/// `dw` x `dh`, letterboxed to preserve the aspect ratio. Returns the
+/// destination rectangle covered by the image (x, y, w, h). Uses a faster
+/// path when the frame fits 1:1.
 pub fn nv12_to_xrgb_fit(f: &Nv12Frame, dst: &mut [u32], dw: usize, dh: usize) -> (usize, usize, usize, usize) {
     assert!(dst.len() >= dw * dh, "destination too small");
     assert!(f.data.len() >= f.stride * f.alloc_height * 3 / 2 && f.width <= f.stride, "NV12 buffer too small");
@@ -166,27 +217,38 @@ pub fn nv12_to_xrgb_fit(f: &Nv12Frame, dst: &mut [u32], dw: usize, dh: usize) ->
         return rect;
     }
     let uv_base = f.stride * f.alloc_height;
-    let unscaled = w == f.width && f.width.is_multiple_of(2);
-    // Source column for each destination column, computed once per frame.
-    let x_map: Vec<u32> = if unscaled { Vec::new() } else { (0..w).map(|x| (x * f.width / w) as u32).collect() };
+    let unscaled = w == f.width && h == f.height && f.width.is_multiple_of(2);
+    // Chroma planes are half size; (n + 1) / 2 also covers odd sizes.
+    let (cw, ch) = ((f.width / 2).max(1), f.height.div_ceil(2));
+    // Sampling positions, computed once per frame.
+    let (xt, ct, yt, cyt) =
+        if unscaled { Default::default() } else { (taps(f.width, w), taps(cw, w), taps(f.height, h), taps(ch, h)) };
+    let y_row = |r: u32| &f.data[r as usize * f.stride..][..f.width];
+    let uv_row = |r: u32| &f.data[uv_base + r as usize * f.stride..][..f.width];
 
-    dst[..dw * dh].par_chunks_exact_mut(dw).enumerate().with_min_len(MIN_ROWS_PER_TASK).for_each(|(row, line)| {
-        if row < oy || row >= oy + h {
-            line.fill(BACKGROUND);
-            return;
-        }
-        line[..ox].fill(BACKGROUND);
-        line[ox + w..].fill(BACKGROUND);
-        let sy = (row - oy) * f.height / h;
-        let y_row = &f.data[sy * f.stride..][..f.width];
-        let uv_row = &f.data[uv_base + (sy / 2) * f.stride..][..f.width];
-        let out = &mut line[ox..ox + w];
-        if unscaled {
-            xrgb_row_1to1(y_row, uv_row, out);
-        } else {
-            xrgb_row_scaled(y_row, uv_row, &x_map, out);
-        }
-    });
+    // Per worker: the two source rows of an output row, blended vertically.
+    let init = || if unscaled { (Vec::new(), Vec::new()) } else { (vec![0u16; f.width], vec![0u16; 2 * cw]) };
+    dst[..dw * dh].par_chunks_exact_mut(dw).enumerate().with_min_len(MIN_ROWS_PER_TASK).for_each_init(
+        init,
+        |(yb, cb), (row, line)| {
+            if row < oy || row >= oy + h {
+                line.fill(BACKGROUND);
+                return;
+            }
+            line[..ox].fill(BACKGROUND);
+            line[ox + w..].fill(BACKGROUND);
+            let out = &mut line[ox..ox + w];
+            let r = row - oy;
+            if unscaled {
+                xrgb_row_1to1(y_row(r as u32), uv_row(r as u32 / 2), out);
+            } else {
+                let (t, c) = (yt[r], cyt[r]);
+                blend_rows(y_row(t.a), y_row(t.b), t.f, yb);
+                blend_rows(&uv_row(c.a)[..2 * cw], &uv_row(c.b)[..2 * cw], c.f, cb);
+                xrgb_row_bilinear(yb, cb, &xt, &ct, out);
+            }
+        },
+    );
     rect
 }
 
@@ -249,6 +311,67 @@ mod tests {
         assert_eq!((oy, h), (4, 8));
         assert!(out[..16 * 4].iter().all(|&p| p == BACKGROUND));
         assert!(out[16 * 12..].iter().all(|&p| p == BACKGROUND));
+    }
+
+    #[test]
+    fn taps_cover_the_source() {
+        // Same size: every sample maps onto itself.
+        assert!(taps(5, 5).iter().enumerate().all(|(i, t)| t.a == i as u32 && t.f == 0));
+        // Halving: each output sits between two inputs, half each.
+        assert_eq!(taps(4, 2), vec![Tap { a: 0, b: 1, f: 128 }, Tap { a: 2, b: 3, f: 128 }]);
+        // Edges clamp inside the source.
+        let up = taps(2, 8);
+        assert_eq!((up[0].a, up[0].f), (0, 0));
+        assert_eq!((up[7].a, up[7].b, up[7].f), (1, 1, 0));
+        for (src, dst) in [(1920, 1280), (1280, 1920), (7, 3), (1, 5)] {
+            let t = taps(src, dst);
+            assert!(t.windows(2).all(|p| p[0].a <= p[1].a && p[0].b <= p[1].b));
+            assert!(t.iter().all(|t| t.a <= t.b && (t.b as usize) < src));
+        }
+    }
+
+    #[test]
+    fn thin_lines_survive_downscaling() {
+        // A 1 px dark line every 3 columns on white, scaled to 2/3 width:
+        // nearest-neighbour would drop some lines entirely.
+        let (w, h) = (96, 8);
+        let mut bgra = solid_bgra(w, h, (255, 255, 255));
+        for y in 0..h {
+            for x in (1..w).step_by(3) {
+                bgra[(y * w + x) * 4..][..3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+        let mut nv12 = Vec::new();
+        bgra_to_nv12(&bgra, w * 4, w, h, &mut nv12);
+        let f = Nv12Frame { data: nv12, stride: w, alloc_height: h, width: w, height: h };
+        let (dw, dh) = (64, 8 * 64 / 96);
+        let mut out = vec![0u32; dw * dh];
+        nv12_to_xrgb_fit(&f, &mut out, dw, dh);
+        let row = &out[dw * (dh / 2)..][..dw];
+        // Every pair of output pixels covers one line: each pair darkens.
+        for pair in row.as_chunks::<2>().0 {
+            let darkest = pair.iter().map(|p| p & 255).min().unwrap();
+            assert!(darkest < 200, "line lost: {pair:x?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "timing; run with --release -- --ignored --nocapture"]
+    fn scale_speed() {
+        let (w, h) = (1920, 1080);
+        let f = Nv12Frame { data: vec![100; w * h * 3 / 2], stride: w, alloc_height: h, width: w, height: h };
+        let mut out = vec![0u32; 1280 * 720];
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            nv12_to_xrgb_fit(&f, &mut out, 1280, 720);
+        }
+        println!("1080p -> 720p: {:?} per frame", t.elapsed() / 100);
+        let mut full = vec![0u32; w * h];
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            nv12_to_xrgb_fit(&f, &mut full, w, h);
+        }
+        println!("1080p 1:1: {:?} per frame", t.elapsed() / 100);
     }
 
     #[test]

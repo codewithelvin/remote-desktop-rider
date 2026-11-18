@@ -56,7 +56,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $setup = "target/installer/RemoteDesktopRider-Setup-$env:VERSION.exe"
+          $setup = "target/installer/rdr-setup-$env:VERSION.exe"
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
-          $notes = "Download **RemoteDesktopRider-Setup-$env:VERSION.exe** below and run it (Windows 10/11, 64-bit).`n`nSHA-256: ``$hash``"
+          $notes = "Download **rdr-setup-$env:VERSION.exe** below and run it (Windows 10/11, 64-bit).`n`nSHA-256: ``$hash``"
           gh release create "v$env:VERSION" $setup --target $env:GITHUB_SHA --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest

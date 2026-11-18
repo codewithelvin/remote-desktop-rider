@@ -1,6 +1,7 @@
 //! Main window (no administrator rights needed): the computers this device
 //! can control, adding one, connecting, and this device's settings.
 
+use crate::pins;
 use crate::sys::{self, RemoteAccess};
 use crate::tray::{self, Tray};
 use crate::widgets::{self, ACCENT, AMBER, Bus, GREEN, GREY, Tx, icon};
@@ -9,7 +10,7 @@ use rider_client::PairPrompt;
 use rider_client::config::{ClientConfig, KnownHost};
 use rider_core::identity::{Identity, fp_from_hex};
 use rider_core::rendezvous::ServerRef;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -57,6 +58,9 @@ struct ConnectDialog {
     fingerprint: String,
     name: String,
     pin: String,
+    /// Save the PIN (encrypted for this Windows user) once it worked.
+    remember: bool,
+    error: Option<String>,
 }
 
 struct Session {
@@ -66,6 +70,10 @@ struct Session {
     connected: Option<String>,
     stderr: String,
     finished: Option<bool>,
+    /// PIN to remember once connected.
+    remember: Option<String>,
+    /// Started with the remembered PIN (no dialog).
+    saved_pin: bool,
 }
 
 pub struct ClientApp {
@@ -84,6 +92,8 @@ pub struct ClientApp {
     add: Option<AddDialog>,
     connect: Option<ConnectDialog>,
     remove: Option<String>,
+    /// Computers with a remembered PIN.
+    saved_pins: HashSet<String>,
     sessions: Vec<Session>,
     next_session: u64,
     remote: RemoteAccess,
@@ -111,8 +121,8 @@ impl ClientApp {
         };
         let (server_addr, server_fp) =
             cfg.server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default();
-        let logo = egui::ColorImage::from_rgba_unmultiplied([64, 64], &crate::icon::rgba(64));
-        Self {
+        let logo = egui::ColorImage::from_rgba_unmultiplied([64, 64], &rider_core::icon::rgba(64));
+        let mut app = Self {
             rt,
             bus: Bus::new(ctx),
             tray,
@@ -128,6 +138,7 @@ impl ClientApp {
             add: None,
             connect: None,
             remove: None,
+            saved_pins: HashSet::new(),
             sessions: Vec::new(),
             next_session: 0,
             remote: sys::remote_access(),
@@ -138,7 +149,40 @@ impl ClientApp {
             settings_msg: None,
             autostart: sys::autostart(),
             hide_in: if hidden { 2 } else { 0 },
+        };
+        app.refresh_saved_pins();
+        app
+    }
+
+    fn refresh_saved_pins(&mut self) {
+        self.saved_pins = self
+            .cfg
+            .hosts
+            .iter()
+            .filter(|h| pins::load(&h.fingerprint).is_some())
+            .map(|h| h.fingerprint.clone())
+            .collect();
+    }
+
+    /// Connect: straight away with a remembered PIN, otherwise ask for it.
+    fn connect_to(&mut self, fingerprint: String, name: String) {
+        match pins::load(&fingerprint) {
+            Some(pin) => {
+                let d = ConnectDialog { fingerprint, name, pin, remember: false, error: None };
+                self.start_session(d, true);
+            }
+            None => {
+                self.connect =
+                    Some(ConnectDialog { fingerprint, name, pin: String::new(), remember: true, error: None })
+            }
         }
+    }
+
+    fn forget_pin(&mut self, fingerprint: &str) {
+        if let Err(e) = pins::forget(fingerprint) {
+            self.server_error = Some(format!("{e:#}"));
+        }
+        self.saved_pins.remove(fingerprint);
     }
 
     fn reload(&mut self) {
@@ -195,6 +239,15 @@ impl ClientApp {
                     match update {
                         SessionUpdate::Connected(route) => {
                             s.connected = Some(route);
+                            if let Some(pin) = s.remember.take() {
+                                let host = s.host.clone();
+                                match pins::save(&host, &pin) {
+                                    Ok(()) => {
+                                        self.saved_pins.insert(host);
+                                    }
+                                    Err(e) => self.server_error = Some(format!("Cannot remember the PIN: {e:#}")),
+                                }
+                            }
                             self.reload(); // the viewer just saved the last-connected time
                         }
                         SessionUpdate::Stderr(line) => {
@@ -203,6 +256,23 @@ impl ClientApp {
                         }
                         SessionUpdate::Exited(ok) => {
                             s.finished = Some(ok);
+                            // The remembered PIN no longer works (changed on
+                            // that computer): forget it and ask.
+                            let rejected = s.stderr.contains("wrong PIN") || s.stderr.contains("authentication failed");
+                            if !ok && s.saved_pin && s.connected.is_none() && rejected {
+                                let host = s.host.clone();
+                                self.sessions.retain(|s| s.id != id);
+                                self.forget_pin(&host);
+                                let name =
+                                    self.cfg.hosts.iter().find(|h| h.fingerprint == host).map(|h| h.name.clone());
+                                self.connect = Some(ConnectDialog {
+                                    fingerprint: host,
+                                    name: name.unwrap_or_default(),
+                                    pin: String::new(),
+                                    remember: true,
+                                    error: Some("The saved PIN no longer works. Enter the current one.".into()),
+                                });
+                            }
                             self.reload(); // last-connected time changed
                         }
                     }
@@ -268,13 +338,20 @@ impl ClientApp {
         });
     }
 
-    fn start_session(&mut self, d: ConnectDialog) {
+    fn start_session(&mut self, d: ConnectDialog, saved_pin: bool) {
         // A new attempt replaces the error of the previous one.
         self.sessions.retain(|s| s.finished.is_none() || s.host != d.fingerprint);
         self.next_session += 1;
         let id = self.next_session;
-        let mut session =
-            Session { id, host: d.fingerprint.clone(), connected: None, stderr: String::new(), finished: None };
+        let mut session = Session {
+            id,
+            host: d.fingerprint.clone(),
+            connected: None,
+            stderr: String::new(),
+            finished: None,
+            remember: d.remember.then(|| d.pin.clone()),
+            saved_pin,
+        };
         let spawned = sys::tool("rider-client.exe")
             .args(["connect", &d.fingerprint, "--pin-stdin"])
             .stdin(Stdio::piped())
@@ -441,6 +518,7 @@ impl ClientApp {
                             }) {
                                 self.server_error = Some(e);
                             }
+                            self.forget_pin(&h.fingerprint);
                             self.remove = None;
                         }
                         if ui.button("Cancel").clicked() {
@@ -453,11 +531,13 @@ impl ClientApp {
                         }
                         let label = if in_session { "In session" } else { "Connect" };
                         if widgets::primary(ui, !in_session, label).clicked() {
-                            self.connect = Some(ConnectDialog {
-                                fingerprint: h.fingerprint.clone(),
-                                name: h.name.clone(),
-                                pin: String::new(),
-                            });
+                            self.connect_to(h.fingerprint.clone(), h.name.clone());
+                        }
+                        if self.saved_pins.contains(&h.fingerprint)
+                            && widgets::icon_button(ui, icon::KEY, "PIN remembered on this device. Click to forget it.")
+                                .clicked()
+                        {
+                            self.forget_pin(&h.fingerprint);
                         }
                     }
                 });
@@ -723,6 +803,15 @@ impl ClientApp {
             });
             let r = ui.add(TextEdit::singleline(&mut d.pin).password(true).desired_width(f32::INFINITY));
             r.request_focus();
+            if let Some(e) = &d.error {
+                widgets::error(ui, e);
+            }
+            ui.add_space(2.0);
+            ui.checkbox(&mut d.remember, "Remember PIN on this device");
+            widgets::hint(
+                ui,
+                "Next time Connect opens the session directly. Anyone who can use your Windows account here could too.",
+            );
             widgets::dialog_buttons(ui, |ui| {
                 go = widgets::primary(ui, !d.pin.is_empty(), "Connect").clicked()
                     || (!d.pin.is_empty() && ui.input(|i| i.key_pressed(Key::Enter)));
@@ -731,7 +820,7 @@ impl ClientApp {
         });
         if go {
             if let Some(d) = self.connect.take() {
-                self.start_session(d);
+                self.start_session(d, false);
             }
         } else if close {
             self.connect = None;

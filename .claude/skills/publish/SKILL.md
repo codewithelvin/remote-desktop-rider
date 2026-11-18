@@ -7,7 +7,7 @@ description: Publish Remote Desktop Rider - check, commit and push to main, then
 
 Every push to `main` makes GitHub build the next version (patch number after
 the latest `v<major>.<minor>.*` tag) and publish
-`RemoteDesktopRider-Setup-<version>.exe` as a release
+`rdr-setup-<version>.exe` as a release
 (`.github/workflows/ci.yml`). Pushes that only touch `*.md`, `docs/` or
 `.claude/` are not built or released.
 

@@ -4,7 +4,9 @@
 
 pub mod app;
 pub mod config;
+mod keyhook;
 pub mod net;
+mod toolbar;
 mod video;
 
 use anyhow::{Context, Result, bail};

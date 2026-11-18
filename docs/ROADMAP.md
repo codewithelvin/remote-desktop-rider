@@ -160,7 +160,15 @@ Merge `rider-host` and `rider-client` into one installer and one tray app
 - [x] GitHub Actions publishes every push to `main` as the next version
       (`v<major>.<minor>.<n>`) with the installer on the Releases page
 - [ ] Auto-update from the GitHub releases (public, no server needed)
-- [ ] Session toolbar in the viewer
+- [x] Session toolbar in the viewer (top edge): full screen, Ctrl+Alt+Del,
+      one button per remote monitor, disconnect
+- [x] "Remember PIN on this device" (DPAPI, per Windows user): Connect opens
+      the session directly; a PIN that stopped working is forgotten
+- [x] Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc go to the remote
+      computer (low-level keyboard hook while the session window is in front)
+- [x] Bilinear scaling in the viewer (text stays readable at any window size);
+      app icon on the session window and `rider-client.exe`
+- [ ] All remote monitors at once in one window (needs host-side compositing)
 - [ ] Code signing (needs a certificate) so SmartScreen does not warn
 
 **Later:** pair through the running service instead of pausing it, so a device
@@ -178,6 +186,6 @@ ends remote sessions while it waits).
 ## Milestone 5: More features
 
 - Host→client file transfer and a file browser.
-- Cursor shape sync; low-level keyboard hook for Win key / Alt+Tab.
+- Cursor shape sync.
 - Audio.
 - Session log / audit on the host (who connected, when, from where).

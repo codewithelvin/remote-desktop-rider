@@ -13,7 +13,7 @@
 
 mod client;
 mod host;
-mod icon;
+mod pins;
 mod sys;
 mod tray;
 mod widgets;
@@ -44,7 +44,7 @@ fn main() -> eframe::Result {
     };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(title)
-        .with_icon(egui::IconData { rgba: icon::rgba(64), width: 64, height: 64 })
+        .with_icon(egui::IconData { rgba: rider_core::icon::rgba(64), width: 64, height: 64 })
         .with_inner_size(size)
         .with_min_inner_size([620.0, 440.0]);
     if hidden {

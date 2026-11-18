@@ -33,7 +33,7 @@
 
 ## Download
 
-Get **RemoteDesktopRider-Setup-x.y.z.exe** from the
+Get **rdr-setup-x.y.z.exe** from the
 [latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest)
 and run it on both computers (Windows 10/11, 64-bit). Every change on `main` is
 built and published there automatically.
@@ -59,9 +59,11 @@ built and published there automatically.
 
 <img src="docs/screenshots/connect.png" alt="Connect dialog asking for the PIN" align="right" width="360">
 
-**3. Connect** whenever you need: click **Connect** and enter the PIN. The
-remote computer shows a red banner while someone is connected; clicking it ends
-the session.
+**3. Connect** whenever you need: click **Connect** and enter the PIN. Tick
+**Remember PIN on this device** and later connections open straight away, like
+unattended access in other tools (the PIN is encrypted for your Windows
+account). The remote computer shows a red banner while someone is connected;
+clicking it ends the session.
 
 The app lives in the notification area, starts when you sign in (can be turned
 off in Settings) and shows which of your computers are online. To reach
@@ -72,6 +74,13 @@ in **Settings → Server** on both sides.
 
 ### In a session
 
+Move the pointer to the top edge of the session window for the toolbar:
+**Full screen**, **Ctrl+Alt+Del**, one button per remote **monitor** and
+**Disconnect**. Windows key combinations (Win+R, Win+E, Win+P…), Alt+Tab and
+Alt+Esc act on the remote computer while its window is in front. Win+L and
+Ctrl+Alt+Del always stay on your own computer (Windows reserves them), so use
+the toolbar or `Ctrl+Alt+End` for the remote one.
+
 | Shortcut | Action |
 |---|---|
 | `Ctrl+Alt+End` | Ctrl+Alt+Del on the remote computer (login / lock screen) |
@@ -80,7 +89,8 @@ in **Settings → Server** on both sides.
 | `Ctrl+Alt+Shift+Q` | disconnect |
 | drag a file onto the window | send it to the remote user's `Downloads\Rider` |
 
-Text clipboard syncs both ways. The title bar shows fps, round-trip time,
+Text clipboard syncs both ways. Picture quality adjusts itself to the
+connection: there is nothing to set. The title bar shows fps, round-trip time,
 estimated latency and the encoder in use.
 
 ## Under the hood
@@ -223,7 +233,7 @@ with its installer. Bump `major.minor` in `Cargo.toml` for bigger steps.
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: automatic updates, a toolbar
-inside the session window, code signing, then performance on poor links (GPU
+See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: automatic updates, all
+monitors in one window, code signing, then performance on poor links (GPU
 conversion and decoding, FEC, intra-refresh) and host→client files, audio and
 an audit log.

@@ -1,4 +1,4 @@
-# Builds the Windows installer: target\installer\RemoteDesktopRider-Setup-<version>.exe
+# Builds the Windows installer: target\installer\rdr-setup-<version>.exe
 #
 #   .\packaging\windows\build.ps1                    # version from Cargo.toml, release profile
 #   .\packaging\windows\build.ps1 -Profile quick     # faster local test build
@@ -39,4 +39,4 @@ $defs = @("/DAppVersion=$Version", "/DBinDir=$bin", "/DOutDir=$out")
 if ($icon) { $defs += "/DIconFile=$($icon.FullName)" }
 & $iscc /Q @defs "$PSScriptRoot\RemoteDesktopRider.iss"
 if ($LASTEXITCODE) { throw "Inno Setup failed" }
-Write-Host "$out\RemoteDesktopRider-Setup-$Version.exe"
+Write-Host "$out\rdr-setup-$Version.exe"

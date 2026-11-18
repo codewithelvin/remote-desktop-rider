@@ -1,4 +1,5 @@
 //! Viewer window: draws the newest frame, captures input, shows live stats.
+//! A toolbar at the top centre (see `toolbar`) offers the actions below.
 //!
 //! The mouse cursor is drawn locally by Windows (the host does not render
 //! it into the video), so pointer movement feels instant whatever the latency.
@@ -8,9 +9,12 @@
 //!   Ctrl+Alt+Shift+F  toggle fullscreen
 //!   Ctrl+Alt+Shift+Q  disconnect
 //!   Ctrl+Alt+End      Ctrl+Alt+Del on the host (login screen, lock screen)
+//!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc go to the host (keyhook)
 //!   Drag and drop a file onto the window to send it to the host.
 
+use crate::keyhook::KeyHook;
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
+use crate::toolbar::{Action, Toolbar};
 use anyhow::Result;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
 use rider_core::proto::{ClientMsg, MonitorInfo, MouseButton};
@@ -26,7 +30,8 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::platform::windows::WindowAttributesExtWindows;
+use winit::window::{Fullscreen, Icon, Window, WindowId};
 
 pub fn run(rt: tokio::runtime::Runtime, session: Session, host_name: String) -> Result<()> {
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
@@ -48,6 +53,9 @@ pub fn run(rt: tokio::runtime::Runtime, session: Session, host_name: String) -> 
         next_title: Instant::now(),
         closed: None,
         last_frames: 0,
+        toolbar: Toolbar::new(),
+        toolbar_shown: true,
+        keyhook: None,
     };
     event_loop.run_app(&mut app)?;
     if let Some(reason) = app.closed {
@@ -58,6 +66,18 @@ pub fn run(rt: tokio::runtime::Runtime, session: Session, host_name: String) -> 
 }
 
 type Surface = softbuffer::Surface<Rc<Window>, Rc<Window>>;
+
+fn hwnd(window: &Window) -> Option<windows::Win32::Foundation::HWND> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _)),
+        _ => None,
+    }
+}
+
+fn app_icon(size: u32) -> Option<Icon> {
+    Icon::from_rgba(rider_core::icon::rgba(size), size, size).ok()
+}
 
 struct App {
     net: NetHandle,
@@ -76,6 +96,11 @@ struct App {
     next_title: Instant,
     closed: Option<String>,
     last_frames: u32,
+    toolbar: Toolbar,
+    /// Whether the last drawn frame showed the full toolbar.
+    toolbar_shown: bool,
+    /// Win key, Alt+Tab... to the host while this window is in front.
+    keyhook: Option<KeyHook>,
 }
 
 impl App {
@@ -87,10 +112,15 @@ impl App {
             return;
         }
         let Ok(mut buf) = surface.buffer_mut() else { return };
+        let (w, h) = (w.get() as usize, h.get() as usize);
         match &self.current {
-            Some(f) => self.image_rect = nv12_to_xrgb_fit(f, &mut buf, w.get() as usize, h.get() as usize),
+            Some(f) => self.image_rect = nv12_to_xrgb_fit(f, &mut buf, w, h),
             None => buf.fill(0x0010_1014),
         }
+        let monitors = (self.monitors.len() as u32, self.active_monitor);
+        self.toolbar.set_state(window.scale_factor(), window.fullscreen().is_some(), monitors);
+        self.toolbar.draw(&mut buf, w, h);
+        self.toolbar_shown = self.toolbar.visible();
         let _ = buf.present();
     }
 
@@ -134,33 +164,55 @@ impl App {
         // Match by meaning too: the numpad End key (NumLock off) counts, as on laptops.
         let end = key == PhysicalKey::Code(KeyCode::End) || event.logical_key == Key::Named(NamedKey::End);
         if m.control_key() && m.alt_key() && end {
-            self.release_keys();
-            self.net.send(ClientMsg::SendSas);
+            self.act(el, Action::CtrlAltDel);
             return true;
         }
         if !(m.control_key() && m.alt_key() && m.shift_key()) {
             return false;
         }
-        match key {
+        let action = match key {
             PhysicalKey::Code(KeyCode::KeyM) if self.monitors.len() > 1 => {
-                let next = (self.active_monitor + 1) % self.monitors.len() as u32;
-                self.net.send(ClientMsg::SelectMonitor { index: next });
+                Action::Monitor((self.active_monitor + 1) % self.monitors.len() as u32)
             }
-            PhysicalKey::Code(KeyCode::KeyF) => {
+            PhysicalKey::Code(KeyCode::KeyF) => Action::Fullscreen,
+            PhysicalKey::Code(KeyCode::KeyQ) => Action::Disconnect,
+            _ => return false,
+        };
+        self.act(el, action);
+        true
+    }
+
+    fn act(&mut self, el: &ActiveEventLoop, action: Action) {
+        match action {
+            Action::Fullscreen => {
                 if let Some(w) = &self.window {
                     let fs = if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) };
                     w.set_fullscreen(fs);
+                    w.request_redraw();
                 }
             }
-            PhysicalKey::Code(KeyCode::KeyQ) => {
+            Action::CtrlAltDel => {
+                self.release_keys();
+                self.net.send(ClientMsg::SendSas);
+            }
+            Action::Monitor(index) => {
+                if index != self.active_monitor && (index as usize) < self.monitors.len() {
+                    self.net.send(ClientMsg::SelectMonitor { index });
+                }
+            }
+            Action::Disconnect => {
                 self.release_keys();
                 self.closed = Some("disconnected by you".into());
                 self.net.conn.close(0u32.into(), b"bye");
                 el.exit();
             }
-            _ => return false,
         }
-        true
+    }
+
+    fn redraw_soon(&self) {
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
     }
 }
 
@@ -171,7 +223,9 @@ impl ApplicationHandler<UiEvent> for App {
         }
         let attrs = Window::default_attributes()
             .with_title(format!("{} — connecting...", self.host_name))
-            .with_inner_size(LogicalSize::new(1280.0, 760.0));
+            .with_inner_size(LogicalSize::new(1280.0, 760.0))
+            .with_window_icon(app_icon(32))
+            .with_taskbar_icon(app_icon(64));
         let window = match el.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => {
@@ -190,6 +244,12 @@ impl ApplicationHandler<UiEvent> for App {
                 return;
             }
         }
+        // Unused, and raw keyboard input would stop the keyboard hook (keyhook.rs).
+        el.listen_device_events(winit::event_loop::DeviceEvents::Never);
+        self.keyhook = hwnd(&window).and_then(|h| KeyHook::install(h, self.net.ctrl.clone()));
+        if self.keyhook.is_none() {
+            tracing::warn!("Win key and Alt+Tab will act on this computer (keyboard hook unavailable)");
+        }
         self.window = Some(window);
     }
 
@@ -206,6 +266,7 @@ impl ApplicationHandler<UiEvent> for App {
             UiEvent::Monitors(list, active) => {
                 self.monitors = list;
                 self.active_monitor = active;
+                self.redraw_soon();
             }
             UiEvent::Notice(n) => {
                 tracing::info!("{n}");
@@ -234,8 +295,16 @@ impl ApplicationHandler<UiEvent> for App {
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
-            WindowEvent::Focused(false) => self.release_keys(),
+            WindowEvent::Focused(false) => {
+                self.release_keys();
+                if let Some(h) = &self.keyhook {
+                    h.release();
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
+                if self.toolbar.pointer(position.x, position.y) {
+                    self.redraw_soon();
+                }
                 let (ox, oy, w, h) = self.image_rect;
                 if w > 1 && h > 1 {
                     let x = ((position.x - ox as f64) / (w - 1) as f64).clamp(0.0, 1.0);
@@ -252,6 +321,21 @@ impl ApplicationHandler<UiEvent> for App {
                     winit::event::MouseButton::Forward => MouseButton::Forward,
                     winit::event::MouseButton::Other(_) => return,
                 };
+                // Clicks on the toolbar stay here.
+                if b == MouseButton::Left {
+                    if state == ElementState::Pressed && self.toolbar.press() {
+                        return;
+                    }
+                    if state == ElementState::Released {
+                        let (taken, action) = self.toolbar.release();
+                        if let Some(a) = action {
+                            self.act(el, a);
+                        }
+                        if taken {
+                            return;
+                        }
+                    }
+                }
                 self.net.send(ClientMsg::MouseButton { button: b, down: state == ElementState::Pressed });
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -279,6 +363,11 @@ impl ApplicationHandler<UiEvent> for App {
                 }
                 self.net.send(ClientMsg::Key { scancode, extended, down });
             }
+            WindowEvent::CursorLeft { .. } => {
+                if self.toolbar.leave() {
+                    self.redraw_soon();
+                }
+            }
             WindowEvent::DroppedFile(path) => self.net.send_file(path),
             _ => {}
         }
@@ -289,6 +378,11 @@ impl ApplicationHandler<UiEvent> for App {
             self.update_title();
             self.next_title = Instant::now() + Duration::from_secs(1);
         }
-        el.set_control_flow(ControlFlow::WaitUntil(self.next_title));
+        // Hide (or show) the toolbar on time even when no frames arrive.
+        if self.toolbar.visible() != self.toolbar_shown {
+            self.redraw_soon();
+        }
+        let wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
+        el.set_control_flow(ControlFlow::WaitUntil(wake));
     }
 }
