@@ -25,6 +25,9 @@ pub struct HostConfig {
     pub pin_hash: String,
     #[serde(default)]
     pub trusted_clients: Vec<TrustedClient>,
+    /// Rendezvous server for reaching this host from other networks.
+    #[serde(default)]
+    pub server: Option<rider_core::rendezvous::ServerRef>,
 }
 
 impl Default for HostConfig {
@@ -37,6 +40,7 @@ impl Default for HostConfig {
             hardware_encoder: true,
             pin_hash: String::new(),
             trusted_clients: Vec::new(),
+            server: None,
         }
     }
 }

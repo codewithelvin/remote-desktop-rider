@@ -19,6 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const ALPN: &[u8] = b"rider/1";
+/// ALPN for the rendezvous server, so a server connection can never be
+/// mistaken for a host session (or the reverse).
+pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
 /// Server name used in the handshake. Ignored by our verifiers (we pin keys, not names).
 pub const SERVER_NAME: &str = "rider";
 
@@ -139,21 +142,44 @@ fn transport() -> Arc<quinn::TransportConfig> {
     Arc::new(t)
 }
 
+/// Accepts any client key. Used by the rendezvous server, which identifies
+/// devices by fingerprint; authorization comes from the hosts' allow-lists.
+#[derive(Debug)]
+pub struct AnyClient;
+
+impl ClientTrust for AnyClient {
+    fn is_allowed(&self, _: &Fingerprint) -> bool {
+        true
+    }
+}
+
 pub fn server_config(id: &Identity, trust: Arc<dyn ClientTrust>) -> Result<quinn::ServerConfig> {
+    server_config_alpn(id, trust, ALPN)
+}
+
+pub fn client_config(id: &Identity, expected_host: Option<Fingerprint>) -> Result<quinn::ClientConfig> {
+    client_config_alpn(id, expected_host, ALPN)
+}
+
+pub fn server_config_alpn(id: &Identity, trust: Arc<dyn ClientTrust>, alpn: &[u8]) -> Result<quinn::ServerConfig> {
     let provider = provider();
     let verifier = Arc::new(PinnedClientVerifier { trust, provider: provider.clone() });
     let mut crypto = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(verifier)
         .with_single_cert(vec![id.cert.clone()], id.private_key())?;
-    crypto.alpn_protocols = vec![ALPN.to_vec()];
+    crypto.alpn_protocols = vec![alpn.to_vec()];
     let qsc = quinn::crypto::rustls::QuicServerConfig::try_from(crypto)?;
     let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(qsc));
     cfg.transport_config(transport());
     Ok(cfg)
 }
 
-pub fn client_config(id: &Identity, expected_host: Option<Fingerprint>) -> Result<quinn::ClientConfig> {
+pub fn client_config_alpn(
+    id: &Identity,
+    expected_host: Option<Fingerprint>,
+    alpn: &[u8],
+) -> Result<quinn::ClientConfig> {
     let provider = provider();
     let verifier = Arc::new(PinnedServerVerifier { expected: expected_host, provider: provider.clone() });
     let mut crypto = rustls::ClientConfig::builder_with_provider(provider)
@@ -161,7 +187,7 @@ pub fn client_config(id: &Identity, expected_host: Option<Fingerprint>) -> Resul
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(vec![id.cert.clone()], id.private_key())?;
-    crypto.alpn_protocols = vec![ALPN.to_vec()];
+    crypto.alpn_protocols = vec![alpn.to_vec()];
     let qcc = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(qcc));
     cfg.transport_config(transport());

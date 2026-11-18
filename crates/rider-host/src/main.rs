@@ -9,6 +9,7 @@ mod banner;
 mod capture;
 mod config;
 mod input;
+mod rendezvous;
 mod service;
 mod session;
 mod system;
@@ -51,6 +52,18 @@ enum Cmd {
     Revoke { device: String },
     /// Show this host's identity and settings.
     Info,
+    /// Use a rendezvous server (rider-server) so clients can connect from other networks.
+    SetServer {
+        /// Server address, e.g. rider.example.com or 203.0.113.7:47900.
+        #[arg(required_unless_present = "off")]
+        addr: Option<String>,
+        /// Server fingerprint, printed by `rider-server info`.
+        #[arg(required_unless_present = "off")]
+        fingerprint: Option<String>,
+        /// Stop using a server (LAN / direct connections only).
+        #[arg(long, conflicts_with_all = ["addr", "fingerprint"])]
+        off: bool,
+    },
     /// Manage the unattended-access Windows service.
     Service {
         #[command(subcommand)]
@@ -147,6 +160,18 @@ fn main() -> Result<()> {
             cfg.save()?;
             println!("Removed {removed} device(s).");
         }
+        Cmd::SetServer { addr, fingerprint, off } => {
+            cfg.server = match (off, addr, fingerprint) {
+                (true, ..) => None,
+                (false, Some(a), Some(f)) => Some(rider_core::rendezvous::ServerRef::new(&a, &f)?),
+                _ => bail!("give the server address and fingerprint, or --off"),
+            };
+            cfg.save()?;
+            match &cfg.server {
+                Some(s) => println!("Rendezvous server set to {}. Restart the host or service to apply.", s.addr),
+                None => println!("Rendezvous server disabled. Restart the host or service to apply."),
+            }
+        }
         Cmd::Info => {
             let identity = Identity::load_or_create(&dir)?;
             println!("Host name:    {}", cfg.name);
@@ -154,6 +179,7 @@ fn main() -> Result<()> {
             println!("Port (UDP):   {}", cfg.port);
             println!("PIN set:      {}", if cfg.has_pin() { "yes" } else { "NO - run `rider-host set-pin`" });
             println!("Paired:       {} device(s)", cfg.trusted_clients.len());
+            println!("Server:       {}", cfg.server.as_ref().map_or("none (direct/LAN only)", |s| s.addr.as_str()));
             println!("Service:      {}", service_status());
             println!("State dir:    {}", dir.display());
         }
@@ -236,19 +262,32 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
     let port = cfg.port;
     let name = cfg.name.clone();
     let fp = fp_short(&identity.fingerprint());
+    let server = cfg.server.clone();
     let state = Arc::new(HostState::new(cfg, identity, pairing));
 
     tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async move {
         let trust = Arc::new(HostTrust(state.clone()));
         let server_cfg = rider_core::tls::server_config(&state.identity, trust)?;
-        let endpoint = quinn::Endpoint::server(server_cfg, SocketAddr::from(([0, 0, 0, 0], port)))
-            .with_context(|| format!("cannot listen on UDP {port} (is another host running?)"))?;
+        // One UDP socket for clients AND the rendezvous server: NAT hole
+        // punching only works if both use the same mapping.
+        let socket = Arc::new(
+            rider_core::rendezvous::PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], port)), Some(server_cfg))
+                .with_context(|| format!("cannot listen on UDP {port} (is another host running?)"))?,
+        );
+        let endpoint = socket.endpoint.clone();
+        if let Some(server) = server.clone() {
+            tokio::spawn(rendezvous::run(state.clone(), socket.clone(), server, mode != Mode::Agent));
+        }
 
         tracing::info!("host \"{name}\" listening on UDP {port}, fingerprint {fp}");
         if mode != Mode::Agent {
             println!("Remote Desktop Rider host \"{name}\"");
             println!("  listening on UDP {port}");
             println!("  host fingerprint {fp}");
+            match &server {
+                Some(s) => println!("  reachable from anywhere via {}", s.addr),
+                None => println!("  no rendezvous server: reachable on this network only (`rider-host set-server`)"),
+            }
             if pairing {
                 println!("  PAIRING OPEN for 10 minutes. On the client run:");
                 println!("    rider-client pair <this-ip>:{port}");

@@ -17,5 +17,8 @@ tracing.workspace = true
 arboard.workspace = true
 rayon.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
 [lints]
 workspace = true

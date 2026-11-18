@@ -53,7 +53,7 @@ impl HostState {
 
     /// Reload the config if it changed on disk, so `set-pin`, `revoke` and
     /// other management commands apply to a running host immediately.
-    fn refresh(&self) {
+    pub(crate) fn refresh(&self) {
         let now = config_mtime();
         let mut seen = self.config_mtime.lock().unwrap();
         if now != *seen {
@@ -107,11 +107,21 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming) {
             return;
         }
     };
+    // Wait for the control stream before counting the session: a client
+    // racing several network paths closes the losers before opening one, so
+    // they never make the host look busy.
+    let streams = match tokio::time::timeout(Duration::from_secs(10), conn.accept_bi()).await {
+        Ok(Ok(s)) => s,
+        _ => {
+            tracing::debug!("{remote}: no control stream (path not chosen by the client)");
+            return;
+        }
+    };
     if state.busy.swap(true, Ordering::SeqCst) {
         conn.close(1u32.into(), b"host is busy with another session");
         return;
     }
-    let result = run(&state, &conn).await;
+    let result = run(&state, &conn, streams).await;
     state.busy.store(false, Ordering::SeqCst);
     match result {
         Ok(()) => tracing::info!("{remote}: session ended"),
@@ -124,11 +134,12 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming) {
     conn.close(0u32.into(), b"bye");
 }
 
-async fn run(state: &Arc<HostState>, conn: &quinn::Connection) -> Result<()> {
+async fn run(
+    state: &Arc<HostState>,
+    conn: &quinn::Connection,
+    (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
+) -> Result<()> {
     let client_fp = rider_core::tls::peer_fingerprint(conn)?;
-    let (mut send, mut recv) = tokio::time::timeout(Duration::from_secs(10), conn.accept_bi())
-        .await
-        .context("client did not open a control stream")??;
     let _ = send.set_priority(1); // control beats video
 
     let Some(ClientMsg::Hello { version, device_name, pairing }) = read_msg(&mut recv).await? else {

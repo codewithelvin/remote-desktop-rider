@@ -1,0 +1,42 @@
+# systemd unit for the Remote Desktop Rider rendezvous/relay server.
+#
+#   sudo install -m755 rider-server /usr/local/bin/
+#   sudo cp rider-server.service /etc/systemd/system/
+#   sudo systemctl enable --now rider-server
+#   sudo -u rider-server rider-server --state-dir /var/lib/rider-server info
+#
+# Open UDP 47900 and the relay range 47901-47999 in the firewall / cloud security group.
+# Behind cloud NAT (AWS, GCP, ...) add `--public-ip <elastic/public IP>` to ExecStart.
+
+[Unit]
+Description=Remote Desktop Rider rendezvous and relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/rider-server --state-dir /var/lib/rider-server run --listen 0.0.0.0:47900 --relay-ports 47901-47999
+Restart=on-failure
+RestartSec=2
+DynamicUser=yes
+StateDirectory=rider-server
+Environment=RUST_LOG=info,quinn=warn
+
+# Hardening: the server needs nothing but its state directory and UDP.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,45 @@
+# Ubuntu VM playing the "VPS" that runs rider-server (rendezvous + relay).
+#
+#   cd test/server-vm && vagrant up      # builds rider-server from this repo, runs it under systemd
+#   vagrant ssh -c "sudo journalctl -u rider-server -n 20"
+#   vagrant ssh -c "sudo /usr/local/bin/rider-server --state-dir /var/lib/private/rider-server info"
+#
+# Reachable at 192.168.56.10 from the host machine and the Windows test VM (test/vm).
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.hostname = "rider-server"
+  config.vm.network "private_network", ip: "192.168.56.10"
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "../..", "/src", mount_options: ["ro"]
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "rider-test-server"
+    vb.memory = 4096
+    vb.cpus = 4
+  end
+
+  config.vm.provision "build", type: "shell", privileged: false, inline: <<~'SH'
+    set -euo pipefail
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential pkg-config curl >/dev/null
+    # Retried: downloads over flaky links fail now and then.
+    for i in 1 2 3 4 5; do
+      [ -x "$HOME/.cargo/bin/cargo" ] && break
+      curl -sSf --retry 5 --retry-all-errors https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null || sleep 5
+    done
+    source "$HOME/.cargo/env"
+    # Build outside the shared (read-only, Windows-owned) folder.
+    # Few jobs (low RAM VM) and generous network retries (flaky links).
+    CARGO_NET_RETRY=10 CARGO_HTTP_TIMEOUT=120 CARGO_TARGET_DIR="$HOME/target" \
+      cargo build --release --locked -j2 -p rider-server --manifest-path /src/Cargo.toml
+    sudo install -m755 "$HOME/target/release/rider-server" /usr/local/bin/rider-server
+    sudo cp /src/deploy/rider-server.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rider-server
+    sudo systemctl restart rider-server
+    sleep 1
+    systemctl is-active rider-server
+    sudo journalctl -u rider-server -n 6 --no-pager
+  SH
+end

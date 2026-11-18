@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod identity;
 pub mod pixels;
 pub mod proto;
+pub mod rendezvous;
 pub mod sas;
 pub mod tls;
 

@@ -2122,6 +2122,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -2155,6 +2156,20 @@ dependencies = [
  "rider-core",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "rider-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "getrandom 0.3.4",
+ "quinn",
+ "rider-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -1,0 +1,18 @@
+[package]
+name = "rider-server"
+version.workspace = true
+edition.workspace = true
+description = "Self-hosted rendezvous and relay server for Remote Desktop Rider"
+
+[dependencies]
+rider-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+quinn.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

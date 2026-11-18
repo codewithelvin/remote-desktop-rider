@@ -37,7 +37,7 @@ routers and NAT, **with no VPN, port forwarding or router setup**.
 | Input, clipboard, multi-monitor, client→host file transfer | done |
 | Unattended Windows service + SYSTEM session agent, login screen / UAC, Ctrl+Alt+End | done, verified on a clean Windows 11 VM |
 | Static C runtime (runs on clean Windows without the VC++ redistributable) | done (found by VM test) |
-| Connect across the internet (rendezvous / relay) | **not started** |
+| Connect across the internet (rendezvous / relay) | done; verified between VMs, real-NAT test open |
 | One app with a window (no terminal) | **not started** |
 
 ## Milestone 1: Verify unattended access on a clean Windows (done, 2026-11-18)
@@ -91,6 +91,27 @@ Needed for the home ↔ work case: both routers block incoming connections.
   (e.g. `RDR-7K3-QX9`) instead of needing its IP address.
 - Client tries direct LAN → hole punch → relay, and shows which path is used.
 - Server rate limiting and bans against scanning/abuse; health/metrics endpoint.
+
+**Status: implemented.** Verified with `test/server-vm` (Ubuntu, systemd unit
+from `deploy/`) and the Windows 11 VM:
+
+- [x] Host registers and re-registers after a server restart (backoff, the same UDP port as sessions)
+- [x] Pairing by code (`rider-client pair sf6-ck6`, any case), same verification code on both sides
+- [x] Connect via the server picks the direct path (RTT 4 ms on the VM network)
+- [x] Forced relay (`RIDER_FORCE_RELAY=1`) streams; relay adds 0.5 ms median (p99 3.9 ms, tcpdump)
+- [x] Relay ignores datagrams without the session token (unit test)
+- [x] Wrong code and unpaired devices get the same generic refusal
+- [x] New pairing reaches the running service's server registration without restart
+- [x] Server down: client tries the known direct address after 3 s
+
+Still open:
+
+- [ ] Test across two real NATs (home ↔ work, mobile hotspot) and a symmetric NAT
+- [ ] IPv6 candidates (currently IPv4 only)
+- [ ] Docker image; health/metrics endpoint; persistent bans
+- [ ] Unused relay ports stay reserved for 30 s after a direct path wins; release them early
+- [ ] Occasional ~700-900 ms latency spikes with the VM's software encoder (seen on direct and
+      relayed paths alike: encoder/host-side, belongs to Milestone 4)
 
 ## Milestone 3: One app with a window
 

@@ -73,6 +73,37 @@ In the viewer:
 | `Ctrl+Alt+Shift+Q` | disconnect |
 | drag a file onto the window | send it to the host user's `Downloads\Rider` |
 
+### Across the internet (home ↔ work)
+
+Without a server, the client needs the host's address, so it only works on the
+same network, over a VPN or through a port forward. To connect from anywhere,
+run the small `rider-server` on any machine both sides can reach (a cheap VPS):
+
+```sh
+rider-server run                 # UDP 47900 + relay ports 47901-47999
+rider-server info                # prints the fingerprint for the commands below
+```
+
+`deploy/rider-server.service` is a hardened systemd unit for it. Then, once per device:
+
+```powershell
+rider-host   set-server vps.example.com <server-fingerprint>   # host; restart the service after
+rider-client set-server vps.example.com <server-fingerprint>
+```
+
+`rider-host pair` now also shows a short code (e.g. `SF6-CK6`); on the client,
+`rider-client pair SF6-CK6` works from any network. `connect` asks the server
+for the host's addresses, punches through both NATs and uses a direct path
+when one works (LAN first), or the server's relay when it doesn't. The viewer
+prints which path it chose. If the server is down, a known direct address is
+still tried.
+
+The server only introduces devices. Sessions stay end-to-end encrypted with
+the keys pinned at pairing, so the server can't watch or take over a session,
+and it can't impersonate a host (the verification code would differ when
+pairing by code). It answers the same "offline or not allowed" to everyone who
+isn't paired with a host and rate-limits requests per IP.
+
 Text clipboard syncs both ways automatically. The title bar shows fps, RTT,
 estimated capture-to-screen latency, decode/encode time and the active encoder.
 
@@ -95,6 +126,9 @@ crates/
   rider-host    capture (DXGI, GDI fallback), video pipeline, input injection, banner,
                 sessions, Windows service + SYSTEM session agent
   rider-client  CLI, network session, in-order decoder thread, viewer window
+  rider-server  rendezvous (registration, pairing codes, NAT hole punching) and UDP relay
+deploy/         systemd unit for rider-server
+test/           Vagrant VMs: Windows 11 host (vm/), Ubuntu rider-server (server-vm/)
 ```
 
 Build: `cargo build --release` (needs Rust stable and the MSVC build tools).
@@ -105,8 +139,8 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan, including the target
 end-user experience. In short:
 
 1. ~~Verify unattended access on a clean Windows VM~~: done (`test/vm/`).
-2. Connect across the internet: self-hosted rendezvous server, NAT hole punching,
-   end-to-end encrypted relay fallback.
+2. ~~Connect across the internet: self-hosted rendezvous server, NAT hole punching,
+   end-to-end encrypted relay fallback~~: done, tested between VMs; real NATs next.
 3. One app with a window: computer list, Connect button, "Allow remote access",
    pairing by ID and code, installer.
 4. Performance on poor links: GPU conversion/decoding, FEC, intra-refresh.

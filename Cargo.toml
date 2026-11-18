@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rider-core", "crates/rider-media", "crates/rider-host", "crates/rider-client"]
+members = ["crates/rider-core", "crates/rider-media", "crates/rider-host", "crates/rider-client", "crates/rider-server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,7 +10,7 @@ edition = "2024"
 rider-core = { path = "crates/rider-core" }
 rider-media = { path = "crates/rider-media" }
 anyhow = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal", "net"] }
 quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"
@@ -33,6 +33,9 @@ winit = "0.30"
 softbuffer = "0.4"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
   "Win32_System_Com",
   "Win32_System_Variant",
   "Win32_System_Ole",

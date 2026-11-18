@@ -5,6 +5,8 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct KnownHost {
     pub name: String,
+    /// Direct address (LAN / port-forward), or empty if only reachable via the server.
+    #[serde(default)]
     pub addr: String,
     /// Pinned SHA-256 of the host certificate (hex).
     pub fingerprint: String,
@@ -16,11 +18,14 @@ pub struct ClientConfig {
     pub device_name: String,
     #[serde(default)]
     pub hosts: Vec<KnownHost>,
+    /// Rendezvous server for reaching hosts on other networks.
+    #[serde(default)]
+    pub server: Option<rider_core::rendezvous::ServerRef>,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
-        Self { device_name: rider_core::machine_name(), hosts: Vec::new() }
+        Self { device_name: rider_core::machine_name(), hosts: Vec::new(), server: None }
     }
 }
 
@@ -53,7 +58,7 @@ impl ClientConfig {
 
     pub fn find(&self, key: &str) -> Option<&KnownHost> {
         let k = key.to_lowercase();
-        self.hosts.iter().find(|h| h.name.to_lowercase() == k || h.addr == key)
+        self.hosts.iter().find(|h| h.name.to_lowercase() == k || (!h.addr.is_empty() && h.addr == key))
     }
 
     pub fn upsert(&mut self, host: KnownHost) {
