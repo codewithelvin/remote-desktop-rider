@@ -135,6 +135,17 @@ impl ClientApp {
         self.polled = None; // refresh online state for the new list
     }
 
+    /// Change the saved configuration. Viewer processes write to the same file
+    /// (last connected), so start from what is on disk, never from our copy.
+    fn edit(&mut self, change: impl FnOnce(&mut ClientConfig)) -> Result<(), String> {
+        let mut cfg = ClientConfig::load().map_err(|e| format!("{e:#}"))?;
+        change(&mut cfg);
+        cfg.save().map_err(|e| format!("cannot save: {e:#}"))?;
+        self.cfg = cfg;
+        self.polled = None;
+        Ok(())
+    }
+
     fn handle_messages(&mut self) {
         let msgs: Vec<Msg> = self.bus.drain().collect();
         for msg in msgs {
@@ -169,7 +180,10 @@ impl ClientApp {
                 Msg::Session { id, update } => {
                     let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { continue };
                     match update {
-                        SessionUpdate::Connected(line) => s.status = line,
+                        SessionUpdate::Connected(line) => {
+                            s.status = line;
+                            self.reload(); // the viewer just saved the last-connected time
+                        }
                         SessionUpdate::Stderr(line) => {
                             s.stderr.push_str(&line);
                             s.stderr.push('\n');
@@ -242,6 +256,8 @@ impl ClientApp {
     }
 
     fn start_session(&mut self, d: ConnectDialog) {
+        // A new attempt replaces the error of the previous one.
+        self.sessions.retain(|s| s.finished.is_none() || s.name != d.name);
         self.next_session += 1;
         let id = self.next_session;
         let mut session =
@@ -378,9 +394,10 @@ impl ClientApp {
                             self.remove = None;
                         }
                         if ui.button(RichText::new("Remove").color(ui.visuals().error_fg_color)).clicked() {
-                            self.cfg.forget(&h.fingerprint);
-                            if let Err(e) = self.cfg.save() {
-                                self.server_error = Some(format!("cannot save: {e:#}"));
+                            if let Err(e) = self.edit(|cfg| {
+                                cfg.forget(&h.fingerprint);
+                            }) {
+                                self.server_error = Some(e);
                             }
                             self.remove = None;
                         }
@@ -469,20 +486,14 @@ impl ClientApp {
         ui.horizontal(|ui| {
             if ui.button("Save").clicked() {
                 self.settings_msg = Some(match ServerRef::new(self.server_addr.trim(), self.server_fp.trim()) {
-                    Ok(s) => {
-                        self.cfg.server = Some(s);
-                        self.cfg.save().map(|()| "Saved.".into()).map_err(|e| format!("{e:#}"))
-                    }
+                    Ok(s) => self.edit(|cfg| cfg.server = Some(s)).map(|()| "Saved.".into()),
                     Err(e) => Err(format!("{e:#}")),
                 });
-                self.polled = None;
             }
             if self.cfg.server.is_some() && ui.button("Don't use a server").clicked() {
-                self.cfg.server = None;
                 self.server_addr.clear();
                 self.server_fp.clear();
-                self.settings_msg =
-                    Some(self.cfg.save().map(|()| "Server removed.".into()).map_err(|e| format!("{e:#}")));
+                self.settings_msg = Some(self.edit(|cfg| cfg.server = None).map(|()| "Server removed.".into()));
             }
         });
         match &self.settings_msg {

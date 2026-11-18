@@ -27,6 +27,9 @@ struct Info {
 struct Device {
     name: String,
     fingerprint: String,
+    /// Unix seconds, as text (older hosts may omit it).
+    #[serde(default)]
+    paired_at: String,
 }
 
 enum Msg {
@@ -334,6 +337,9 @@ impl HostApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&d.name).strong());
                 ui.monospace(widgets::short_fp(&d.fingerprint));
+                if let Ok(t) = d.paired_at.parse::<u64>() {
+                    widgets::hint(ui, &format!("added {}", widgets::ago(t)));
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if self.revoke.as_deref() == Some(d.fingerprint.as_str()) {
                         if ui.button("Cancel").clicked() {

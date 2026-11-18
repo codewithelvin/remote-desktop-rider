@@ -92,6 +92,15 @@ codegen-units = 1
 [profile.release.package.tokio]
 codegen-units = 1
 
+# Day-to-day builds: release speed without link-time optimization, rebuilds
+# only what changed (`cargo build --profile quick`, output in target/quick).
+# Ship with `release`.
+[profile.quick]
+inherits = "release"
+lto = false
+incremental = true
+debug = 0
+
 # Pixel conversion loops are hot even in debug builds.
 [profile.dev.package."*"]
 opt-level = 2

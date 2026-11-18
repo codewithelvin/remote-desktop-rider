@@ -157,15 +157,16 @@ pub async fn pair(
 }
 
 /// `piped`: PIN from `--pin-stdin`, tried once; otherwise up to three prompts.
+/// Returns the authenticated session and the route it took ("direct 1.2.3.4:47800").
 pub async fn connect(
     cfg: &ClientConfig,
     identity: &Identity,
     host: &KnownHost,
     mut piped: Option<String>,
-) -> Result<net::Session> {
+) -> Result<(net::Session, String)> {
     let attempts = if piped.is_some() { 1 } else { 3 };
     let pinned = fp_from_hex(&host.fingerprint)?;
-    let conn = match &cfg.server {
+    let (conn, route) = match &cfg.server {
         Some(server) => {
             let direct = if host.addr.is_empty() { None } else { resolve(&host.addr).await.ok() };
             let via = via_server(identity, server, Target::Host(pinned), Some(pinned), direct);
@@ -194,13 +195,12 @@ pub async fn connect(
                     }
                 }
             };
-            println!("Connected to \"{}\" ({path}).", host.name);
-            conn
+            (conn, path.to_string())
         }
         None if host.addr.is_empty() => {
             bail!("\"{}\" is only reachable via a rendezvous server: run `rider-client set-server`", host.name)
         }
-        None => open(identity, &host.addr, Some(pinned)).await?,
+        None => (open(identity, &host.addr, Some(pinned)).await?, format!("direct {}", host.addr)),
     };
     let (mut send, mut recv, _) = hello(&conn, &cfg.device_name, false).await?;
     for attempt in 1..=attempts {
@@ -210,7 +210,7 @@ pub async fn connect(
         };
         write_msg(&mut send, &ClientMsg::Auth { pin }).await?;
         match read_msg::<HostMsg>(&mut recv).await? {
-            Some(HostMsg::AuthResult { ok: true, .. }) => return Ok(net::Session { conn, send, recv }),
+            Some(HostMsg::AuthResult { ok: true, .. }) => return Ok((net::Session { conn, send, recv }, route)),
             Some(HostMsg::AuthResult { ok: false, message }) => {
                 eprintln!("{message}");
                 if attempt == attempts || message.contains("later") {

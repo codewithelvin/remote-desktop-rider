@@ -133,11 +133,13 @@ fn main() -> Result<()> {
                 .with_context(|| format!("\"{host}\" is not paired. Run `rider-client pair <address>` first."))?;
             let rt = tokio::runtime::Runtime::new()?;
             let piped = if pin_stdin { Some(rider_core::secret_from_stdin()?) } else { None };
-            let session = rt.block_on(rider_client::connect(&cfg, &identity, &known, piped))?;
+            let (session, route) = rt.block_on(rider_client::connect(&cfg, &identity, &known, piped))?;
             cfg.touch(&known.fingerprint);
             if let Err(e) = cfg.save() {
                 tracing::warn!("cannot save last-connected time: {e:#}");
             }
+            // After saving: the desktop app reloads its list when it sees this line.
+            println!("Connected to \"{}\" ({route}).", known.name);
             rider_client::app::run(rt, session, known.name)?;
         }
     }

@@ -144,11 +144,18 @@ Merge `rider-host` and `rider-client` into one installer and one tray app
 - [x] Production server `rdm.codex.az` (51.210.43.4) deployed with `deploy/install.sh`;
       direct and relayed sessions verified from the internet (relay adds ~0 ms
       over the 2x path latency)
-- [ ] Click-through test of every dialog (only the main window and CLI paths were run so far)
+- [x] Click-through test of every dialog, both sides (pairing by code, PIN,
+      wrong PIN, Remove, Manage with UAC driven through a Rider session)
 - [ ] `rdm.codex.az` DNS record is behind Cloudflare's proxy (UDP blocked): switch to DNS only
 
 **Part 2:** session toolbar, tray + autostart, installer, auto-update via
-`https://rdm.codex.az`, code signing.
+`https://rdm.codex.az`, code signing. The installer must put the app, `rider-host` and
+`rider-client` together in Program Files: the firewall rule is per binary path,
+so a second copy elsewhere triggers a Windows Firewall prompt during pairing.
+
+**Later:** pair through the running service instead of pausing it, so a device
+can be added to a computer you are controlling remotely (today "Add a device"
+ends remote sessions while it waits).
 
 ## Milestone 4: Performance on poor links
 

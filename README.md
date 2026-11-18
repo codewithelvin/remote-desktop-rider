@@ -148,3 +148,5 @@ end-user experience. In short:
    pairing by ID and code, installer.
 4. Performance on poor links: GPU conversion/decoding, FEC, intra-refresh.
 5. Host→client files, cursor shapes, Win-key capture, audio, audit log.
+# day-to-day: no link-time optimization, ~30 s rebuilds (target/quick)
+cargo build --profile quick
