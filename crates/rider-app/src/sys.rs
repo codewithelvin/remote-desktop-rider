@@ -84,6 +84,9 @@ pub fn run(exe: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Stri
 }
 
 /// The meaningful part of a tool's stderr: the anyhow error report, without log lines.
+/// Shown when a tool exits without saying why (e.g. ended from Task Manager).
+pub const NO_DETAILS: &str = "It stopped unexpectedly.";
+
 pub fn error_text(stderr: &str) -> String {
     let report = stderr.find("Error: ").map_or(stderr, |i| &stderr[i + 7..]);
     let text: Vec<&str> = report
@@ -91,7 +94,7 @@ pub fn error_text(stderr: &str) -> String {
         .map(str::trim)
         .filter(|l| !l.is_empty() && l != &"Caused by:" && !l.contains(" INFO ") && !l.contains(" WARN "))
         .collect();
-    if text.is_empty() { "failed (no details)".into() } else { text.join("\n") }
+    if text.is_empty() { NO_DETAILS.into() } else { text.join("\n") }
 }
 
 /// Forward each line of a pipe to `f` on a background thread.
@@ -154,6 +157,23 @@ pub fn set_autostart(on: bool) -> Result<()> {
 }
 
 /// A per-user yes/no remembered by the app (e.g. a hint already shown).
+/// Installed copies start at sign-in unless the user turned that off: enabled
+/// once per user on first start, and kept pointing at the current executable.
+pub fn default_autostart() {
+    let installed = std::env::current_exe().ok().and_then(|exe| {
+        let pf = std::env::var_os("ProgramFiles")?;
+        let dir = std::path::Path::new(&pf).join("RemoteDesktopRider");
+        Some(exe.parent()?.to_string_lossy().eq_ignore_ascii_case(&dir.to_string_lossy()))
+    });
+    let first = w!("AutostartDefaulted");
+    if installed == Some(true) && !flag(first) {
+        set_flag(first);
+        let _ = set_autostart(true);
+    } else if autostart() {
+        let _ = set_autostart(true);
+    }
+}
+
 pub fn flag(name: PCWSTR) -> bool {
     // SAFETY: existence check only.
     unsafe { RegGetValueW(HKEY_CURRENT_USER, APP_KEY, name, RRF_RT_REG_DWORD, None, None, None) }.is_ok()
@@ -195,6 +215,6 @@ mod tests {
         let stderr =
             "2026-11-18T10:00:00Z  INFO rider: starting\nError: authentication failed\n\nCaused by:\n    wrong PIN\n";
         assert_eq!(error_text(stderr), "authentication failed\nwrong PIN");
-        assert_eq!(error_text(""), "failed (no details)");
+        assert_eq!(error_text(""), NO_DETAILS);
     }
 }

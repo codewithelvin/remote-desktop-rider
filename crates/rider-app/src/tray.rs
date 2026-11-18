@@ -22,6 +22,9 @@ pub const MAIN_TITLE: &str = "Remote Desktop Rider";
 const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by a second instance: show the window.
 const WM_SHOW: u32 = WM_APP + 2;
+/// Posted by the installer before replacing files: exit (0x8003, keep in sync
+/// with packaging/windows/RemoteDesktopRider.iss).
+const WM_QUIT_APP: u32 = WM_APP + 3;
 const ID_OPEN: usize = 1;
 const ID_MANAGE: usize = 2;
 const ID_QUIT: usize = 3;
@@ -252,15 +255,17 @@ fn menu(hwnd: HWND) {
             ID_MANAGE => {
                 let _ = sys::relaunch_elevated("--manage");
             }
-            ID_QUIT => {
-                // Settings are saved as they change and sessions are separate
-                // processes: nothing else to wind down.
-                remove_icon(hwnd);
-                std::process::exit(0);
-            }
+            ID_QUIT => quit(hwnd),
             _ => {}
         }
     }
+}
+
+fn quit(hwnd: HWND) -> ! {
+    // Settings are saved as they change and sessions are separate processes:
+    // nothing else to wind down.
+    remove_icon(hwnd);
+    std::process::exit(0)
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -277,6 +282,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             show_main();
             LRESULT(0)
         }
+        WM_QUIT_APP => quit(hwnd),
         WM_TIMER => {
             let mut nid = base(hwnd);
             tooltip(&mut nid);

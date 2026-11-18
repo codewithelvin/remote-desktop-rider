@@ -38,7 +38,7 @@ routers and NAT, **with no VPN, port forwarding or router setup**.
 | Unattended Windows service + SYSTEM session agent, login screen / UAC, Ctrl+Alt+End | done, verified on a clean Windows 11 VM |
 | Static C runtime (runs on clean Windows without the VC++ redistributable) | done (found by VM test) |
 | Connect across the internet (rendezvous / relay) | done; verified between VMs, real-NAT test open |
-| One app with a window (no terminal) | **in progress**: app works; installer, tray, auto-update next |
+| One app with a window (no terminal) | **in progress**: app, tray and installer done; auto-update, session toolbar next |
 
 ## Milestone 1: Verify unattended access on a clean Windows (done, 2026-11-18)
 
@@ -146,12 +146,22 @@ Merge `rider-host` and `rider-client` into one installer and one tray app
       over the 2x path latency)
 - [x] Click-through test of every dialog, both sides (pairing by code, PIN,
       wrong PIN, Remove, Manage with UAC driven through a Rider session)
-- [ ] `rdm.codex.az` DNS record is behind Cloudflare's proxy (UDP blocked): switch to DNS only
+- [x] `rdm.codex.az` DNS switched to DNS only (UDP works); devices use the name, not the IP
 
-**Part 2:** session toolbar, tray + autostart, installer, auto-update via
-`https://rdm.codex.az`, code signing. The installer must put the app, `rider-host` and
-`rider-client` together in Program Files: the firewall rule is per binary path,
-so a second copy elsewhere triggers a Windows Firewall prompt during pairing.
+**Part 2:**
+
+- [x] Redesigned UI (sidebar, cards, Segoe icons), app icon + version resource
+- [x] Tray icon (open, status, manage, quit); closing keeps it in the tray;
+      start at sign-in (on by default for installed copies); single instance
+- [x] Installer (Inno Setup, `packaging/windows`): all three programs in
+      Program Files, Start menu, uninstall entry, firewall rules for
+      `rider-host`/`rider-client`, stops and restarts the service and app on
+      upgrade; tested install, upgrade over a service install and uninstall
+- [x] GitHub Actions publishes every push to `main` as the next version
+      (`v<major>.<minor>.<n>`) with the installer on the Releases page
+- [ ] Auto-update from the GitHub releases (public, no server needed)
+- [ ] Session toolbar in the viewer
+- [ ] Code signing (needs a certificate) so SmartScreen does not warn
 
 **Later:** pair through the running service instead of pausing it, so a device
 can be added to a computer you are controlling remotely (today "Add a device"

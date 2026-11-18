@@ -33,9 +33,12 @@ fn main() -> eframe::Result {
         tray::activate_other_instance();
         return Ok(());
     }
+    if !manage {
+        sys::default_autostart();
+    }
     let hidden = !manage && has("--tray");
     let (title, size) = if manage {
-        ("Remote Desktop Rider: this computer (administrator)", [680.0, 760.0])
+        ("Remote Desktop Rider: this computer (administrator)", [680.0, 680.0])
     } else {
         (tray::MAIN_TITLE, [860.0, 580.0])
     };

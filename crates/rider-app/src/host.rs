@@ -222,8 +222,7 @@ impl HostApp {
                 p.stdin = None;
                 if matches!(p.stage, PairStage::Waiting | PairStage::Asking { .. } | PairStage::Confirming) {
                     let why = sys::error_text(&stderr);
-                    p.stage =
-                        PairStage::Failed(if why == "failed (no details)" { "Pairing stopped.".into() } else { why });
+                    p.stage = PairStage::Failed(if why == sys::NO_DETAILS { "Pairing stopped.".into() } else { why });
                 }
                 self.load();
             }

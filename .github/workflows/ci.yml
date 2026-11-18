@@ -1,10 +1,37 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    paths-ignore: ["**.md", "docs/**", ".claude/**"]
+  pull_request:
+
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write # tags and releases
+    # One release at a time, so version numbers never collide.
+    concurrency: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'release' || github.run_id }}
+    env:
+      RELEASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, for the next version number
+
+      # Every push to main is released as the next patch version of the
+      # major.minor in Cargo.toml (bump that by hand for bigger steps).
+      - name: Next version
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        run: |
+          $base = (Select-String -Path Cargo.toml -Pattern '^version = "(\d+)\.(\d+)\.(\d+)"' | Select-Object -First 1).Matches[0].Groups
+          $mm = "$($base[1].Value).$($base[2].Value)"
+          $last = git tag --list "v$mm.*" | ForEach-Object { [int]($_ -replace "^v$([regex]::Escape($mm))\.", '') } | Sort-Object | Select-Object -Last 1
+          $version = if ($null -eq $last) { "$mm.$($base[3].Value)" } else { "$mm.$($last + 1)" }
+          (Get-Content Cargo.toml) -replace '^version = "[^"]+"', "version = `"$version`"" | Set-Content Cargo.toml
+          "VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "Version $version"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -13,3 +40,23 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --workspace --release
+
+      - name: Installer
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+          ./packaging/windows/build.ps1 -Version $env:VERSION
+
+      - name: Publish release
+        if: env.RELEASE == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = "target/installer/RemoteDesktopRider-Setup-$env:VERSION.exe"
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $notes = "Download **RemoteDesktopRider-Setup-$env:VERSION.exe** below and run it (Windows 10/11, 64-bit).`n`nSHA-256: ``$hash``"
+          gh release create "v$env:VERSION" $setup --target $env:GITHUB_SHA --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest
