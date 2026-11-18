@@ -2,8 +2,9 @@
 //! can control, adding one, connecting, and this device's settings.
 
 use crate::sys::{self, RemoteAccess};
-use crate::widgets::{self, Bus, GREEN, GREY, Tx};
-use eframe::egui::{self, Align, Id, Key, Layout, Modal, RichText, TextEdit, Ui};
+use crate::tray::{self, Tray};
+use crate::widgets::{self, ACCENT, AMBER, Bus, GREEN, GREY, Tx, icon};
+use eframe::egui::{self, Align, Id, Key, Layout, Modal, RichText, ScrollArea, TextEdit, TextureHandle, Ui, vec2};
 use rider_client::PairPrompt;
 use rider_client::config::{ClientConfig, KnownHost};
 use rider_core::identity::{Identity, fp_from_hex};
@@ -13,6 +14,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+use windows::core::w;
 
 /// How often the server is asked which computers are online.
 const POLL_EVERY: Duration = Duration::from_secs(15);
@@ -59,8 +61,9 @@ struct ConnectDialog {
 
 struct Session {
     id: u64,
-    name: String,
-    status: String,
+    /// Fingerprint of the computer.
+    host: String,
+    connected: Option<String>,
     stderr: String,
     finished: Option<bool>,
 }
@@ -68,6 +71,8 @@ struct Session {
 pub struct ClientApp {
     rt: tokio::runtime::Runtime,
     bus: Bus<Msg>,
+    tray: Option<Tray>,
+    logo: Option<TextureHandle>,
     identity: Option<Arc<Identity>>,
     cfg: ClientConfig,
     fatal: Option<String>,
@@ -87,10 +92,13 @@ pub struct ClientApp {
     server_addr: String,
     server_fp: String,
     settings_msg: Option<Result<String, String>>,
+    autostart: bool,
+    /// Frames left before hiding a window started with `--tray`.
+    hide_in: u8,
 }
 
 impl ClientApp {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(ctx: &egui::Context, tray: Option<Tray>, hidden: bool) -> Self {
         let rt =
             tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime");
         let loaded = ClientConfig::load().and_then(|cfg| {
@@ -103,9 +111,12 @@ impl ClientApp {
         };
         let (server_addr, server_fp) =
             cfg.server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default();
+        let logo = egui::ColorImage::from_rgba_unmultiplied([64, 64], &crate::icon::rgba(64));
         Self {
             rt,
             bus: Bus::new(ctx),
+            tray,
+            logo: Some(ctx.load_texture("logo", logo, egui::TextureOptions::LINEAR)),
             identity,
             cfg,
             fatal,
@@ -125,6 +136,8 @@ impl ClientApp {
             server_addr,
             server_fp,
             settings_msg: None,
+            autostart: sys::autostart(),
+            hide_in: if hidden { 2 } else { 0 },
         }
     }
 
@@ -180,8 +193,8 @@ impl ClientApp {
                 Msg::Session { id, update } => {
                     let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { continue };
                     match update {
-                        SessionUpdate::Connected(line) => {
-                            s.status = line;
+                        SessionUpdate::Connected(route) => {
+                            s.connected = Some(route);
                             self.reload(); // the viewer just saved the last-connected time
                         }
                         SessionUpdate::Stderr(line) => {
@@ -257,11 +270,11 @@ impl ClientApp {
 
     fn start_session(&mut self, d: ConnectDialog) {
         // A new attempt replaces the error of the previous one.
-        self.sessions.retain(|s| s.finished.is_none() || s.name != d.name);
+        self.sessions.retain(|s| s.finished.is_none() || s.host != d.fingerprint);
         self.next_session += 1;
         let id = self.next_session;
         let mut session =
-            Session { id, name: d.name.clone(), status: "Connecting…".into(), stderr: String::new(), finished: None };
+            Session { id, host: d.fingerprint.clone(), connected: None, stderr: String::new(), finished: None };
         let spawned = sys::tool("rider-client.exe")
             .args(["connect", &d.fingerprint, "--pin-stdin"])
             .stdin(Stdio::piped())
@@ -271,7 +284,7 @@ impl ClientApp {
         let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
-                session.stderr = format!("cannot start rider-client.exe: {e}");
+                session.stderr = format!("Error: cannot start rider-client.exe: {e}");
                 session.finished = Some(false);
                 self.sessions.push(session);
                 return;
@@ -285,8 +298,10 @@ impl ClientApp {
         if let Some(out) = child.stdout.take() {
             let tx = tx.clone();
             sys::lines(out, move |line| {
-                if let Some(rest) = line.strip_prefix("Connected to ") {
-                    tx.send(Msg::Session { id, update: SessionUpdate::Connected(format!("Connected {rest}")) });
+                // `Connected to "name" (direct 1.2.3.4:47800).`
+                if line.starts_with("Connected to ") {
+                    let route = line.rsplit_once(" (").map_or("", |(_, r)| r.trim_end_matches(").")).to_owned();
+                    tx.send(Msg::Session { id, update: SessionUpdate::Connected(route) });
                 }
             });
         }
@@ -301,99 +316,126 @@ impl ClientApp {
         self.sessions.push(session);
     }
 
+    fn open_add(&mut self) {
+        self.add =
+            Some(AddDialog { target: String::new(), name: String::new(), stage: AddStage::Input { error: None } });
+    }
+
     // ---------------------------------------------------------------- views
 
-    fn computers(&mut self, ui: &mut Ui) {
+    fn sidebar(&mut self, ui: &mut Ui) {
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
-            widgets::heading(ui, "Computers you can control");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("+  Add computer").clicked() {
-                    self.add = Some(AddDialog {
-                        target: String::new(),
-                        name: String::new(),
-                        stage: AddStage::Input { error: None },
-                    });
-                }
+            ui.add_space(6.0);
+            if let Some(logo) = &self.logo {
+                ui.add(egui::Image::new((logo.id(), vec2(28.0, 28.0))));
+            }
+            ui.label(widgets::title("Remote Desktop Rider", 15.0));
+        });
+        ui.add_space(18.0);
+        for (tab, ic, text) in [
+            (Tab::Computers, icon::PC, "Computers"),
+            (Tab::ThisComputer, icon::HOME, "This computer"),
+            (Tab::Settings, icon::SETTINGS, "Settings"),
+        ] {
+            if widgets::nav_item(ui, ic, text, self.tab == tab) {
+                self.tab = tab;
+            }
+        }
+        ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+            ui.add_space(12.0);
+            widgets::hint(ui, &format!("   Version {}", env!("CARGO_PKG_VERSION")));
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                let (color, text) = match (&self.cfg.server, &self.server_error) {
+                    (None, _) => (None, "No server: this network only"),
+                    (Some(_), Some(_)) => (Some(AMBER), "Server unreachable"),
+                    (Some(_), None) if self.polled.is_none() && !self.cfg.hosts.is_empty() => (Some(GREY), "Server…"),
+                    (Some(_), None) => (Some(GREEN), "Server connected"),
+                };
+                widgets::dot(ui, color);
+                widgets::hint(ui, text);
             });
         });
-        if let Some(e) = &self.server_error {
-            widgets::error(ui, &format!("Server unreachable, online status unknown: {e}"));
-        } else if self.cfg.server.is_none() {
-            widgets::hint(ui, "No server set (Settings): computers are reachable on this network only.");
-        }
-        ui.separator();
+    }
 
-        if self.cfg.hosts.is_empty() {
-            ui.add_space(30.0);
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No computers yet").size(18.0));
-                widgets::hint(
-                    ui,
-                    "On the computer you want to control, open Remote Desktop Rider, go to This computer \
-                     and click Add a device. Then click \"Add computer\" here and enter the code it shows.",
-                );
+    fn computers(&mut self, ui: &mut Ui) {
+        let has_hosts = !self.cfg.hosts.is_empty();
+        let mut add = false;
+        widgets::page_header(ui, "Computers", "Computers this device can control.", |ui| {
+            if has_hosts {
+                add = widgets::primary(ui, true, &format!("{}   Add computer", icon::ADD)).clicked();
+            }
+        });
+        if let Some(e) = &self.server_error {
+            widgets::card(ui, |ui| {
+                widgets::error(ui, &format!("The server can't be reached, so online status is unknown. {e}"));
             });
+            ui.add_space(8.0);
+        }
+
+        if !has_hosts {
+            widgets::card(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(18.0);
+                    ui.label(RichText::new(icon::PC).size(44.0).color(ACCENT));
+                    ui.label(widgets::title("No computers yet", 18.0));
+                    widgets::hint(
+                        ui,
+                        "On the computer you want to control, open Remote Desktop Rider, go to\n\
+                         This computer > Manage this computer, and click Add a device.",
+                    );
+                    ui.add_space(4.0);
+                    add = widgets::primary(ui, true, &format!("{}   Add computer", icon::ADD)).clicked();
+                    ui.add_space(18.0);
+                });
+            });
+        }
+        if add {
+            self.open_add();
         }
 
         let mut hosts = self.cfg.hosts.clone();
         hosts.sort_by_key(|h| h.name.to_lowercase());
-        egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(ui.available_height() - 120.0).show(
-            ui,
-            |ui| {
-                for h in &hosts {
-                    self.host_row(ui, h);
-                }
-            },
-        );
-
-        if !self.sessions.is_empty() {
-            ui.separator();
-            let mut dismiss = None;
-            for s in &self.sessions {
-                ui.horizontal(|ui| match s.finished {
-                    None => {
-                        ui.spinner();
-                        ui.label(format!("{}: {}", s.name, s.status));
-                    }
-                    Some(_) => {
-                        widgets::error(ui, &format!("{}: {}", s.name, sys::error_text(&s.stderr)));
-                        if ui.small_button("Dismiss").clicked() {
-                            dismiss = Some(s.id);
-                        }
-                    }
-                });
+        ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            for h in &hosts {
+                self.host_card(ui, h);
+                ui.add_space(8.0);
             }
-            if let Some(id) = dismiss {
-                self.sessions.retain(|s| s.id != id);
-            }
-        }
+        });
     }
 
-    fn host_row(&mut self, ui: &mut Ui, h: &KnownHost) {
+    fn host_card(&mut self, ui: &mut Ui, h: &KnownHost) {
         let online = self.online.get(&h.fingerprint).copied();
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
+        let session = self
+            .sessions
+            .iter()
+            .find(|s| s.host == h.fingerprint)
+            .map(|s| (s.id, s.finished, s.connected.clone(), sys::error_text(&s.stderr)));
+        let in_session = session.as_ref().is_some_and(|s| s.1.is_none());
+        let mut dismiss = None;
+        widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
-                widgets::dot(ui, online.map(|o| if o { GREEN } else { GREY }));
+                widgets::avatar(ui, icon::PC, online.map(|o| if o { GREEN } else { GREY }));
+                ui.add_space(4.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&h.name).strong().size(15.0));
-                    let state = match online {
-                        Some(true) => "online",
-                        Some(false) => "offline",
-                        None if h.addr.is_empty() => "via server",
-                        None => h.addr.as_str(),
-                    };
-                    let last = h
-                        .last_connected
-                        .map_or("never connected".into(), |t| format!("last connected {}", widgets::ago(t)));
-                    widgets::hint(ui, &format!("{state} · {last}"));
+                    ui.label(widgets::title(&h.name, 16.0));
+                    ui.horizontal(|ui| {
+                        match online {
+                            Some(true) => widgets::pill(ui, "Online", GREEN),
+                            Some(false) => widgets::pill(ui, "Offline", GREY),
+                            None if h.addr.is_empty() => {}
+                            None => widgets::hint(ui, &h.addr),
+                        }
+                        let last = h
+                            .last_connected
+                            .map_or("Never connected".into(), |t| format!("Last connected {}", widgets::ago(t)));
+                        widgets::hint(ui, &last);
+                    });
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if self.remove.as_deref() == Some(h.fingerprint.as_str()) {
-                        if ui.button("Cancel").clicked() {
-                            self.remove = None;
-                        }
-                        if ui.button(RichText::new("Remove").color(ui.visuals().error_fg_color)).clicked() {
+                        if widgets::danger(ui, "Remove").clicked() {
                             if let Err(e) = self.edit(|cfg| {
                                 cfg.forget(&h.fingerprint);
                             }) {
@@ -401,13 +443,16 @@ impl ClientApp {
                             }
                             self.remove = None;
                         }
-                        ui.label("Remove this computer?");
+                        if ui.button("Cancel").clicked() {
+                            self.remove = None;
+                        }
+                        ui.label("Remove from this list?");
                     } else {
-                        if ui.button("Remove…").clicked() {
+                        if widgets::icon_button(ui, icon::DELETE, "Remove from this list").clicked() {
                             self.remove = Some(h.fingerprint.clone());
                         }
-                        let busy = self.sessions.iter().any(|s| s.name == h.name && s.finished.is_none());
-                        if ui.add_enabled(!busy, egui::Button::new(RichText::new("Connect").strong())).clicked() {
+                        let label = if in_session { "In session" } else { "Connect" };
+                        if widgets::primary(ui, !in_session, label).clicked() {
                             self.connect = Some(ConnectDialog {
                                 fingerprint: h.fingerprint.clone(),
                                 name: h.name.clone(),
@@ -417,7 +462,32 @@ impl ClientApp {
                     }
                 });
             });
+            if let Some((id, finished, connected, error)) = &session {
+                ui.add_space(2.0);
+                ui.separator();
+                ui.horizontal(|ui| match (finished, connected) {
+                    (None, None) => {
+                        ui.spinner();
+                        ui.label("Connecting…");
+                    }
+                    (None, Some(route)) => {
+                        widgets::dot(ui, Some(GREEN));
+                        ui.label(format!("Connected ({route}). The session is open in its own window."));
+                    }
+                    (Some(_), _) => {
+                        widgets::error(ui, error);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                dismiss = Some(*id);
+                            }
+                        });
+                    }
+                });
+            }
         });
+        if let Some(id) = dismiss {
+            self.sessions.retain(|s| s.id != id);
+        }
     }
 
     fn this_computer(&mut self, ui: &mut Ui) {
@@ -425,86 +495,130 @@ impl ClientApp {
             self.remote = sys::remote_access();
             self.remote_checked = Instant::now();
         }
-        widgets::heading(ui, "Remote access to this computer");
-        ui.horizontal(|ui| {
-            let (color, text) = match self.remote {
-                RemoteAccess::On => {
-                    (Some(GREEN), "On: paired devices can control this computer, even at the login screen.")
+        widgets::page_header(ui, "This computer", &format!("\"{}\"", self.cfg.device_name), |_| {});
+        widgets::card(ui, |ui| {
+            widgets::section(ui, icon::SHIELD, "Remote access");
+            ui.horizontal(|ui| {
+                let (color, state, text) = match self.remote {
+                    RemoteAccess::On => {
+                        (GREEN, "On", "Devices you added can control this computer, even at the sign-in screen.")
+                    }
+                    RemoteAccess::Stopped => (AMBER, "Stopped", "Remote access is set up but not running."),
+                    RemoteAccess::Off => (GREY, "Off", "Nobody can connect to this computer."),
+                };
+                widgets::pill(ui, state, color);
+                ui.label(text);
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if widgets::primary(ui, true, &format!("{}   Manage this computer…", icon::SHIELD)).clicked() {
+                    self.manage_error = sys::relaunch_elevated("--manage").err().map(|e| format!("{e:#}"));
                 }
-                RemoteAccess::Stopped => (Some(GREY), "Installed but stopped."),
-                RemoteAccess::Off => (None, "Off: nobody can connect to this computer."),
-            };
-            widgets::dot(ui, color);
-            ui.label(text);
+                widgets::hint(ui, "Windows asks for permission once.");
+            });
+            if let Some(e) = &self.manage_error {
+                widgets::error(ui, e);
+            }
         });
-        ui.add_space(8.0);
-        widgets::hint(
-            ui,
-            "Allowing remote access, setting the PIN and adding devices need administrator rights. \
-             Windows asks once when you open the settings.",
-        );
-        if ui.button("Manage this computer…").clicked() {
-            self.manage_error = sys::relaunch_elevated("--manage").err().map(|e| format!("{e:#}"));
-        }
-        if let Some(e) = &self.manage_error {
-            widgets::error(ui, e);
-        }
+        ui.add_space(10.0);
+        widgets::card(ui, |ui| {
+            widgets::section(ui, icon::INFO, "Let another device control this computer");
+            for (n, step) in [
+                "Click Manage this computer above.",
+                "Set a PIN and turn on remote access.",
+                "Click Add a device, then on the other device click Add computer and enter the code shown.",
+            ]
+            .iter()
+            .enumerate()
+            {
+                ui.horizontal_top(|ui| {
+                    ui.label(RichText::new(format!("{}.", n + 1)).color(ACCENT).strong());
+                    ui.add(egui::Label::new(*step).wrap());
+                });
+            }
+        });
     }
 
     fn settings(&mut self, ui: &mut Ui) {
-        widgets::heading(ui, "This device");
-        egui::Grid::new("device").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-            ui.label("Name");
-            ui.label(&self.cfg.device_name);
-            ui.end_row();
-            ui.label("Fingerprint");
-            let fp =
-                self.identity.as_ref().map(|i| rider_core::identity::fp_short(&i.fingerprint())).unwrap_or_default();
-            ui.monospace(fp);
-            ui.end_row();
-        });
-
-        widgets::heading(ui, "Server");
-        widgets::hint(
-            ui,
-            "Your rider-server lets you reach computers on other networks (e.g. home and work). \
-             `rider-server info` prints both values.",
-        );
-        egui::Grid::new("server").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-            ui.label("Address");
-            ui.add(TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(320.0));
-            ui.end_row();
-            ui.label("Fingerprint");
-            ui.add(
-                TextEdit::singleline(&mut self.server_fp)
-                    .hint_text("64 hex characters")
-                    .desired_width(320.0)
-                    .font(egui::TextStyle::Monospace),
-            );
-            ui.end_row();
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Save").clicked() {
-                self.settings_msg = Some(match ServerRef::new(self.server_addr.trim(), self.server_fp.trim()) {
-                    Ok(s) => self.edit(|cfg| cfg.server = Some(s)).map(|()| "Saved.".into()),
-                    Err(e) => Err(format!("{e:#}")),
+        widgets::page_header(ui, "Settings", "", |_| {});
+        ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            widgets::card(ui, |ui| {
+                widgets::section(ui, icon::PC, "This device");
+                egui::Grid::new("device").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                    widgets::hint(ui, "Name");
+                    ui.label(&self.cfg.device_name);
+                    ui.end_row();
+                    widgets::hint(ui, "Fingerprint");
+                    let fp = self
+                        .identity
+                        .as_ref()
+                        .map(|i| rider_core::identity::fp_short(&i.fingerprint()))
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| widgets::copyable(ui, &fp, RichText::new(&fp).monospace()));
+                    ui.end_row();
                 });
-            }
-            if self.cfg.server.is_some() && ui.button("Don't use a server").clicked() {
-                self.server_addr.clear();
-                self.server_fp.clear();
-                self.settings_msg = Some(self.edit(|cfg| cfg.server = None).map(|()| "Server removed.".into()));
-            }
+            });
+            ui.add_space(10.0);
+            self.server_card(ui);
+            ui.add_space(10.0);
+            widgets::card(ui, |ui| {
+                widgets::section(ui, icon::PLAY, "Startup");
+                if ui.checkbox(&mut self.autostart, "Start Remote Desktop Rider when I sign in").changed()
+                    && let Err(e) = sys::set_autostart(self.autostart)
+                {
+                    self.autostart = sys::autostart();
+                    self.settings_msg = Some(Err(format!("{e:#}")));
+                }
+                widgets::hint(
+                    ui,
+                    "Closing the window keeps the app in the notification area. Use Quit in its menu to exit.",
+                );
+            });
         });
-        match &self.settings_msg {
-            Some(Ok(m)) => {
-                ui.label(m);
-            }
-            Some(Err(e)) => widgets::error(ui, e),
-            None => {}
-        }
-        ui.add_space(12.0);
-        widgets::hint(ui, &format!("Remote Desktop Rider {}", env!("CARGO_PKG_VERSION")));
+    }
+
+    fn server_card(&mut self, ui: &mut Ui) {
+        widgets::card(ui, |ui| {
+            widgets::section(ui, icon::GLOBE, "Server");
+            widgets::hint(
+                ui,
+                "Your rider-server lets you reach computers on other networks. `rider-server info` prints both values.",
+            );
+            egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+                widgets::hint(ui, "Address");
+                ui.add(TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0));
+                ui.end_row();
+                widgets::hint(ui, "Fingerprint");
+                ui.add(
+                    TextEdit::singleline(&mut self.server_fp)
+                        .hint_text("64 hex characters")
+                        .desired_width(360.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                let changed = self.cfg.server.as_ref().map_or(!self.server_addr.trim().is_empty(), |s| {
+                    s.addr != self.server_addr.trim() || s.fingerprint != self.server_fp.trim()
+                });
+                if widgets::primary(ui, changed, "Save").clicked() {
+                    self.settings_msg = Some(match ServerRef::new(self.server_addr.trim(), self.server_fp.trim()) {
+                        Ok(s) => self.edit(|cfg| cfg.server = Some(s)).map(|()| "Saved.".into()),
+                        Err(e) => Err(format!("{e:#}")),
+                    });
+                }
+                if self.cfg.server.is_some() && ui.button("Don't use a server").clicked() {
+                    self.server_addr.clear();
+                    self.server_fp.clear();
+                    self.settings_msg = Some(self.edit(|cfg| cfg.server = None).map(|()| "Server removed.".into()));
+                }
+                match &self.settings_msg {
+                    Some(Ok(m)) => widgets::success(ui, m),
+                    Some(Err(e)) => widgets::error(ui, e),
+                    None => {}
+                }
+            });
+        });
     }
 
     // -------------------------------------------------------------- dialogs
@@ -515,28 +629,30 @@ impl ClientApp {
         let mut close = false;
         let mut reply = None;
         Modal::new(Id::unique("add-computer")).show(ctx, |ui| {
-            ui.set_width(420.0);
-            widgets::heading(ui, "Add a computer");
+            ui.set_width(440.0);
+            ui.label(widgets::title("Add a computer", 19.0));
+            ui.add_space(4.0);
             match &d.stage {
                 AddStage::Input { error } => {
-                    ui.label("Pairing code or address shown on the other computer:");
+                    ui.label("Code or address shown on the other computer");
                     let r = ui.add(
                         TextEdit::singleline(&mut d.target)
                             .hint_text("e.g. SF6-CK6 or 192.168.1.20")
+                            .font(egui::FontId::monospace(18.0))
                             .desired_width(f32::INFINITY),
                     );
                     if d.target.is_empty() {
                         r.request_focus();
                     }
-                    ui.label("Name (optional):");
+                    ui.label("Name in your list (optional)");
                     ui.add(TextEdit::singleline(&mut d.name).hint_text("e.g. Office PC").desired_width(f32::INFINITY));
                     if let Some(e) = error {
                         widgets::error(ui, e);
                     }
-                    ui.horizontal(|ui| {
-                        start = ui.button(RichText::new("Continue").strong()).clicked()
-                            || ui.input(|i| i.key_pressed(Key::Enter));
-                        close = ui.button("Cancel").clicked();
+                    widgets::dialog_buttons(ui, |ui| {
+                        start = widgets::primary(ui, !d.target.trim().is_empty(), "Continue").clicked()
+                            || (!d.target.trim().is_empty() && ui.input(|i| i.key_pressed(Key::Enter)));
+                        close = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
                     });
                 }
                 AddStage::Connecting => {
@@ -544,13 +660,17 @@ impl ClientApp {
                         ui.spinner();
                         ui.label("Connecting…");
                     });
+                    widgets::dialog_buttons(ui, |ui| close = ui.button("Cancel").clicked());
                 }
                 AddStage::Confirm { prompt, .. } => {
-                    ui.label(format!("\"{}\" ({}) shows a verification code.", prompt.host_name, prompt.remote.ip()));
-                    ui.vertical_centered(|ui| ui.label(RichText::new(&prompt.code).monospace().size(32.0).strong()));
-                    ui.label("Does it show exactly this code? If not, someone may be intercepting the connection.");
-                    ui.horizontal(|ui| {
-                        if ui.button(RichText::new("Yes, it matches").strong()).clicked() {
+                    ui.label(format!("\"{}\" ({}) shows a verification code:", prompt.host_name, prompt.remote.ip()));
+                    widgets::big_code(ui, &prompt.code);
+                    widgets::hint(
+                        ui,
+                        "Only continue if it shows exactly this code. Otherwise someone may be listening in.",
+                    );
+                    widgets::dialog_buttons(ui, |ui| {
+                        if widgets::primary(ui, true, "Yes, it matches").clicked() {
                             reply = Some(true);
                         }
                         if ui.button("No").clicked() {
@@ -563,10 +683,14 @@ impl ClientApp {
                         ui.spinner();
                         ui.label(format!("Waiting for someone at \"{host}\" to confirm…"));
                     });
+                    widgets::dialog_buttons(ui, |ui| close = ui.button("Cancel").clicked());
                 }
                 AddStage::Done { name } => {
-                    ui.label(format!("\"{name}\" was added. Connect to it any time from the list."));
-                    close = ui.button("Done").clicked() || ui.input(|i| i.key_pressed(Key::Enter));
+                    widgets::success(ui, &format!("\"{name}\" was added."));
+                    widgets::hint(ui, "Connect to it any time from your list, with its PIN.");
+                    widgets::dialog_buttons(ui, |ui| {
+                        close = widgets::primary(ui, true, "Done").clicked() || ui.input(|i| i.key_pressed(Key::Enter));
+                    });
                 }
             }
         });
@@ -578,6 +702,7 @@ impl ClientApp {
             d.stage = if yes { AddStage::Waiting { host: prompt.host_name } } else { AddStage::Connecting };
         }
         if close {
+            // A pairing still running sees its question dropped and gives up.
             self.add = None;
         } else if start {
             self.start_pairing();
@@ -589,13 +714,17 @@ impl ClientApp {
         let mut go = false;
         let mut close = false;
         Modal::new(Id::unique("connect")).show(ctx, |ui| {
-            ui.set_width(340.0);
-            widgets::heading(ui, &format!("Connect to \"{}\"", d.name));
-            ui.label("PIN of that computer:");
+            ui.set_width(360.0);
+            ui.label(widgets::title(format!("Connect to \"{}\"", d.name), 19.0));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon::KEY).color(ACCENT));
+                ui.label("PIN of that computer");
+            });
             let r = ui.add(TextEdit::singleline(&mut d.pin).password(true).desired_width(f32::INFINITY));
             r.request_focus();
-            ui.horizontal(|ui| {
-                go = ui.add_enabled(!d.pin.is_empty(), egui::Button::new(RichText::new("Connect").strong())).clicked()
+            widgets::dialog_buttons(ui, |ui| {
+                go = widgets::primary(ui, !d.pin.is_empty(), "Connect").clicked()
                     || (!d.pin.is_empty() && ui.input(|i| i.key_pressed(Key::Enter)));
                 close = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
             });
@@ -608,38 +737,67 @@ impl ClientApp {
             self.connect = None;
         }
     }
+
+    /// Closing the window keeps the app in the tray (told once).
+    fn close_to_tray(&mut self, ctx: &egui::Context) {
+        let Some(tray) = &self.tray else { return };
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        tray::hide_main();
+        let hint = w!("TrayHintShown");
+        if !sys::flag(hint) {
+            sys::set_flag(hint);
+            tray.notify(
+                "Remote Desktop Rider is still running",
+                "It stays here in the notification area. Right-click the icon and choose Quit to exit.",
+            );
+        }
+    }
 }
 
 impl eframe::App for ClientApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.hide_in > 0 {
+            self.hide_in -= 1;
+            if self.hide_in == 0 {
+                tray::hide_main_centered();
+            } else {
+                ctx.request_repaint();
+            }
+        }
+        self.close_to_tray(&ctx);
         self.handle_messages();
         self.poll_online();
-        // Keep timers (online polling, service state) ticking while idle.
+        // Keep timers (online polling, service state) ticking while shown.
         ctx.request_repaint_after(Duration::from_secs(2));
 
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Remote Desktop Rider").strong().size(17.0));
-                ui.add_space(16.0);
-                ui.selectable_value(&mut self.tab, Tab::Computers, "Computers");
-                ui.selectable_value(&mut self.tab, Tab::ThisComputer, "This computer");
-                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+        let side = if ctx.global_style().visuals.dark_mode {
+            egui::Color32::from_rgb(30, 31, 36)
+        } else {
+            egui::Color32::from_rgb(232, 234, 239)
+        };
+        egui::Panel::left("nav")
+            .exact_size(220.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(side).inner_margin(egui::Margin::symmetric(10, 0)))
+            .show(ui, |ui| self.sidebar(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(egui::Margin::symmetric(28, 22)))
+            .show(ui, |ui| {
+                if let Some(e) = &self.fatal {
+                    widgets::error(ui, e);
+                    return;
+                }
+                match self.tab {
+                    Tab::Computers => self.computers(ui),
+                    Tab::ThisComputer => self.this_computer(ui),
+                    Tab::Settings => self.settings(ui),
+                }
             });
-            ui.add_space(2.0);
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            if let Some(e) = &self.fatal {
-                widgets::error(ui, e);
-                return;
-            }
-            match self.tab {
-                Tab::Computers => self.computers(ui),
-                Tab::ThisComputer => self.this_computer(ui),
-                Tab::Settings => self.settings(ui),
-            }
-        });
         self.add_dialog(&ctx);
         self.connect_dialog(&ctx);
     }

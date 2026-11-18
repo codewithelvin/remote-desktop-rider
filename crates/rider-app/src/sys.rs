@@ -5,6 +5,11 @@ use anyhow::{Result, bail};
 use std::io::{BufRead, BufReader, Read};
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, REG_DWORD, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW,
+    RegGetValueW, RegSetKeyValueW,
+};
 use windows::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{HSTRING, PCWSTR, w};
@@ -122,6 +127,62 @@ pub fn remote_access() -> RemoteAccess {
     match svc.query_status() {
         Ok(s) if s.current_state == ServiceState::Running => RemoteAccess::On,
         _ => RemoteAccess::Stopped,
+    }
+}
+
+const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+const APP_KEY: PCWSTR = w!(r"Software\RemoteDesktopRider");
+const VALUE: PCWSTR = w!("RemoteDesktopRider");
+
+/// Whether the app starts (into the tray) when the user signs in.
+pub fn autostart() -> bool {
+    // SAFETY: existence check only; no output buffers.
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, VALUE, RRF_RT_REG_SZ, None, None, None) }.is_ok()
+}
+
+pub fn set_autostart(on: bool) -> Result<()> {
+    if on {
+        let cmd = format!("\"{}\" --tray", std::env::current_exe()?.display());
+        set_value(RUN_KEY, VALUE, REG_SZ, &wide_bytes(&cmd))
+    } else {
+        // SAFETY: valid key and value names.
+        match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, VALUE) } {
+            ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
+            e => bail!("cannot change the startup setting: {e:?}"),
+        }
+    }
+}
+
+/// A per-user yes/no remembered by the app (e.g. a hint already shown).
+pub fn flag(name: PCWSTR) -> bool {
+    // SAFETY: existence check only.
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, APP_KEY, name, RRF_RT_REG_DWORD, None, None, None) }.is_ok()
+}
+
+pub fn set_flag(name: PCWSTR) {
+    let _ = set_value(APP_KEY, name, REG_DWORD, &1u32.to_le_bytes());
+}
+
+fn set_value(key: PCWSTR, name: PCWSTR, kind: REG_VALUE_TYPE, data: &[u8]) -> Result<()> {
+    // SAFETY: `data` is valid for its length during the call.
+    unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key, name, kind.0, Some(data.as_ptr().cast()), data.len() as u32) }
+        .ok()?;
+    Ok(())
+}
+
+fn wide_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect()
+}
+
+/// True for the first instance of the main window in this user session. The
+/// mutex is deliberately kept until the process exits.
+pub fn first_instance() -> bool {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    // SAFETY: named mutex creation; the handle is intentionally leaked.
+    unsafe {
+        let created = CreateMutexW(None, false, w!(r"Local\RemoteDesktopRider.App"));
+        created.is_ok() && GetLastError() != ERROR_ALREADY_EXISTS
     }
 }
 
