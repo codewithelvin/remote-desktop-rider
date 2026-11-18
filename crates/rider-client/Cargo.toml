@@ -1,0 +1,24 @@
+[package]
+name = "rider-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rider-core.workspace = true
+rider-media.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+quinn.workspace = true
+serde.workspace = true
+toml.workspace = true
+rpassword.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+bytes.workspace = true
+winit.workspace = true
+softbuffer.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

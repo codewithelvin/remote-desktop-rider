@@ -1,0 +1,13 @@
+[package]
+name = "rider-media"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rider-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

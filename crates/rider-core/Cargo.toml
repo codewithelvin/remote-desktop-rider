@@ -1,0 +1,21 @@
+[package]
+name = "rider-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+postcard.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+arboard.workspace = true
+rayon.workspace = true
+
+[lints]
+workspace = true
