@@ -55,12 +55,45 @@ pub fn fp_hex(fp: &Fingerprint) -> String {
     hex::encode(fp)
 }
 
+/// Parse a full fingerprint. Spaces, line breaks, `:` and `-` are ignored, so
+/// a value copied from a wrapped terminal line or written in groups works.
 pub fn fp_from_hex(s: &str) -> Result<Fingerprint> {
-    let v = hex::decode(s.trim()).context("fingerprint is not hex")?;
+    let digits: String = s.chars().filter(|c| !c.is_whitespace() && *c != ':' && *c != '-').collect();
+    if let Some(c) = digits.chars().find(|c| !c.is_ascii_hexdigit()) {
+        anyhow::bail!("a fingerprint has only 0-9 and a-f, not '{c}'");
+    }
+    if digits.len() != 64 {
+        anyhow::bail!("a fingerprint has 64 characters, this has {}: copy the whole line", digits.len());
+    }
+    let v = hex::decode(&digits).context("fingerprint is not hex")?;
     v.try_into().map_err(|_| anyhow::anyhow!("fingerprint must be 32 bytes"))
 }
 
 /// Short human-readable form, e.g. `3FA2-91C0-77DE-0B14`.
 pub fn fp_short(fp: &Fingerprint) -> String {
     fp[..8].chunks(2).map(|c| format!("{:02X}{:02X}", c[0], c[1])).collect::<Vec<_>>().join("-")
+}
+
+#[cfg(test)]
+mod fp_tests {
+    #[test]
+    fn fingerprint_parsing_is_forgiving() {
+        let fp = "ca3dbb3efab7faacb4f4bb18f7db38c3d8eb0744eee4d7b992d41ed6083f1961";
+        let want = super::fp_from_hex(fp).unwrap();
+        assert_eq!(super::fp_hex(&want), fp);
+        assert_eq!(
+            super::fp_from_hex(&format!(
+                " {}
+{} ",
+                &fp[..40],
+                &fp[40..]
+            ))
+            .unwrap(),
+            want
+        );
+        assert_eq!(super::fp_from_hex(&fp.to_uppercase()).unwrap(), want);
+        let e = super::fp_from_hex(&fp[..50]).unwrap_err().to_string();
+        assert!(e.contains("64") && e.contains("50"), "{e}");
+        assert!(super::fp_from_hex("zz").unwrap_err().to_string().contains("'z'"));
+    }
 }

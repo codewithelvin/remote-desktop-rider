@@ -47,9 +47,8 @@ pub struct ServerRef {
 
 impl ServerRef {
     pub fn new(addr: &str, fingerprint: &str) -> Result<Self> {
-        let fingerprint = fingerprint.trim().to_lowercase().replace(['-', ':', ' '], "");
-        fp_from_hex(&fingerprint).context("invalid server fingerprint (expected 64 hex digits)")?;
-        Ok(Self { addr: addr.trim().to_owned(), fingerprint })
+        let fp = fp_from_hex(fingerprint).context("invalid server fingerprint")?;
+        Ok(Self { addr: addr.trim().to_owned(), fingerprint: crate::identity::fp_hex(&fp) })
     }
 
     pub fn fingerprint(&self) -> Result<Fingerprint> {
