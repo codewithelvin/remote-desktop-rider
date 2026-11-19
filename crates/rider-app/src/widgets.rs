@@ -116,6 +116,8 @@ pub fn setup(ctx: &egui::Context) {
         s.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.0));
         s.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.0));
         s.text_styles.insert(egui::TextStyle::Monospace, FontId::monospace(13.5));
+        // Hover, open and fade transitions: noticeable but quick.
+        s.animation_time = 0.16;
 
         let v = &mut s.visuals;
         let dark = v.dark_mode;
@@ -142,6 +144,14 @@ pub fn setup(ctx: &egui::Context) {
             v.faint_bg_color = Color32::from_rgb(31, 32, 37);
             v.widgets.inactive.weak_bg_fill = Color32::from_rgb(48, 50, 57);
             v.widgets.hovered.weak_bg_fill = Color32::from_rgb(60, 62, 70);
+            // Readable on the dark cards: body text near white, secondary
+            // text about 7:1 against the card background (egui's default
+            // "weak" grey is closer to 3:1).
+            v.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(226, 228, 233);
+            v.widgets.inactive.fg_stroke.color = Color32::from_rgb(232, 234, 238);
+            v.weak_text_color = Some(Color32::from_rgb(168, 172, 182));
+            v.error_fg_color = Color32::from_rgb(255, 128, 116);
+            v.warn_fg_color = Color32::from_rgb(242, 184, 84);
         } else {
             v.panel_fill = Color32::from_rgb(242, 243, 246);
             v.window_fill = Color32::WHITE;
@@ -149,6 +159,8 @@ pub fn setup(ctx: &egui::Context) {
             v.faint_bg_color = Color32::from_rgb(248, 249, 251);
             v.widgets.inactive.weak_bg_fill = Color32::from_rgb(228, 230, 235);
             v.widgets.hovered.weak_bg_fill = Color32::from_rgb(216, 219, 226);
+            v.weak_text_color = Some(Color32::from_rgb(88, 92, 104));
+            v.error_fg_color = Color32::from_rgb(196, 43, 28);
         }
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border(dark));
     });
@@ -268,17 +280,25 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32) {
 pub fn nav_item(ui: &mut Ui, icon: &str, text: &str, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, selected, text));
+    let ctx = ui.ctx().clone();
+    let hover = ctx.animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.12);
+    let sel = ctx.animate_bool_with_time(resp.id.with("selected"), selected, 0.18);
     let p = ui.painter();
-    if selected || resp.hovered() {
-        let fill = if selected {
-            ACCENT.linear_multiply(if ui.visuals().dark_mode { 0.25 } else { 0.13 })
+    if hover > 0.0 || sel > 0.0 {
+        let tint = ACCENT.linear_multiply(if ui.visuals().dark_mode { 0.25 } else { 0.13 });
+        let hovered = ui.visuals().widgets.hovered.weak_bg_fill;
+        // Hover tint fades in; the selection tint takes over as it grows.
+        let fill = if sel > 0.0 {
+            lerp_color(hovered.linear_multiply(hover), tint, sel)
         } else {
-            ui.visuals().widgets.hovered.weak_bg_fill
+            hovered.linear_multiply(hover)
         };
         p.rect_filled(rect, CornerRadius::same(8), fill);
     }
-    if selected {
-        let bar = egui::Rect::from_min_size(rect.left_top() + vec2(0.0, 10.0), vec2(3.0, 18.0));
+    if sel > 0.0 {
+        // The accent bar grows from the middle.
+        let h = 18.0 * sel;
+        let bar = egui::Rect::from_min_size(rect.left_center() + vec2(0.0, -h / 2.0), vec2(3.0, h));
         p.rect_filled(bar, CornerRadius::same(2), ACCENT);
     }
     let color = if selected { ACCENT } else { ui.visuals().text_color() };
@@ -291,6 +311,24 @@ pub fn nav_item(ui: &mut Ui, icon: &str, text: &str, selected: bool) -> bool {
         ui.visuals().text_color(),
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgba_premultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
+}
+
+/// Fade and slide content in for a moment after `since` (egui time, seconds):
+/// page switches, banners. Call at the top of the content.
+pub fn appear(ui: &mut Ui, since: f64) {
+    let now = ui.input(|i| i.time);
+    let p = ((now - since) / 0.22).clamp(0.0, 1.0) as f32;
+    if p < 1.0 {
+        let e = 1.0 - (1.0 - p).powi(3); // ease out
+        ui.multiply_opacity(e);
+        ui.add_space((1.0 - e) * 8.0);
+        ui.ctx().request_repaint();
+    }
 }
 
 /// A large, centred code (pairing / verification), with a copy button.

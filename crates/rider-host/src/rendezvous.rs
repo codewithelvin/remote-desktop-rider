@@ -1,5 +1,11 @@
 //! Keeps the host registered with the rendezvous server so paired clients
 //! can reach it from anywhere, and opens NAT paths when one connects.
+//!
+//! The host has two UDP sockets: the fixed port (47800, direct connections on
+//! the LAN and by address) and a random high port. Some networks (company
+//! firewalls) drop UDP from unusual fixed ports while ordinary high ports get
+//! through, so when the server does not answer on one socket the next attempt
+//! uses the other; whichever works is kept.
 
 use crate::session::HostState;
 use anyhow::{Result, bail};
@@ -22,7 +28,8 @@ fn configured(state: &HostState) -> Option<ServerRef> {
 /// Run forever, reconnecting with exponential backoff (1 s .. 30 s). The
 /// server comes from the live config: `set-server` applies without restart.
 /// `interactive`: print the pairing code to the console (not for the agent).
-pub async fn run(state: Arc<HostState>, socket: Arc<PeerSocket>, interactive: bool) {
+pub async fn run(state: Arc<HostState>, sockets: Vec<Arc<PeerSocket>>, interactive: bool) {
+    let mut current = 0;
     let mut backoff = Duration::from_secs(1);
     let mut last_error = String::new();
     loop {
@@ -31,11 +38,23 @@ pub async fn run(state: Arc<HostState>, socket: Arc<PeerSocket>, interactive: bo
             continue;
         };
         let started = std::time::Instant::now();
-        if let Err(e) = session(&state, &socket, &server, interactive).await {
+        let socket = &sockets[current];
+        if let Err(e) = session(&state, socket, &server, interactive).await {
             let msg = format!("{e:#}");
             if msg == SERVER_CHANGED {
                 backoff = Duration::from_secs(1);
                 continue;
+            }
+            // No answer at all: maybe this port is filtered; try the other socket now.
+            if msg.contains("did not answer") && sockets.len() > 1 {
+                let from = socket.port();
+                current = (current + 1) % sockets.len();
+                tracing::info!(
+                    "rendezvous server {}: no answer from UDP {from}, trying UDP {}",
+                    server.addr,
+                    sockets[current].port()
+                );
+                backoff = Duration::from_secs(1);
             }
             // Log each distinct failure once instead of every retry.
             if msg != last_error {

@@ -49,6 +49,13 @@ pub struct Updater {
 
 impl Updater {
     pub fn new(ctx: &egui::Context) -> Self {
+        // A successful update closes this app before it can delete the
+        // installer it downloaded; tidy up on the next start.
+        if let Ok(entries) = std::fs::read_dir(download_dir()) {
+            for e in entries.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         Self {
             ctx: ctx.clone(),
             state: Arc::new(Mutex::new(State::Idle)),
@@ -142,9 +149,13 @@ impl Updater {
     }
 }
 
+fn download_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("RemoteDesktopRider").join("updates")
+}
+
 /// Download and verify the installer into the user's temp folder.
 fn fetch(r: &Release, progress: &mut dyn FnMut(u64)) -> anyhow::Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join("RemoteDesktopRider");
+    let dir = download_dir();
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(&r.file_name);
     let mut last = Instant::now();

@@ -117,7 +117,8 @@ pub async fn pair(
     alias: Option<String>,
     confirm: impl AsyncFnOnce(&PairPrompt) -> bool,
 ) -> Result<KnownHost> {
-    let hint = "Is `rider-host pair` running on the host? Pairing must be enabled there.";
+    let hint = "On the other computer, open This computer → Manage → Add a device (or run `rider-host pair`) \
+                and enter the code it shows, e.g. SF6-CK6.";
     let (conn, addr) = match (rendezvous::normalize_code(target), &cfg.server) {
         (Some(code), Some(server)) => {
             let (conn, path) = via_server(identity, server, Target::Code(code), None, None)
@@ -132,7 +133,16 @@ pub async fn pair(
         }
         (Some(_), None) => bail!("pairing codes need a rendezvous server: run `rider-client set-server` first"),
         (None, _) => {
-            let conn = open(identity, target, None).await.map_err(|e| anyhow::anyhow!("{e:#}\n{hint}"))?;
+            let conn = open(identity, target, None).await.map_err(|e| {
+                // A computer name only resolves on the local network; from
+                // elsewhere the pairing code is the way.
+                let name_only = !target.contains(['.', ':']) && target.chars().any(|c| c.is_ascii_alphabetic());
+                if name_only {
+                    anyhow::anyhow!("\"{target}\" is not reachable by name from here.\n{hint}")
+                } else {
+                    anyhow::anyhow!("{e:#}\n{hint}")
+                }
+            })?;
             (conn, target.to_owned())
         }
     };

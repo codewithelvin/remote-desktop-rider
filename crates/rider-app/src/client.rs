@@ -10,13 +10,16 @@ use eframe::egui::{self, Align, Id, Key, Layout, Modal, RichText, ScrollArea, Te
 use rider_client::PairPrompt;
 use rider_client::config::{ClientConfig, KnownHost};
 use rider_core::identity::{Identity, fp_from_hex};
-use rider_core::rendezvous::ServerRef;
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use windows::core::w;
+
+fn config_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(ClientConfig::path().ok()?).ok()?.modified().ok()
+}
 
 /// How often the server is asked which computers are online.
 const POLL_EVERY: Duration = Duration::from_secs(15);
@@ -100,9 +103,11 @@ pub struct ClientApp {
     remote: RemoteAccess,
     remote_checked: Instant,
     manage_error: Option<String>,
-    server_addr: String,
-    server_fp: String,
     settings_msg: Option<Result<String, String>>,
+    /// When the page shown last changed (egui time), for its fade-in.
+    page_since: f64,
+    /// Seen modification time of client.toml: Manage (another process) may change it.
+    cfg_mtime: Option<std::time::SystemTime>,
     autostart: bool,
     /// Frames left before hiding a window started with `--tray`.
     hide_in: u8,
@@ -121,8 +126,6 @@ impl ClientApp {
             Ok((cfg, id)) => (cfg, Some(Arc::new(id)), None),
             Err(e) => (ClientConfig::default(), None, Some(format!("Cannot load this device's settings: {e:#}"))),
         };
-        let (server_addr, server_fp) =
-            cfg.server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default();
         let logo = egui::ColorImage::from_rgba_unmultiplied([64, 64], &rider_core::icon::rgba(64));
         let mut app = Self {
             rt,
@@ -146,9 +149,9 @@ impl ClientApp {
             remote: sys::remote_access(),
             remote_checked: Instant::now(),
             manage_error: None,
-            server_addr,
-            server_fp,
             settings_msg: None,
+            page_since: 0.0,
+            cfg_mtime: config_mtime(),
             autostart: sys::autostart(),
             hide_in: if hidden { 2 } else { 0 },
             updater: Updater::new(ctx),
@@ -186,6 +189,16 @@ impl ClientApp {
             self.server_error = Some(format!("{e:#}"));
         }
         self.saved_pins.remove(fingerprint);
+    }
+
+    /// Pick up changes saved by other processes (Manage sets the server).
+    fn watch_config(&mut self) {
+        let m = config_mtime();
+        if m != self.cfg_mtime {
+            self.cfg_mtime = m;
+            self.reload();
+            self.server_error = None;
+        }
     }
 
     fn reload(&mut self) {
@@ -418,8 +431,9 @@ impl ClientApp {
             (Tab::ThisComputer, icon::HOME, "This computer"),
             (Tab::Settings, icon::SETTINGS, "Settings"),
         ] {
-            if widgets::nav_item(ui, ic, text, self.tab == tab) {
+            if widgets::nav_item(ui, ic, text, self.tab == tab) && self.tab != tab {
                 self.tab = tab;
+                self.page_since = ui.input(|i| i.time);
             }
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -752,51 +766,35 @@ impl ClientApp {
         });
     }
 
+    /// The server is set in one place, Manage, for both directions; this
+    /// only shows it.
     fn server_card(&mut self, ui: &mut Ui) {
         widgets::card(ui, |ui| {
             widgets::section(ui, icon::GLOBE, "Server");
-            widgets::hint(
-                ui,
-                "Your rider-server lets you reach computers on other networks. `rider-server info` prints both values.",
-            );
-            egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
-                widgets::hint(ui, "Address");
-                ui.add(TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0));
-                ui.end_row();
-                widgets::hint(ui, "Fingerprint");
-                ui.add(
-                    TextEdit::singleline(&mut self.server_fp)
-                        .hint_text("64 hex characters")
-                        .desired_width(360.0)
-                        .font(egui::TextStyle::Monospace),
-                );
-                ui.end_row();
-            });
-            ui.horizontal(|ui| {
-                let changed = self.cfg.server.as_ref().map_or(!self.server_addr.trim().is_empty(), |s| {
-                    s.addr != self.server_addr.trim() || s.fingerprint != self.server_fp.trim()
-                });
-                if widgets::primary(ui, changed, "Save").clicked() {
-                    self.settings_msg = Some(match ServerRef::new(self.server_addr.trim(), self.server_fp.trim()) {
-                        Ok(s) => self.edit(|cfg| cfg.server = Some(s)).map(|()| "Saved.".into()),
-                        Err(e) => Err(format!("{e:#}")),
+            match &self.cfg.server {
+                Some(s) => {
+                    egui::Grid::new("server").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                        widgets::hint(ui, "Address");
+                        ui.label(&s.addr);
+                        ui.end_row();
+                        widgets::hint(ui, "Fingerprint");
+                        ui.label(RichText::new(widgets::short_fp(&s.fingerprint)).monospace());
+                        ui.end_row();
                     });
                 }
-                if self.cfg.server.is_some() && ui.button("Don't use a server").clicked() {
-                    self.server_addr.clear();
-                    self.server_fp.clear();
-                    self.settings_msg = Some(self.edit(|cfg| cfg.server = None).map(|()| "Server removed.".into()));
+                None => widgets::hint(ui, "Not set: only computers on this network can be reached."),
+            }
+            ui.horizontal(|ui| {
+                if ui.button(format!("{}   Change in Manage this computer…", icon::SHIELD)).clicked() {
+                    self.manage_error = sys::relaunch_elevated("--manage").err().map(|e| format!("{e:#}"));
                 }
-                match &self.settings_msg {
-                    Some(Ok(m)) => widgets::success(ui, m),
-                    Some(Err(e)) => widgets::error(ui, e),
-                    None => {}
-                }
+                widgets::hint(ui, "One setting for both directions.");
             });
+            if let Some(e) = &self.manage_error {
+                widgets::error(ui, e);
+            }
         });
     }
-
-    // -------------------------------------------------------------- dialogs
 
     fn add_dialog(&mut self, ctx: &egui::Context) {
         let Some(d) = &mut self.add else { return };
@@ -954,6 +952,7 @@ impl eframe::App for ClientApp {
         }
         self.close_to_tray(&ctx);
         self.handle_messages();
+        self.watch_config();
         self.poll_online();
         self.updater.tick();
         // Keep timers (online polling, service state) ticking while shown.
@@ -977,6 +976,7 @@ impl eframe::App for ClientApp {
                     widgets::error(ui, e);
                     return;
                 }
+                widgets::appear(ui, self.page_since);
                 self.update_banner(ui);
                 match self.tab {
                     Tab::Computers => self.computers(ui),

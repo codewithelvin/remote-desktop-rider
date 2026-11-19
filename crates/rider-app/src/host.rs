@@ -5,6 +5,7 @@
 use crate::sys;
 use crate::widgets::{self, ACCENT, AMBER, Bus, GREEN, GREY, Tx, icon};
 use eframe::egui::{self, Align, Key, Layout, RichText, TextEdit, Ui};
+use rider_client::config::ClientConfig;
 use rider_core::rendezvous::ServerRef;
 use serde::Deserialize;
 use std::io::Write;
@@ -188,9 +189,21 @@ impl HostApp {
                     self.busy = None;
                     match r {
                         Ok((info, devices)) => {
-                            if let Some(s) = &info.server {
-                                self.server_addr.clone_from(&s.addr);
-                                self.server_fp.clone_from(&s.fingerprint);
+                            match &info.server {
+                                Some(s) => {
+                                    self.server_addr.clone_from(&s.addr);
+                                    self.server_fp.clone_from(&s.fingerprint);
+                                    // One setting: the app connecting out uses it too.
+                                    let _ = sync_client_server(Some(s));
+                                }
+                                // Not set for remote access yet: offer what the app uses.
+                                None if self.server_addr.is_empty() => {
+                                    if let Some(s) = ClientConfig::load().ok().and_then(|c| c.server) {
+                                        self.server_addr = s.addr;
+                                        self.server_fp = s.fingerprint;
+                                    }
+                                }
+                                None => {}
                             }
                             self.info = Some(info);
                             self.devices = devices;
@@ -419,7 +432,8 @@ impl HostApp {
             widgets::section(ui, icon::GLOBE, "Server");
             widgets::hint(
                 ui,
-                "Lets your devices reach this computer from other networks. `rider-server info` prints both values.",
+                "One setting for both directions: your devices reach this computer, and this computer reaches \
+                 yours, from any network. `rider-server info` prints both values.",
             );
             egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
                 widgets::hint(ui, "Address");
@@ -442,12 +456,14 @@ impl HostApp {
                 if widgets::primary(ui, idle && changed, "Save").clicked() {
                     match ServerRef::new(self.server_addr.trim(), self.server_fp.trim()) {
                         Ok(s) => {
+                            let _ = sync_client_server(Some(&s));
                             self.run("Saving…", vec!["set-server".into(), s.addr, s.fingerprint], None, "Server saved.")
                         }
                         Err(e) => self.result = Some(Err(format!("{e:#}"))),
                     }
                 }
                 if info.server.is_some() && ui.add_enabled(idle, egui::Button::new("Don't use a server")).clicked() {
+                    let _ = sync_client_server(None);
                     self.run("Saving…", args(&["set-server", "--off"]), None, "Server removed.");
                 }
             });
@@ -608,6 +624,18 @@ impl eframe::App for HostApp {
             self.pairing_window(&ctx, &info);
         }
     }
+}
+
+/// Save the server for this Windows user's app (connecting out), so Manage is
+/// the one place to set it. Manage runs elevated as the same user in the usual
+/// case, so it can write the user's settings file directly.
+fn sync_client_server(server: Option<&ServerRef>) -> anyhow::Result<()> {
+    let mut cfg = ClientConfig::load()?;
+    if cfg.server.as_ref() != server {
+        cfg.server = server.cloned();
+        cfg.save()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

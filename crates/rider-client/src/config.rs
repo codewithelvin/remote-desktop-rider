@@ -37,7 +37,7 @@ impl ClientConfig {
         rider_core::data_dir("client")
     }
 
-    fn path() -> Result<PathBuf> {
+    pub fn path() -> Result<PathBuf> {
         Ok(Self::dir()?.join("client.toml"))
     }
 

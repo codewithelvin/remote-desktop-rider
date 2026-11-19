@@ -77,7 +77,10 @@ clicking it ends the session.
 The app lives in the notification area, starts when you sign in (can be turned
 off in Settings) and shows which of your computers are online. To reach
 computers on other networks, enter your `rider-server` address and fingerprint
-in **Settings → Server** on both sides.
+once per computer in **This computer → Manage → Server**: it applies to both
+directions (being reached and reaching others). Networks that filter UDP port
+47800 (some company firewalls) are handled automatically: the host falls back
+to a random high port for the server and for sessions through it.
 
 <br clear="right">
 

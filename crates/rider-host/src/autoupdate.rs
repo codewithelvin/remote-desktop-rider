@@ -145,6 +145,8 @@ fn relaunch_marker() -> Result<PathBuf> {
 }
 
 fn check_and_install(event: HANDLE, stop: &AtomicBool) -> Result<bool> {
+    // An installer still running at the last service start could not be removed then.
+    remove_installers();
     let Some(release) = update::newer()? else {
         tracing::debug!("auto-update: up to date ({})", update::Version::current());
         return Ok(false);
@@ -196,10 +198,8 @@ fn app_running_in(session: u32) -> bool {
     }
 }
 
-/// After an update: reopen the tray app for the user it was closed for.
-/// Called by the service when it starts.
-pub fn reopen_app_after_update() {
-    // Installers of earlier updates are no longer needed (the log stays).
+/// Installers of earlier updates are no longer needed (the log stays).
+fn remove_installers() {
     if let Ok(dir) = updates_dir()
         && let Ok(entries) = std::fs::read_dir(&dir)
     {
@@ -209,6 +209,12 @@ pub fn reopen_app_after_update() {
             }
         }
     }
+}
+
+/// After an update: reopen the tray app for the user it was closed for.
+/// Called by the service when it starts.
+pub fn reopen_app_after_update() {
+    remove_installers();
     let Ok(marker) = relaunch_marker() else { return };
     let Ok(text) = std::fs::read_to_string(&marker) else { return };
     let _ = std::fs::remove_file(&marker);

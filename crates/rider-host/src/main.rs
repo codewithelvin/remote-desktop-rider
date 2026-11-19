@@ -318,11 +318,19 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
         // One UDP socket for clients AND the rendezvous server: NAT hole
         // punching only works if both use the same mapping.
         let socket = Arc::new(
-            rider_core::rendezvous::PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], port)), Some(server_cfg))
+            rider_core::rendezvous::PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], port)), Some(server_cfg.clone()))
                 .with_context(|| format!("cannot listen on UDP {port} (is another host running?)"))?,
         );
         let endpoint = socket.endpoint.clone();
-        tokio::spawn(rendezvous::run(state.clone(), socket.clone(), mode != Mode::Agent));
+        // A second socket on a random high port, for networks that filter the
+        // fixed one (see rendezvous.rs). Sessions are accepted on both.
+        let mut sockets = vec![socket.clone()];
+        match rider_core::rendezvous::PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), Some(server_cfg)) {
+            Ok(s) => sockets.push(Arc::new(s)),
+            Err(e) => tracing::warn!("no second UDP socket: {e:#}"),
+        }
+        let wan = sockets.get(1).map(|s| s.endpoint.clone());
+        tokio::spawn(rendezvous::run(state.clone(), sockets, mode != Mode::Agent));
         let quit = if ui::json() { ui::start_input() } else { Arc::new(tokio::sync::Notify::new()) };
 
         tracing::info!("host \"{name}\" listening on UDP {port}, fingerprint {fp}");
@@ -356,6 +364,9 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
                     let Some(incoming) = incoming else { break };
                     tokio::spawn(session::handle(state.clone(), incoming));
                 }
+                Some(incoming) = async { wan.as_ref()?.accept().await }, if wan.is_some() => {
+                    tokio::spawn(session::handle(state.clone(), incoming));
+                }
                 _ = state.paired.notified(), if mode == Mode::PairOnce => {
                     // Let the client receive the result before closing.
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -366,6 +377,9 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
             }
         }
         endpoint.close(0u32.into(), b"host shutting down");
+        if let Some(w) = &wan {
+            w.close(0u32.into(), b"host shutting down");
+        }
         endpoint.wait_idle().await;
         anyhow::Ok(())
     })
