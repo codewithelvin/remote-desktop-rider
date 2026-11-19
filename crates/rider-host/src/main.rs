@@ -325,12 +325,12 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
         // A second socket on a random high port, for networks that filter the
         // fixed one (see rendezvous.rs). Sessions are accepted on both.
         let mut sockets = vec![socket.clone()];
-        match rider_core::rendezvous::PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), Some(server_cfg)) {
+        match rider_core::rendezvous::PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), Some(server_cfg.clone())) {
             Ok(s) => sockets.push(Arc::new(s)),
             Err(e) => tracing::warn!("no second UDP socket: {e:#}"),
         }
         let wan = sockets.get(1).map(|s| s.endpoint.clone());
-        tokio::spawn(rendezvous::run(state.clone(), sockets, mode != Mode::Agent));
+        tokio::spawn(rendezvous::run(state.clone(), sockets, server_cfg, mode != Mode::Agent));
         let quit = if ui::json() { ui::start_input() } else { Arc::new(tokio::sync::Notify::new()) };
 
         tracing::info!("host \"{name}\" listening on UDP {port}, fingerprint {fp}");

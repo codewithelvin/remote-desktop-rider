@@ -34,6 +34,10 @@ else
   echo "ufw not active: make sure UDP 47900 and 47901-47999 are open in any other firewall"
 fi
 
+if ! grep -rqs "rider-tunnel" /etc/nginx/; then
+  echo "HTTPS fallback (networks that block UDP): set up nginx-rider-tunnel.conf as described in it"
+fi
+
 sleep 2
 systemctl is-active --quiet rider-server || { journalctl -u rider-server -n 20 --no-pager; exit 1; }
 echo "rider-server $(/usr/local/bin/rider-server --version | awk '{print $2}') is running."

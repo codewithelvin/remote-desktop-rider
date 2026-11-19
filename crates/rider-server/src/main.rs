@@ -7,6 +7,7 @@
 //! sessions are end-to-end encrypted with keys pinned at pairing.
 
 mod relay;
+mod tunnel;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -47,6 +48,10 @@ enum Cmd {
         /// UDP port range for relayed sessions, e.g. 47901-47999 (open it in the firewall).
         #[arg(long, default_value = "47901-47999", value_parser = parse_range)]
         relay_ports: std::ops::RangeInclusive<u16>,
+        /// Also accept the HTTPS tunnel (for networks that block UDP) on this
+        /// loopback TCP address, behind a TLS web server, e.g. 127.0.0.1:47900.
+        #[arg(long)]
+        tunnel_listen: Option<SocketAddr>,
     },
     /// Print the server fingerprint and the commands to configure hosts and clients.
     Info,
@@ -72,10 +77,10 @@ fn main() -> Result<()> {
     let identity = Identity::load_or_create(&cli.state_dir)?;
     match cli.cmd {
         Cmd::Info => print_setup(&identity, None),
-        Cmd::Run { listen, public_ip, relay_ports } => tokio::runtime::Builder::new_multi_thread()
+        Cmd::Run { listen, public_ip, relay_ports, tunnel_listen } => tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(serve(identity, listen, public_ip, relay_ports))?,
+            .block_on(serve(identity, listen, public_ip, relay_ports, tunnel_listen))?,
     }
     Ok(())
 }
@@ -110,6 +115,7 @@ async fn serve(
     listen: SocketAddr,
     public_ip: Option<IpAddr>,
     relay_ports: std::ops::RangeInclusive<u16>,
+    tunnel_listen: Option<SocketAddr>,
 ) -> Result<()> {
     let cfg = rider_core::tls::server_config_alpn(
         &identity,
@@ -130,6 +136,12 @@ async fn serve(
         public_ip.map(|ip| format!(", public IP {ip}")).unwrap_or_default()
     );
     print_setup(&identity, Some(listen));
+    if let Some(addr) = tunnel_listen {
+        if public_ip.is_none() {
+            tracing::warn!("--tunnel-listen without --public-ip: tunneled peers may get unusable relay addresses");
+        }
+        tokio::spawn(tunnel::serve(tunnel::bind(addr).await?));
+    }
 
     loop {
         tokio::select! {
@@ -284,6 +296,10 @@ impl Server {
     }
 
     fn rate_limited(&self, ip: IpAddr) -> bool {
+        // Tunneled peers arrive from loopback; the tunnel bridge limits them by real address.
+        if ip.is_loopback() {
+            return false;
+        }
         let mut rate = self.rate.lock().unwrap();
         let now = Instant::now();
         if rate.len() > 10_000 {
@@ -348,10 +364,11 @@ async fn connect(
             return refuse();
         }
         let mut c = h.local.clone();
-        c.push(h.public);
+        // A tunneled peer's address is the bridge's loopback socket: not a candidate.
+        c.extend(Some(h.public).filter(|a| !a.ip().is_loopback()));
         (h.tx.clone(), c)
     };
-    local.push(conn.remote_address());
+    local.extend(Some(conn.remote_address()).filter(|a| !a.ip().is_loopback()));
     local.truncate(9);
     host_candidates.truncate(9);
 

@@ -150,7 +150,26 @@ pub fn normalize_code(s: &str) -> Option<String> {
 /// exact socket (and therefore NAT mapping) that QUIC then uses.
 pub struct PeerSocket {
     pub endpoint: quinn::Endpoint,
-    raw: Arc<UdpSocket>,
+    raw: Raw,
+}
+
+/// Where raw datagrams (punches, relay registration) go out.
+enum Raw {
+    Udp(Arc<UdpSocket>),
+    #[cfg(windows)]
+    Tunnel(Arc<crate::tunnel::TunnelSocket>),
+}
+
+impl Raw {
+    fn send_to(&self, data: &[u8], to: &SocketAddr) {
+        match self {
+            Raw::Udp(s) => {
+                let _ = s.send_to(data, to);
+            }
+            #[cfg(windows)]
+            Raw::Tunnel(t) => t.send_to(data, *to),
+        }
+    }
 }
 
 impl PeerSocket {
@@ -160,9 +179,42 @@ impl PeerSocket {
         let raw = Arc::new(socket.try_clone()?);
         let runtime = quinn::default_runtime().context("no async runtime")?;
         let endpoint = quinn::Endpoint::new(quinn::EndpointConfig::default(), server, socket, runtime)?;
-        Ok(Self { endpoint, raw })
+        Ok(Self { endpoint, raw: Raw::Udp(raw) })
     }
 
+    /// Fallback for networks that block UDP: reach `server` (and its relays)
+    /// through the HTTPS tunnel instead. Sessions then always use the relay.
+    #[cfg(windows)]
+    pub async fn tunnel(server: &ServerRef, accept: Option<quinn::ServerConfig>) -> Result<Self> {
+        let ip = server.resolve().await?.ip();
+        let host =
+            server.addr.rsplit_once(':').filter(|(_, p)| p.parse::<u16>().is_ok()).map_or(&*server.addr, |(h, _)| h);
+        let socket = crate::tunnel::TunnelSocket::connect(host, ip).await?;
+        let runtime = quinn::default_runtime().context("no async runtime")?;
+        let endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            accept,
+            socket.clone(),
+            runtime,
+        )?;
+        Ok(Self { endpoint, raw: Raw::Tunnel(socket) })
+    }
+
+    /// Through the HTTPS tunnel rather than UDP.
+    pub fn is_tunnel(&self) -> bool {
+        !matches!(self.raw, Raw::Udp(_))
+    }
+
+    /// False once a tunnel has closed (a UDP socket is always usable).
+    pub fn alive(&self) -> bool {
+        match &self.raw {
+            Raw::Udp(_) => true,
+            #[cfg(windows)]
+            Raw::Tunnel(t) => t.alive(),
+        }
+    }
+
+    /// Local UDP port; 0 for the tunnel (no local addresses to offer).
     pub fn port(&self) -> u16 {
         self.endpoint.local_addr().map(|a| a.port()).unwrap_or(0)
     }
@@ -173,10 +225,10 @@ impl PeerSocket {
         let bind = relay.map(|r| (r.addr, r.bind_datagram()));
         for _ in 0..5 {
             for t in targets {
-                let _ = self.raw.send_to(PUNCH, t);
+                self.raw.send_to(PUNCH, t);
             }
             if let Some((addr, d)) = &bind {
-                let _ = self.raw.send_to(d, addr);
+                self.raw.send_to(d, addr);
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
@@ -276,6 +328,9 @@ pub async fn race(
 /// This machine's IPv4 addresses (up, non-loopback) with `port`: candidates
 /// for peers on the same LAN.
 pub fn local_candidates(port: u16) -> Vec<SocketAddr> {
+    if port == 0 {
+        return Vec::new(); // the HTTPS tunnel has no local address
+    }
     let mut out: Vec<SocketAddr> = local_ipv4().into_iter().map(|ip| SocketAddr::from((ip, port))).collect();
     out.truncate(8);
     out

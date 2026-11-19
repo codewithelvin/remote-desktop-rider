@@ -9,7 +9,6 @@ quinn.workspace = true
 rustls.workspace = true
 rcgen.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 postcard.workspace = true
 sha2.workspace = true
 hex.workspace = true
@@ -20,6 +19,7 @@ rayon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

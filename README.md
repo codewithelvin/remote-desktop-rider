@@ -80,7 +80,10 @@ computers on other networks, enter your `rider-server` address and fingerprint
 once per computer in **This computer → Manage → Server**: it applies to both
 directions (being reached and reaching others). Networks that filter UDP port
 47800 (some company firewalls) are handled automatically: the host falls back
-to a random high port for the server and for sessions through it.
+to a random high port for the server and for sessions through it. Where no
+UDP gets through at all, both sides switch to an HTTPS tunnel to the server
+on port 443 (through the system proxy, like a browser) and sessions go
+through its relay, still end-to-end encrypted.
 
 <br clear="right">
 
@@ -182,7 +185,9 @@ rider-server info                # prints the fingerprint for the commands below
 To install or upgrade it on a Linux server with systemd, copy the `rider-server`
 binary next to `deploy/install.sh` and `deploy/rider-server.service` and run
 `sudo bash install.sh <public-ip>`. It sets up the hardened unit, opens the UDP
-ports in ufw and prints the fingerprint. Then, once per device:
+ports in ufw and prints the fingerprint. For the HTTPS fallback (networks
+that block UDP), put nginx with a real certificate in front as described in
+`deploy/nginx-rider-tunnel.conf`. Then, once per device:
 
 ```powershell
 rider-host   set-server vps.example.com <server-fingerprint>   # host; restart the service after

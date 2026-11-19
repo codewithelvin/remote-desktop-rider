@@ -29,6 +29,35 @@ pub async fn resolve(addr: &str) -> Result<SocketAddr> {
 /// `pinned`: the host key we expect (`None` only while pairing by code; then
 /// the key the server names is pinned and the verification code check catches
 /// a lying server). `direct`: a known direct address to try as well.
+/// Until when this process goes straight to the HTTPS tunnel: the network
+/// did not let UDP to the server through recently.
+static TUNNEL_UNTIL: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+/// How long to stay on the tunnel before trying UDP again.
+const TUNNEL_STICKY: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A socket connected to the rendezvous server: UDP, or the HTTPS tunnel on
+/// networks where the server does not answer over UDP (strict firewalls).
+async fn server_socket(
+    identity: &Identity,
+    server: &ServerRef,
+) -> Result<(PeerSocket, quinn::Connection, quinn::SendStream, quinn::RecvStream)> {
+    let sticky = TUNNEL_UNTIL.lock().unwrap().is_some_and(|t| std::time::Instant::now() < t);
+    if !sticky {
+        let socket = PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), None)?;
+        match socket.connect_server(identity, server).await {
+            Ok((conn, send, recv)) => return Ok((socket, conn, send, recv)),
+            Err(e) if format!("{e:#}").contains("did not answer") => {
+                tracing::info!("{e:#}; trying the HTTPS tunnel");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let socket = PeerSocket::tunnel(server, None).await?;
+    let (conn, send, recv) = socket.connect_server(identity, server).await?;
+    *TUNNEL_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + TUNNEL_STICKY);
+    Ok((socket, conn, send, recv))
+}
+
 pub async fn via_server(
     identity: &Identity,
     server: &ServerRef,
@@ -36,8 +65,7 @@ pub async fn via_server(
     pinned: Option<Fingerprint>,
     direct: Option<SocketAddr>,
 ) -> Result<(quinn::Connection, Path)> {
-    let socket = PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), None)?;
-    let (rv, mut send, mut recv) = socket.connect_server(identity, server).await?;
+    let (socket, rv, mut send, mut recv) = server_socket(identity, server).await?;
     let local = rendezvous::local_candidates(socket.port());
     write_msg(&mut send, &PeerMsg::Connect { version: rendezvous::VERSION, target, local }).await?;
     let reply = tokio::time::timeout(std::time::Duration::from_secs(10), read_msg::<ServerMsg>(&mut recv))
@@ -55,8 +83,9 @@ pub async fn via_server(
     if let Some(d) = direct.filter(|d| !candidates.contains(d)) {
         candidates.insert(0, d);
     }
-    // Diagnostics: exercise the relay even when a direct path would work.
-    if std::env::var_os("RIDER_FORCE_RELAY").is_some() {
+    // Through the tunnel only the relay is reachable. Diagnostics: exercise
+    // the relay even when a direct path would work.
+    if socket.is_tunnel() || std::env::var_os("RIDER_FORCE_RELAY").is_some() {
         candidates.clear();
     }
     let cfg = rider_core::tls::client_config(identity, Some(pinned.unwrap_or(host)))?;
@@ -238,8 +267,7 @@ pub async fn connect(
 
 /// Ask the rendezvous server which of `hosts` are online (for this device).
 pub async fn online(identity: &Identity, server: &ServerRef, hosts: &[Fingerprint]) -> Result<Vec<bool>> {
-    let socket = PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), None)?;
-    let (conn, mut send, mut recv) = socket.connect_server(identity, server).await?;
+    let (_socket, conn, mut send, mut recv) = server_socket(identity, server).await?;
     write_msg(&mut send, &PeerMsg::Status { version: rendezvous::VERSION, hosts: hosts.to_vec() }).await?;
     let reply = tokio::time::timeout(std::time::Duration::from_secs(5), read_msg::<ServerMsg>(&mut recv))
         .await
