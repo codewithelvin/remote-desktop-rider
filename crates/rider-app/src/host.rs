@@ -489,6 +489,12 @@ impl HostApp {
                                 ui.label("Getting a code from the server…");
                             });
                         }
+                        None if info.server.is_none() => widgets::error(
+                            ui,
+                            "No server is set for this computer, so it gets no code and only devices on the \
+                             same network can add it. Cancel and set the Server on this page to add devices \
+                             from anywhere.",
+                        ),
                         None => {}
                     }
                     if let Some(e) = &p.server_error {

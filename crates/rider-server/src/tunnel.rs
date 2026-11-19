@@ -30,6 +30,32 @@ const MAX_OPEN: usize = 2000;
 const IDLE: Duration = Duration::from_secs(120);
 const HANDSHAKE: Duration = Duration::from_secs(10);
 
+/// Which client address each tunnel's loopback UDP socket stands for, so
+/// the rendezvous service can rate-limit tunneled peers like direct ones.
+#[derive(Default)]
+pub struct Peers(Mutex<HashMap<SocketAddr, IpAddr>>);
+
+impl Peers {
+    /// The real client address behind `addr`, if it is one of our tunnels.
+    pub fn real(&self, addr: SocketAddr) -> Option<IpAddr> {
+        self.0.lock().unwrap().get(&addr).copied()
+    }
+
+    #[cfg(test)]
+    pub fn insert_for_test(&self, addr: SocketAddr, ip: IpAddr) {
+        self.0.lock().unwrap().insert(addr, ip);
+    }
+}
+
+/// Removes a tunnel from [`Peers`] when it closes.
+struct Registered<'a>(&'a Peers, SocketAddr);
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        self.0.0.lock().unwrap().remove(&self.1);
+    }
+}
+
 #[derive(Default)]
 struct Limits {
     /// Per client address: open tunnels, start of the minute, tunnels opened in it.
@@ -80,7 +106,7 @@ pub async fn bind(listen: SocketAddr) -> Result<TcpListener> {
     Ok(listener)
 }
 
-pub async fn serve(listener: TcpListener) {
+pub async fn serve(listener: TcpListener, peers: Arc<Peers>) {
     let limits = Arc::<Limits>::default();
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -92,16 +118,16 @@ pub async fn serve(listener: TcpListener) {
                 continue;
             }
         };
-        let limits = limits.clone();
+        let (limits, peers) = (limits.clone(), peers.clone());
         tokio::spawn(async move {
-            if let Err(e) = handle(tcp, peer, &limits).await {
+            if let Err(e) = handle(tcp, peer, &limits, &peers).await {
                 tracing::debug!("tunnel {peer}: {e:#}");
             }
         });
     }
 }
 
-async fn handle(tcp: TcpStream, peer: SocketAddr, limits: &Arc<Limits>) -> Result<()> {
+async fn handle(tcp: TcpStream, peer: SocketAddr, limits: &Arc<Limits>, peers: &Peers) -> Result<()> {
     let _ = tcp.set_nodelay(true);
     let mut client = peer.ip();
     // The signature is tungstenite's callback type.
@@ -131,6 +157,9 @@ async fn handle(tcp: TcpStream, peer: SocketAddr, limits: &Arc<Limits>) -> Resul
         bail!("{client}: too many tunnels");
     };
     let udp = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    let local = udp.local_addr()?;
+    peers.0.lock().unwrap().insert(local, client);
+    let _registered = Registered(peers, local);
     tracing::debug!("tunnel open for {client}");
 
     let mut buf = vec![0u8; MAX_DATAGRAM + 1];

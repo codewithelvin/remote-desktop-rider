@@ -89,6 +89,8 @@ pub enum PeerMsg {
     /// Client: which of these hosts are online? Only hosts that allow this
     /// client can show as online; the rest always read as offline.
     Status { version: u32, hosts: Vec<Fingerprint> },
+    /// Host or client: connection diagnostics for one session (no reply).
+    Report { version: u32, report: crate::diag::Report },
 }
 
 /// Server → peer.
@@ -142,6 +144,61 @@ pub const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 pub fn normalize_code(s: &str) -> Option<String> {
     let raw: String = s.chars().filter(|c| !matches!(c, '-' | ' ')).collect::<String>().to_ascii_uppercase();
     (raw.len() == 6 && raw.bytes().all(|b| CODE_ALPHABET.contains(&b))).then(|| format!("{}-{}", &raw[..3], &raw[3..]))
+}
+
+/// Until when this process goes straight to the HTTPS tunnel: the network
+/// did not let UDP to the server through recently.
+static TUNNEL_UNTIL: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+/// How long to stay on the tunnel before trying UDP again.
+const TUNNEL_STICKY: Duration = Duration::from_secs(600);
+
+/// Whether this process recently had to reach the server through the tunnel.
+pub fn tunnel_recent() -> bool {
+    TUNNEL_UNTIL.lock().unwrap().is_some_and(|t| std::time::Instant::now() < t)
+}
+
+/// Note that UDP to the server does not get through from here.
+pub fn mark_tunnel() {
+    *TUNNEL_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + TUNNEL_STICKY);
+}
+
+/// A fresh socket connected to the rendezvous server: UDP, or the HTTPS
+/// tunnel on networks where the server does not answer over UDP.
+pub async fn reach_server(
+    identity: &Identity,
+    server: &ServerRef,
+) -> Result<(PeerSocket, quinn::Connection, quinn::SendStream, quinn::RecvStream)> {
+    #[cfg(windows)]
+    if tunnel_recent() {
+        let socket = PeerSocket::tunnel(server, None).await?;
+        let (conn, send, recv) = socket.connect_server(identity, server).await?;
+        mark_tunnel();
+        return Ok((socket, conn, send, recv));
+    }
+    let socket = PeerSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)), None)?;
+    match socket.connect_server(identity, server).await {
+        Ok((conn, send, recv)) => Ok((socket, conn, send, recv)),
+        #[cfg(windows)]
+        Err(e) if format!("{e:#}").contains("did not answer") => {
+            tracing::info!("{e:#}; trying the HTTPS tunnel");
+            let socket = PeerSocket::tunnel(server, None).await?;
+            let (conn, send, recv) = socket.connect_server(identity, server).await?;
+            mark_tunnel();
+            Ok((socket, conn, send, recv))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Send one diagnostics report to the server. Best effort: the caller only
+/// logs failures (an older server simply drops the connection).
+pub async fn send_report(identity: &Identity, server: &ServerRef, report: crate::diag::Report) -> Result<()> {
+    let (_socket, conn, mut send, _recv) = reach_server(identity, server).await?;
+    crate::proto::write_msg(&mut send, &PeerMsg::Report { version: VERSION, report: report.bounded() }).await?;
+    send.finish()?;
+    // The server closes the connection once it has the report.
+    let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+    Ok(())
 }
 
 /// A QUIC endpoint plus raw access to the same UDP socket.

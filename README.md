@@ -182,8 +182,10 @@ rider-server run                 # UDP 47900 + relay ports 47901-47999
 rider-server info                # prints the fingerprint for the commands below
 ```
 
-To install or upgrade it on a Linux server with systemd, copy the `rider-server`
-binary next to `deploy/install.sh` and `deploy/rider-server.service` and run
+To install or upgrade it on a Linux server with systemd, download
+`rider-server-<version>-linux-x86_64` from the
+[latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest),
+save it as `rider-server` next to `deploy/install.sh` and `deploy/rider-server.service` and run
 `sudo bash install.sh <public-ip>`. It sets up the hardened unit, opens the UDP
 ports in ufw and prints the fingerprint. For the HTTPS fallback (networks
 that block UDP), put nginx with a real certificate in front as described in
@@ -205,7 +207,17 @@ The server only introduces devices. Sessions stay end-to-end encrypted with
 the keys pinned at pairing, so the server can't watch or take over a session,
 and it can't impersonate a host (the verification code would differ when
 pairing by code). It answers the same "offline or not allowed" to everyone who
-isn't paired with a host and rate-limits requests per IP.
+isn't paired with a host and rate-limits requests per IP (for the HTTPS
+tunnel, per real client address).
+
+To help tune connections, both ends of a session send the server a small
+diagnostics report when it ends (and every 10 minutes during long ones):
+every 5 s the round-trip time, packet loss, frame rate, bitrate, encode or
+decode time and latency, plus whether the path was direct, relayed or
+tunneled. Reports hold numbers only: no screen content, input, names or
+addresses. The server accepts them only from devices it knows and writes them
+to its log (`journalctl -u rider-server | grep diag`), where host and client
+reports of one session share a random session number.
 
 
 ### How unattended access works

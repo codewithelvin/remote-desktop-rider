@@ -25,6 +25,8 @@ use tokio::sync::mpsc;
 const CODE_LIFETIME: Duration = Duration::from_secs(600);
 /// Connect requests allowed per source IP per minute (brute-force / abuse guard).
 const CONNECTS_PER_MINUTE: u32 = 30;
+/// Diagnostics reports accepted per device per hour.
+const REPORTS_PER_HOUR: u32 = 30;
 
 #[derive(Parser)]
 #[command(name = "rider-server", version, about = "Remote Desktop Rider rendezvous and relay server")]
@@ -107,7 +109,9 @@ struct Server {
     hosts: Mutex<HashMap<Fingerprint, HostEntry>>,
     codes: Mutex<HashMap<String, (Fingerprint, Instant)>>,
     rate: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+    reports: Mutex<HashMap<Fingerprint, (Instant, u32)>>,
     relays: Arc<RelayPool>,
+    tunnels: Arc<tunnel::Peers>,
 }
 
 async fn serve(
@@ -127,7 +131,9 @@ async fn serve(
         hosts: Mutex::default(),
         codes: Mutex::default(),
         rate: Mutex::default(),
+        reports: Mutex::default(),
         relays: RelayPool::new(public_ip, relay_ports.clone()),
+        tunnels: Arc::default(),
     });
     tracing::info!(
         "rendezvous on UDP {listen}, relay ports {}-{}{}",
@@ -140,7 +146,7 @@ async fn serve(
         if public_ip.is_none() {
             tracing::warn!("--tunnel-listen without --public-ip: tunneled peers may get unusable relay addresses");
         }
-        tokio::spawn(tunnel::serve(tunnel::bind(addr).await?));
+        tokio::spawn(tunnel::serve(tunnel::bind(addr).await?, server.tunnels.clone()));
     }
 
     loop {
@@ -178,7 +184,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
         Some(PeerMsg::Status { version, mut hosts }) => {
             check_version(version, &mut send).await?;
             hosts.truncate(256);
-            let reply = if server.rate_limited(conn.remote_address().ip()) {
+            let reply = if server.rate_limited(conn.remote_address()) {
                 ServerMsg::Error { message: "too many requests; try again in a minute".into() }
             } else {
                 ServerMsg::Online { online: server.online(&fp, &hosts) }
@@ -195,6 +201,16 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             let _ = send.finish();
             // Give the reply time to arrive; the client closes the connection.
             let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+            Ok(())
+        }
+        Some(PeerMsg::Report { version, report }) => {
+            // Only devices this server knows (registered hosts and the clients
+            // they allow), within a quota; reports are metrics only.
+            if version == VERSION && server.known(&fp) && !server.reports_limited(fp) {
+                let report = serde_json::to_string(&report.bounded())?;
+                tracing::info!(target: "diag", "{} {report}", fp_short(&fp));
+            }
+            conn.close(0u32.into(), b"ok");
             Ok(())
         }
         None => Ok(()),
@@ -295,11 +311,24 @@ impl Server {
         hosts.iter().map(|fp| registered.get(fp).is_some_and(|h| h.allowed.contains(client))).collect()
     }
 
-    fn rate_limited(&self, ip: IpAddr) -> bool {
-        // Tunneled peers arrive from loopback; the tunnel bridge limits them by real address.
-        if ip.is_loopback() {
-            return false;
-        }
+    /// A registered host, or a client some registered host allows.
+    fn known(&self, fp: &Fingerprint) -> bool {
+        let hosts = self.hosts.lock().unwrap();
+        hosts.contains_key(fp) || hosts.values().any(|h| h.allowed.contains(fp))
+    }
+
+    fn reports_limited(&self, fp: Fingerprint) -> bool {
+        let mut reports = self.reports.lock().unwrap();
+        let now = Instant::now();
+        reports.retain(|_, (start, _)| now.duration_since(*start) < Duration::from_secs(3600));
+        let entry = reports.entry(fp).or_insert((now, 0));
+        entry.1 += 1;
+        entry.1 > REPORTS_PER_HOUR
+    }
+
+    /// Per source address; tunneled peers count under their real address.
+    fn rate_limited(&self, from: SocketAddr) -> bool {
+        let ip = if from.ip().is_loopback() { self.tunnels.real(from).unwrap_or(from.ip()) } else { from.ip() };
         let mut rate = self.rate.lock().unwrap();
         let now = Instant::now();
         if rate.len() > 10_000 {
@@ -344,7 +373,7 @@ async fn connect(
     // One generic answer for "offline", "unknown" and "not allowed", so the
     // server does not reveal which hosts exist to devices that are not paired.
     let refuse = || ServerMsg::Error { message: "host is offline or this device is not allowed to reach it".into() };
-    if server.rate_limited(conn.remote_address().ip()) {
+    if server.rate_limited(conn.remote_address()) {
         return ServerMsg::Error { message: "too many requests; try again in a minute".into() };
     }
     let host_fp = match target {
@@ -403,11 +432,19 @@ mod tests {
             hosts: Mutex::default(),
             codes: Mutex::default(),
             rate: Mutex::default(),
+            reports: Mutex::default(),
             relays: RelayPool::new(None, 1..=1),
+            tunnels: Arc::default(),
         };
-        let ip: IpAddr = "198.51.100.1".parse().unwrap();
-        assert!((0..CONNECTS_PER_MINUTE).all(|_| !s.rate_limited(ip)));
-        assert!(s.rate_limited(ip));
+        let from: SocketAddr = "198.51.100.1:5000".parse().unwrap();
+        assert!((0..CONNECTS_PER_MINUTE).all(|_| !s.rate_limited(from)));
+        assert!(s.rate_limited(from));
+        // Tunneled peers count under their real address, not loopback.
+        let tunneled: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        s.tunnels.insert_for_test(tunneled, from.ip());
+        assert!(s.rate_limited(tunneled), "same quota as the real address");
+        let other: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        assert!(!s.rate_limited(other));
     }
 
     #[test]
@@ -416,7 +453,9 @@ mod tests {
             hosts: Mutex::default(),
             codes: Mutex::default(),
             rate: Mutex::default(),
+            reports: Mutex::default(),
             relays: RelayPool::new(None, 1..=1),
+            tunnels: Arc::default(),
         };
         let fp = [1u8; 32];
         let code = s.update_code(fp, true).unwrap();

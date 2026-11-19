@@ -54,7 +54,9 @@ impl RelayPool {
 async fn run(socket: UdpSocket, token: Token) {
     let port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
     let (mut a, mut b): (Option<SocketAddr>, Option<SocketAddr>) = (None, None);
-    let mut forwarded = 0u64;
+    // Bytes a -> b and b -> a, and when the pair was made.
+    let (mut ab, mut ba) = (0u64, 0u64);
+    let mut since = None;
     let mut buf = vec![0u8; 65_536];
     loop {
         let timeout = if b.is_some() { IDLE_TIMEOUT } else { BIND_TIMEOUT };
@@ -70,6 +72,7 @@ async fn run(socket: UdpSocket, token: Token) {
                     None => a = Some(src),
                     Some(first) if first != src && b.is_none() => {
                         b = Some(src);
+                        since = Some(std::time::Instant::now());
                         tracing::info!("relay :{port} connected {first} <-> {src}");
                     }
                     Some(_) => {}
@@ -77,19 +80,20 @@ async fn run(socket: UdpSocket, token: Token) {
             }
             continue;
         }
-        let to = if Some(src) == a {
-            b
+        let (to, count) = if Some(src) == a {
+            (b, &mut ab)
         } else if Some(src) == b {
-            a
+            (a, &mut ba)
         } else {
-            None // unknown sender: drop
+            continue; // unknown sender: drop
         };
         if let Some(to) = to {
             let _ = socket.send_to(data, to).await;
-            forwarded += n as u64;
+            *count += n as u64;
         }
     }
-    tracing::info!("relay :{port} closed after forwarding {} KiB", forwarded / 1024);
+    let secs = since.map_or(0, |t| t.elapsed().saturating_sub(IDLE_TIMEOUT).as_secs());
+    tracing::info!("relay :{port} closed: {secs} s, {} KiB first->second, {} KiB second->first", ab / 1024, ba / 1024);
 }
 
 #[cfg(test)]

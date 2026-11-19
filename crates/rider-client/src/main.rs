@@ -140,7 +140,9 @@ fn main() -> Result<()> {
             }
             // After saving: the desktop app reloads its list when it sees this line.
             println!("Connected to \"{}\" ({route}).", known.name);
-            rider_client::app::run(rt, session, known.name)?;
+            let report_to =
+                cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
+            rider_client::app::run(rt, session, known.name, report_to)?;
         }
     }
     Ok(())

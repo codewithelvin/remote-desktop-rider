@@ -3183,6 +3183,7 @@ dependencies = [
  "getrandom 0.3.4",
  "quinn",
  "rider-core",
+ "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tracing",

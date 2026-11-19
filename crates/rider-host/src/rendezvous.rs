@@ -136,7 +136,7 @@ async fn accept_sessions(state: Arc<HostState>, socket: std::sync::Weak<PeerSock
         tokio::select! {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break };
-                tokio::spawn(crate::session::handle(state.clone(), incoming));
+                tokio::spawn(crate::session::handle(state.clone(), incoming, true));
             }
             _ = check.tick() => {
                 if socket.strong_count() == 0 && endpoint.open_connections() == 0 {

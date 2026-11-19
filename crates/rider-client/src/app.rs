@@ -12,6 +12,7 @@
 //!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc, Alt+F4 go to the host (keyhook)
 //!   Drag and drop a file onto the window to send it to the host.
 
+use crate::diag::{self, Diag};
 use crate::keyhook::KeyHook;
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
 use crate::toolbar::{Action, Toolbar};
@@ -33,9 +34,16 @@ use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Fullscreen, Icon, Window, WindowId};
 
-pub fn run(rt: tokio::runtime::Runtime, session: Session, host_name: String) -> Result<()> {
+/// `report_to`: where to send this session's connection diagnostics.
+pub fn run(
+    rt: tokio::runtime::Runtime,
+    session: Session,
+    host_name: String,
+    report_to: Option<diag::Target>,
+) -> Result<()> {
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
     let shared = Arc::new(Shared::default());
+    let diag = report_to.map(|t| Diag::new(t, &session.conn, session.relayed, rt.handle().clone()));
     let net = net::start(&rt, session, event_loop.create_proxy(), shared.clone());
     let mut app = App {
         net,
@@ -56,8 +64,12 @@ pub fn run(rt: tokio::runtime::Runtime, session: Session, host_name: String) -> 
         toolbar: Toolbar::new(),
         toolbar_shown: true,
         keyhook: None,
+        diag,
     };
     event_loop.run_app(&mut app)?;
+    if let Some(d) = app.diag.take() {
+        d.finish(&rt, app.closed.as_deref().unwrap_or("closed by the user"));
+    }
     if let Some(reason) = app.closed {
         println!("Disconnected: {reason}");
     }
@@ -101,6 +113,7 @@ struct App {
     toolbar_shown: bool,
     /// Win key, Alt+Tab... to the host while this window is in front.
     keyhook: Option<KeyHook>,
+    diag: Option<Diag>,
 }
 
 impl App {
@@ -377,6 +390,9 @@ impl ApplicationHandler<UiEvent> for App {
         if Instant::now() >= self.next_title {
             self.update_title();
             self.next_title = Instant::now() + Duration::from_secs(1);
+            if let Some(d) = &mut self.diag {
+                d.tick(&self.net.conn, &self.shared);
+            }
         }
         // Hide (or show) the toolbar on time even when no frames arrive.
         if self.toolbar.visible() != self.toolbar_shown {

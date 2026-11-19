@@ -15,6 +15,8 @@ pub struct Session {
     pub conn: quinn::Connection,
     pub send: quinn::SendStream,
     pub recv: quinn::RecvStream,
+    /// Through the rendezvous server's relay rather than a direct path.
+    pub relayed: bool,
 }
 
 #[derive(Debug)]
@@ -107,7 +109,7 @@ pub fn start(
     proxy: EventLoopProxy<UiEvent>,
     shared: Arc<Shared>,
 ) -> NetHandle {
-    let Session { conn, send, recv } = s;
+    let Session { conn, send, recv, .. } = s;
     let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ClientMsg>();
 
     // Control writer.

@@ -6,6 +6,7 @@ use crate::config::HostConfig;
 use crate::input::{self, InputEvent};
 use crate::video::{self, VideoCmd, VideoConfig, VideoPacket, VideoStats};
 use anyhow::{Context, Result, bail};
+use rider_core::diag::{self, Recorder, Role, Route, Sample, u16_of};
 use rider_core::identity::{Fingerprint, Identity, fp_short};
 use rider_core::proto::*;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -98,7 +99,8 @@ impl rider_core::tls::ClientTrust for HostTrust {
     }
 }
 
-pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming) {
+/// `tunnel`: arrived through the HTTPS tunnel (for diagnostics).
+pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming, tunnel: bool) {
     let remote = incoming.remote_address();
     let conn = match incoming.await {
         Ok(c) => c,
@@ -123,7 +125,7 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming) {
     }
     // Keeps the service from installing an update during the session.
     crate::autoupdate::mark_session(true);
-    let result = run(&state, &conn, streams).await;
+    let result = run(&state, &conn, streams, tunnel).await;
     crate::autoupdate::mark_session(false);
     state.busy.store(false, Ordering::SeqCst);
     match result {
@@ -141,6 +143,7 @@ async fn run(
     state: &Arc<HostState>,
     conn: &quinn::Connection,
     (mut send, mut recv): (quinn::SendStream, quinn::RecvStream),
+    tunnel: bool,
 ) -> Result<()> {
     let client_fp = rider_core::tls::peer_fingerprint(conn)?;
     let _ = send.set_priority(1); // control beats video
@@ -170,7 +173,7 @@ async fn run(
 
     authenticate(state, &mut send, &mut recv, &name).await?;
     tracing::info!("session started with {name} ({}) from {}", fp_short(&client_fp), conn.remote_address());
-    stream(state, conn, send, recv, name).await
+    stream(state, conn, send, recv, name, tunnel).await
 }
 
 async fn pair(
@@ -303,8 +306,10 @@ async fn stream(
     send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     name: String,
+    tunnel: bool,
 ) -> Result<()> {
     let cfg = state.config.lock().unwrap().clone();
+    let recorder = Arc::new(Mutex::new(recorder(state, conn, tunnel).await));
     let monitors = capture::monitors()?;
     let list: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
     let _banner = Banner::show(format!("●  {name} is viewing this screen  —  click here to disconnect"));
@@ -412,8 +417,13 @@ async fn stream(
         let cmd_tx = cmd_tx.clone();
         let out_tx = out_tx.clone();
         let expired = expired.clone();
+        let (state, recorder) = (state.clone(), recorder.clone());
         tokio::spawn(async move {
             let mut bitrate = START_BITRATE.min(max_bitrate);
+            // Diagnostics totals over one sample interval.
+            let mut d = Sample::default();
+            let (mut d_bytes, mut d_frames, mut d_enc, mut d_sent, mut d_lost) = (0u64, 0u32, 0u64, 0u64, 0u64);
+            let per_sample = (diag::SAMPLE_EVERY.as_millis() / 500) as u32;
             let mut last = conn.stats().path;
             let mut tick = tokio::time::interval(Duration::from_millis(500));
             let mut n = 0u32;
@@ -431,6 +441,12 @@ async fn stream(
                 let lost = path.lost_packets.saturating_sub(last.lost_packets);
                 last = path;
                 let loss = lost as f64 / sent as f64;
+                d_bytes += bytes;
+                d_frames += frames;
+                d_enc += enc_us;
+                d_sent += sent;
+                d_lost += lost;
+                d.dropped = d.dropped.saturating_add(u16_of(skips + exp));
                 let queueing = path.rtt > path.min_rtt + (path.min_rtt / 2).max(Duration::from_millis(25));
 
                 let new = if exp > 0 || skips > 2 || queueing || loss > 0.08 {
@@ -458,6 +474,29 @@ async fn stream(
                         encoder,
                     });
                     (fr_acc, by_acc, enc_acc) = (0, 0, 0);
+                }
+
+                if n.is_multiple_of(per_sample)
+                    && let Some(r) = recorder.lock().unwrap().as_mut()
+                {
+                    let secs = diag::SAMPLE_EVERY.as_secs().max(1);
+                    r.set_encoder(&stats.encoder.lock().unwrap());
+                    let sample = Sample {
+                        rtt_ms: u16_of(path.rtt.as_millis()),
+                        min_rtt_ms: u16_of(path.min_rtt.as_millis()),
+                        loss_permille: u16_of(d_lost * 1000 / d_sent.max(1)),
+                        cwnd_kb: u32::try_from(path.cwnd / 1024).unwrap_or(u32::MAX),
+                        fps: u16_of(u64::from(d_frames) / secs),
+                        kbps: u32::try_from(d_bytes * 8 / 1000 / secs).unwrap_or(u32::MAX),
+                        target_kbps: bitrate / 1000,
+                        frame_ms: if d_frames > 0 { d_enc as f32 / d_frames as f32 / 1000.0 } else { 0.0 },
+                        ..d
+                    };
+                    if let Some(report) = r.push(sample) {
+                        send_report(&state, report, tunnel);
+                    }
+                    d = Sample::default();
+                    (d_bytes, d_frames, d_enc, d_sent, d_lost) = (0, 0, 0, 0, 0);
                 }
             }
         })
@@ -506,9 +545,10 @@ async fn stream(
         }
     };
 
+    let mut ended = String::new();
     let result = tokio::select! {
         r = control => r,
-        e = conn.closed() => { tracing::info!("connection closed: {e}"); Ok(()) }
+        e = conn.closed() => { tracing::info!("connection closed: {e}"); ended = e.to_string(); Ok(()) }
         _ = &mut sender => {
             let why = stats.failure.lock().unwrap().clone().unwrap_or_else(|| "video stopped".into());
             let _ = out_tx.send(HostMsg::Bye { reason: format!("host video failed: {why}") });
@@ -517,6 +557,7 @@ async fn stream(
         }
         _ = kicked => {
             tracing::info!("disconnected by the local user");
+            ended = "ended by the host user".into();
             let _ = out_tx.send(HostMsg::Bye { reason: "the host user ended the session".into() });
             tokio::time::sleep(Duration::from_millis(200)).await;
             Ok(())
@@ -527,9 +568,41 @@ async fn stream(
     for t in [sender, mouse, clip_fwd, files, ticker, writer] {
         t.abort();
     }
+    if let Some(r) = recorder.lock().unwrap().take() {
+        if ended.is_empty() {
+            ended = match &result {
+                Ok(()) => "closed by the client".into(),
+                Err(e) => format!("{e:#}"),
+            };
+        }
+        send_report(state, r.finish(&ended), tunnel);
+    }
     drop(input); // the input thread releases held keys once the mouse task is gone too
     let _ = tokio::task::spawn_blocking(move || video_thread.join()).await;
     result
+}
+
+/// Diagnostics for this session, when a server is configured to send them to.
+async fn recorder(state: &HostState, conn: &quinn::Connection, tunnel: bool) -> Option<Recorder> {
+    let server = state.config.lock().unwrap().server.clone()?;
+    // Sessions from the server's address came through its relay.
+    let server_ip = tokio::time::timeout(Duration::from_secs(3), server.resolve()).await.ok()?.ok()?.ip();
+    let route = if tunnel || conn.remote_address().ip() == server_ip { Route::Relay } else { Route::Direct };
+    Some(Recorder::new(diag::session_id(conn), Role::Host, route, tunnel))
+}
+
+/// Send a diagnostics report in the background.
+fn send_report(state: &Arc<HostState>, report: diag::Report, tunnel: bool) {
+    let Some(server) = state.config.lock().unwrap().server.clone() else { return };
+    let state = state.clone();
+    tokio::spawn(async move {
+        if tunnel {
+            rider_core::rendezvous::mark_tunnel(); // UDP to the server does not get through
+        }
+        if let Err(e) = rider_core::rendezvous::send_report(&state.identity, &server, report).await {
+            tracing::debug!("diagnostics report not sent: {e:#}");
+        }
+    });
 }
 
 /// Send one frame on its own stream. Returns false if it missed its deadline.

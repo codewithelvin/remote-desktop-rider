@@ -362,10 +362,10 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
             tokio::select! {
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
-                    tokio::spawn(session::handle(state.clone(), incoming));
+                    tokio::spawn(session::handle(state.clone(), incoming, false));
                 }
                 Some(incoming) = async { wan.as_ref()?.accept().await }, if wan.is_some() => {
-                    tokio::spawn(session::handle(state.clone(), incoming));
+                    tokio::spawn(session::handle(state.clone(), incoming, false));
                 }
                 _ = state.paired.notified(), if mode == Mode::PairOnce => {
                     // Let the client receive the result before closing.

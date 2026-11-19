@@ -2,6 +2,7 @@
 //! pinned mutual-TLS over QUIC, the wire protocol and pixel conversion.
 
 pub mod clipboard;
+pub mod diag;
 pub mod icon;
 pub mod identity;
 pub mod pixels;
