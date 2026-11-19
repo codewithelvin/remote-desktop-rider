@@ -16,6 +16,7 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 windows.workspace = true
+raw-window-handle = "0.6"
 windows-service.workspace = true
 # wgpu on DirectX 12 only (with the WARP software fallback): works on GPU-less
 # VMs and remote sessions where OpenGL is unavailable, and skipping the Vulkan,

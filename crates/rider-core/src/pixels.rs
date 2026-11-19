@@ -261,6 +261,93 @@ pub fn fit_rect(sw: usize, sh: usize, dw: usize, dh: usize) -> (usize, usize, us
     ((dw - w) / 2, (dh - h) / 2, w, h)
 }
 
+/// Downscales BGRA screen captures for encoding at a lower resolution
+/// (quality setting). Halves with a 2x2 average while the image is at least
+/// twice too big (keeps text legible), then finishes with bilinear
+/// filtering. Buffers are reused between frames.
+/// Cached bilinear taps: (source w, h, target w, h, x taps, y taps).
+type TapCache = (usize, usize, usize, usize, Vec<Tap>, Vec<Tap>);
+
+#[derive(Default)]
+pub struct Downscaler {
+    half: [Vec<u8>; 2],
+    out: Vec<u8>,
+    taps: Option<TapCache>,
+}
+
+impl Downscaler {
+    /// Scale `src` (`sw` x `sh`, `stride` bytes per row) to `dw` x `dh`;
+    /// returns tightly packed BGRA (`dw * 4` bytes per row).
+    pub fn scale(&mut self, src: &[u8], stride: usize, sw: usize, sh: usize, dw: usize, dh: usize) -> &[u8] {
+        assert!(dw > 0 && dh > 0 && dw <= sw && dh <= sh, "downscale only");
+        let [mut a, mut b] = std::mem::take(&mut self.half);
+        // Which buffer holds the current image: 0 = src, 1 = a, 2 = b.
+        let (mut level, mut cs, mut cw, mut ch) = (0, stride, sw, sh);
+        while cw >= 2 * dw && ch >= 2 * dh {
+            let (nw, nh) = (cw / 2, ch / 2);
+            level = match level {
+                0 => {
+                    halve(src, cs, nw, nh, &mut a);
+                    1
+                }
+                1 => {
+                    halve(&a, cs, nw, nh, &mut b);
+                    2
+                }
+                _ => {
+                    halve(&b, cs, nw, nh, &mut a);
+                    1
+                }
+            };
+            (cs, cw, ch) = (nw * 4, nw, nh);
+        }
+        let cur: &[u8] = match level {
+            0 => src,
+            1 => &a,
+            _ => &b,
+        };
+        if (cw, ch) == (dw, dh) {
+            self.out.clear();
+            for y in 0..dh {
+                self.out.extend_from_slice(&cur[y * cs..][..dw * 4]);
+            }
+        } else {
+            if self.taps.as_ref().is_none_or(|t| (t.0, t.1, t.2, t.3) != (cw, ch, dw, dh)) {
+                self.taps = Some((cw, ch, dw, dh, taps(cw, dw), taps(ch, dh)));
+            }
+            let (.., xt, yt) = self.taps.as_ref().unwrap();
+            self.out.resize(dw * dh * 4, 0);
+            self.out.par_chunks_exact_mut(dw * 4).enumerate().with_min_len(MIN_ROWS_PER_TASK).for_each(|(y, row)| {
+                let t = yt[y];
+                let (r0, r1) = (&cur[t.a as usize * cs..][..cw * 4], &cur[t.b as usize * cs..][..cw * 4]);
+                for (px, xt) in row.as_chunks_mut::<4>().0.iter_mut().zip(xt) {
+                    let (l, r) = (xt.a as usize * 4, xt.b as usize * 4);
+                    for c in 0..4 {
+                        let top = mix(r0[l + c] as u32, r0[r + c] as u32, xt.f);
+                        let bottom = mix(r1[l + c] as u32, r1[r + c] as u32, xt.f);
+                        px[c] = ((top * (256 - t.f) + bottom * t.f + 32_768) >> 16) as u8;
+                    }
+                }
+            });
+        }
+        self.half = [a, b];
+        &self.out
+    }
+}
+
+/// 2x2 average: `src` (rows of `stride` bytes) to `w` x `h` packed BGRA in `out`.
+fn halve(src: &[u8], stride: usize, w: usize, h: usize, out: &mut Vec<u8>) {
+    out.resize(w * h * 4, 0);
+    out.par_chunks_exact_mut(w * 4).enumerate().with_min_len(MIN_ROWS_PER_TASK).for_each(|(y, row)| {
+        let (r0, r1) = (&src[2 * y * stride..][..w * 8], &src[(2 * y + 1) * stride..][..w * 8]);
+        for ((o, a), b) in row.as_chunks_mut::<4>().0.iter_mut().zip(r0.as_chunks::<8>().0).zip(r1.as_chunks::<8>().0) {
+            for c in 0..4 {
+                o[c] = ((a[c] as u32 + a[c + 4] as u32 + b[c] as u32 + b[c + 4] as u32 + 2) >> 2) as u8;
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +466,28 @@ mod tests {
         assert_eq!(fit_rect(1920, 1080, 1920, 1200), (0, 60, 1920, 1080));
         assert_eq!(fit_rect(1920, 1080, 800, 450), (0, 0, 800, 450));
         assert_eq!(fit_rect(1080, 1920, 1000, 1000), (219, 0, 562, 1000));
+    }
+
+    #[test]
+    fn downscale_keeps_flat_colour_and_size() {
+        let (sw, sh) = (1920, 1080);
+        let px = [10u8, 120, 240, 255];
+        let src: Vec<u8> = px.iter().copied().cycle().take(sw * sh * 4).collect();
+        let mut d = Downscaler::default();
+        for (dw, dh) in [(1280, 720), (852, 480), (960, 540), (1918, 1078)] {
+            let out = d.scale(&src, sw * 4, sw, sh, dw, dh).to_vec();
+            assert_eq!(out.len(), dw * dh * 4, "{dw}x{dh}");
+            assert!(out.as_chunks::<4>().0.iter().all(|p| *p == px), "{dw}x{dh} colour");
+        }
+    }
+
+    #[test]
+    fn downscale_averages_detail() {
+        // A 1-pixel black/white checkerboard halves to mid grey, not aliasing.
+        let (sw, sh) = (8, 8);
+        let src: Vec<u8> =
+            (0..sw * sh).flat_map(|i| if (i % sw + i / sw) % 2 == 0 { [255u8; 4] } else { [0u8; 4] }).collect();
+        let out = Downscaler::default().scale(&src, sw * 4, sw, sh, 4, 4).to_vec();
+        assert!(out.iter().all(|&v| (127..=128).contains(&v)), "{out:?}");
     }
 }

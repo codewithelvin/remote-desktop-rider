@@ -26,6 +26,8 @@ pub enum VideoCmd {
     SelectMonitor(usize),
     Keyframe,
     SetBitrate(u32),
+    /// Encode at most this many lines (0 = full resolution).
+    MaxHeight(u32),
 }
 
 pub struct VideoPacket {
@@ -88,6 +90,8 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
     let mut enc: Option<H264Encoder> = None;
     let mut bitrate = cfg.start_bitrate_bps;
     let mut nv12 = Vec::new();
+    let mut max_height = 0usize;
+    let mut scaler = rider_core::pixels::Downscaler::default();
     let (mut w, mut h) = (0usize, 0usize);
     let mut capture_us = 0u64;
     let mut have_frame = false;
@@ -111,6 +115,15 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
                 }
                 VideoCmd::SelectMonitor(_) => {}
                 VideoCmd::Keyframe => force_kf = true,
+                VideoCmd::MaxHeight(m) if m as usize != max_height => {
+                    max_height = m as usize;
+                    // Reopen for a fresh full frame: the screen may not change for a while.
+                    cap = capture::open(&monitors[monitor])?;
+                    tracing::info!("max height {}", if m == 0 { "full".into() } else { m.to_string() });
+                    have_frame = false;
+                    force_kf = true;
+                }
+                VideoCmd::MaxHeight(_) => {}
                 VideoCmd::SetBitrate(b) => {
                     bitrate = b;
                     if let Some(e) = enc.as_mut() {
@@ -138,9 +151,16 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
 
         let fresh = match cap.next_frame(50) {
             Ok(Some(f)) => {
-                w = f.width & !1;
-                h = f.height & !1;
-                bgra_to_nv12(f.data, f.stride, w, h, &mut nv12);
+                let (sw, sh) = (f.width & !1, f.height & !1);
+                if max_height > 0 && sh > max_height {
+                    h = max_height & !1;
+                    w = (sw * h / sh) & !1;
+                    let small = scaler.scale(f.data, f.stride, sw, sh, w, h);
+                    bgra_to_nv12(small, w * 4, w, h, &mut nv12);
+                } else {
+                    (w, h) = (sw, sh);
+                    bgra_to_nv12(f.data, f.stride, w, h, &mut nv12);
+                }
                 capture_us = rider_core::now_us();
                 have_frame = true;
                 refine_left = REFINE_FRAMES;

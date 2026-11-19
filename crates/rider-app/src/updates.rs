@@ -1,6 +1,7 @@
-//! "Update available": checks GitHub releases in the background (at start and
-//! every few hours, unless turned off), downloads the installer with progress,
-//! verifies it and runs it silently. The installer asks for elevation itself,
+//! "Update available": checks GitHub releases on a background thread (shortly
+//! after start, then hourly, unless turned off; also while the app sits in
+//! the tray), announces a new version from the tray icon, downloads the
+//! installer with progress, verifies it and runs it silently. The installer asks for elevation itself,
 //! closes this app, installs, and reopens it with its window (`/show=1`).
 //!
 //! Only the installed copy updates itself: a build run from elsewhere (e.g.
@@ -8,13 +9,14 @@
 
 use eframe::egui;
 use rider_core::update::{self, Release, Version};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::core::w;
 
 /// First check shortly after start, then this often.
 const FIRST_CHECK: Duration = Duration::from_secs(20);
-const EVERY: Duration = Duration::from_secs(6 * 3600);
+const EVERY: Duration = Duration::from_secs(3600);
 /// Registry flag (HKCU) set when automatic checks are turned off.
 const NO_AUTO_CHECK: windows::core::PCWSTR = w!("NoUpdateCheck");
 
@@ -41,8 +43,8 @@ pub enum State {
 pub struct Updater {
     ctx: egui::Context,
     state: Arc<Mutex<State>>,
-    started: Instant,
-    last_check: Option<Instant>,
+    /// Automatic checks on (shared with the checking thread).
+    auto_on: Arc<AtomicBool>,
     pub installed: bool,
     pub auto: bool,
 }
@@ -56,14 +58,31 @@ impl Updater {
                 let _ = std::fs::remove_file(e.path());
             }
         }
-        Self {
+        let me = Self {
             ctx: ctx.clone(),
             state: Arc::new(Mutex::new(State::Idle)),
-            started: Instant::now(),
-            last_check: None,
+            auto_on: Arc::new(AtomicBool::new(!crate::sys::flag(NO_AUTO_CHECK))),
             installed: crate::sys::installed(),
             auto: !crate::sys::flag(NO_AUTO_CHECK),
+        };
+        if me.installed {
+            let (state, ctx, auto_on) = (me.state.clone(), me.ctx.clone(), me.auto_on.clone());
+            // Not tied to the window: it is not painted while hidden in the tray.
+            let _ = std::thread::Builder::new().name("update-check".into()).spawn(move || {
+                std::thread::sleep(FIRST_CHECK);
+                loop {
+                    let idle = matches!(
+                        state.lock().map(|s| s.clone()).unwrap_or(State::Idle),
+                        State::Idle | State::UpToDate | State::Failed { .. }
+                    );
+                    if auto_on.load(Ordering::Relaxed) && idle {
+                        run_check(&state, &ctx, false);
+                    }
+                    std::thread::sleep(EVERY);
+                }
+            });
         }
+        me
     }
 
     pub fn state(&self) -> State {
@@ -83,41 +102,24 @@ impl Updater {
 
     pub fn set_auto(&mut self, on: bool) {
         self.auto = on;
+        self.auto_on.store(on, Ordering::Relaxed);
         if on { crate::sys::clear_flag(NO_AUTO_CHECK) } else { crate::sys::set_flag(NO_AUTO_CHECK) }
     }
 
-    /// Call every frame: starts the periodic check when due.
-    pub fn tick(&mut self) {
-        if !self.installed || !self.auto || self.busy() {
-            return;
-        }
-        let due = match self.last_check {
-            None => self.started.elapsed() >= FIRST_CHECK,
-            Some(t) => t.elapsed() >= EVERY,
-        };
-        // A found update stays offered; checking again would only repeat it.
-        if due && !matches!(self.state(), State::Available(_)) {
-            self.check(false);
-        }
-    }
-
-    pub fn check(&mut self, manual: bool) {
+    /// "Check now".
+    pub fn check(&mut self) {
         if self.busy() {
             return;
         }
-        self.last_check = Some(Instant::now());
         let (state, ctx) = (self.state.clone(), self.ctx.clone());
-        Self::set(&state, &ctx, State::Checking { manual });
-        std::thread::spawn(move || {
-            let s = match update::newer() {
-                Ok(Some(r)) => State::Available(r),
-                Ok(None) => State::UpToDate,
-                // Background checks fail quietly (offline, proxy...); a manual one says why.
-                Err(e) if manual => State::Failed { error: format!("{e:#}"), release: None },
-                Err(_) => State::Idle,
-            };
-            Self::set(&state, &ctx, s);
-        });
+        std::thread::spawn(move || run_check(&state, &ctx, true));
+    }
+
+    /// The tray's "Update to ..." was clicked: install the offered version.
+    pub fn install_offered(&mut self) {
+        if let State::Available(r) = self.state() {
+            self.install(r);
+        }
     }
 
     /// Download, verify and start the installer of `release`.
@@ -147,6 +149,23 @@ impl Updater {
             Self::set(&state, &ctx, s);
         });
     }
+}
+
+/// Check GitHub (blocking) and record the result; a new version is also
+/// announced from the tray icon.
+fn run_check(state: &Mutex<State>, ctx: &egui::Context, manual: bool) {
+    Updater::set(state, ctx, State::Checking { manual });
+    let s = match update::newer() {
+        Ok(Some(r)) => {
+            crate::tray::announce_update(&r.version.to_string());
+            State::Available(r)
+        }
+        Ok(None) => State::UpToDate,
+        // Background checks fail quietly (offline, proxy...); a manual one says why.
+        Err(e) if manual => State::Failed { error: format!("{e:#}"), release: None },
+        Err(_) => State::Idle,
+    };
+    Updater::set(state, ctx, s);
 }
 
 fn download_dir() -> std::path::PathBuf {

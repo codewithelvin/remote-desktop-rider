@@ -36,7 +36,7 @@ use windows::core::{PCWSTR, PWSTR, w};
 pub const SESSION_EVENT: PCWSTR = w!(r"Global\RemoteDesktopRider-Session");
 
 const FIRST_CHECK: Duration = Duration::from_secs(2 * 60);
-const EVERY: Duration = Duration::from_secs(6 * 3600);
+const EVERY: Duration = Duration::from_secs(3600);
 /// After a failed or postponed attempt.
 const RETRY: Duration = Duration::from_secs(30 * 60);
 const APP_EXE: &str = "RemoteDesktopRider.exe";

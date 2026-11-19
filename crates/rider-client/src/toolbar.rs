@@ -1,7 +1,8 @@
-//! Session toolbar: a small bar at the top centre of the viewer with Full
-//! screen, Ctrl+Alt+Del, one button per remote monitor and Disconnect. It shows for a few
-//! seconds when the session starts; after that only a small tab stays at the
-//! top centre, and clicking that tab opens the bar. It never opens just because
+//! Session toolbar: a small bar at the top centre of the viewer with the
+//! session time, Full screen, Ctrl+Alt+Del, one button per remote monitor,
+//! Quality, Pin and Disconnect. It shows for a few seconds when the session
+//! starts; after that only a small tab stays at the top centre, and clicking
+//! that tab opens the bar. Pinned, it stays open. It never opens just because
 //! the pointer reaches the top edge: that is where remote browser tabs and
 //! title bars are, and a bar sliding in under the pointer would take the click
 //! meant for them (e.g. turn "close tab" into Disconnect).
@@ -26,7 +27,24 @@ pub enum Action {
     CtrlAltDel,
     /// Show this remote monitor (0-based).
     Monitor(u32),
+    /// Open the quality menu.
+    Quality,
+    /// Keep the bar open (or not).
+    Pin,
     Disconnect,
+    /// The session time: shown, not clickable.
+    Elapsed,
+}
+
+/// What the bar shows besides the buttons that are always there.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Extras {
+    /// Session time, e.g. "12:34" (hidden when empty).
+    pub elapsed: String,
+    /// Current quality label ("Auto", "720p"); `None` hides the button
+    /// (the host cannot change it).
+    pub quality: Option<String>,
+    pub pinned: bool,
 }
 
 /// Shown at the start of a session so people learn where it is.
@@ -57,6 +75,7 @@ pub struct Toolbar {
     fullscreen: bool,
     /// Remote monitor count and the one shown.
     monitors: (u32, u32),
+    extras: Extras,
     hover: Option<Action>,
     pressed: Option<Action>,
     /// Visible until this instant (None: pointer is on it, stay).
@@ -79,6 +98,7 @@ impl Toolbar {
             scale: 1.0,
             fullscreen: false,
             monitors: (0, 0),
+            extras: Extras::default(),
             hover: None,
             pressed: None,
             visible_until: Some(Instant::now() + INTRO),
@@ -104,13 +124,31 @@ impl Toolbar {
         true
     }
 
+    /// Update the time, quality and pin shown; returns true if it must be redrawn.
+    pub fn set_extras(&mut self, extras: Extras) -> bool {
+        if extras == self.extras {
+            return false;
+        }
+        self.extras = extras;
+        self.sprite = None;
+        self.visible()
+    }
+
     pub fn visible(&self) -> bool {
-        self.on_bar || self.visible_until.is_some_and(|t| Instant::now() < t)
+        self.extras.pinned || self.on_bar || self.visible_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// A button's horizontal extent and the bar's height (window px), to
+    /// open a menu under it.
+    pub fn button_rect(&self, action: Action) -> Option<(usize, usize, usize)> {
+        let s = self.sprite.as_ref()?;
+        let &(_, a, b) = s.buttons.iter().find(|b| b.0 == action)?;
+        Some((self.x + a, self.x + b, s.h))
     }
 
     /// When the bar should be hidden next (to schedule a redraw then).
     pub fn deadline(&self) -> Option<Instant> {
-        if self.on_bar { None } else { self.visible_until.filter(|t| Instant::now() < *t) }
+        if self.on_bar || self.extras.pinned { None } else { self.visible_until.filter(|t| Instant::now() < *t) }
     }
 
     /// Pointer moved to (x, y) physical px. Returns true if the bar changed.
@@ -126,7 +164,7 @@ impl Toolbar {
             self.on_bar = false;
             self.visible_until = Some(Instant::now() + LINGER);
         }
-        self.set_hover(if self.visible() { self.hit(x, y) } else { None });
+        self.set_hover(if self.visible() { self.hit(x, y).filter(|a| *a != Action::Elapsed) } else { None });
         (self.visible(), self.hover, self.tab_hover) != before
     }
 
@@ -177,7 +215,7 @@ impl Toolbar {
             return (true, None);
         }
         match self.pressed.take() {
-            Some(a) => (true, (self.hover == Some(a)).then_some(a)),
+            Some(a) => (true, (self.hover == Some(a) && a != Action::Elapsed).then_some(a)),
             None => (self.on_bar && self.visible(), None),
         }
     }
@@ -207,7 +245,7 @@ impl Toolbar {
     /// Draw over a frame of `w` x `h` pixels (XRGB).
     pub fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
         if self.sprite.is_none() {
-            self.sprite = render(self.scale, self.fullscreen, self.monitors, self.hover);
+            self.sprite = render(self.scale, self.fullscreen, self.monitors, &self.extras, self.hover);
         }
         let Some(s) = &self.sprite else { return };
         self.x = w.saturating_sub(s.w) / 2;
@@ -289,16 +327,25 @@ fn inside_round(x: usize, y: usize, w: usize, h: usize, scale: f64) -> bool {
     (x - cx).powi(2) + (y - cy).powi(2) <= r * r
 }
 
-fn labels(fullscreen: bool, (count, _): (u32, u32)) -> Vec<(Action, char, String)> {
-    let mut v = vec![if fullscreen {
+fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Action, char, String)> {
+    let mut v = Vec::new();
+    if !extras.elapsed.is_empty() {
+        v.push((Action::Elapsed, '\u{E916}', extras.elapsed.clone()));
+    }
+    v.push(if fullscreen {
         (Action::Fullscreen, '\u{E73F}', "Exit full screen".into())
     } else {
         (Action::Fullscreen, '\u{E740}', "Full screen".into())
-    }];
+    });
     v.push((Action::CtrlAltDel, '\u{E765}', "Ctrl+Alt+Del".into()));
     if count > 1 {
         v.extend((0..count).map(|i| (Action::Monitor(i), '\u{E7F4}', (i + 1).to_string())));
     }
+    if let Some(q) = &extras.quality {
+        // Label plus a down chevron: it opens a menu.
+        v.push((Action::Quality, '\u{E7B3}', format!("{q}  \u{25BE}")));
+    }
+    v.push((Action::Pin, if extras.pinned { '\u{E77A}' } else { '\u{E718}' }, String::new()));
     v.push((Action::Disconnect, '\u{E711}', "Disconnect".into()));
     v
 }
@@ -367,11 +414,17 @@ impl Drop for Gdi {
     }
 }
 
-fn render(scale: f64, fullscreen: bool, monitors: (u32, u32), hover: Option<Action>) -> Option<Sprite> {
+fn render(
+    scale: f64,
+    fullscreen: bool,
+    monitors: (u32, u32),
+    extras: &Extras,
+    hover: Option<Action>,
+) -> Option<Sprite> {
     let gdi = Gdi::new(scale)?;
     let s = |v: f64| (v * scale).round() as i32;
     let (pad, gap, h) = (s(14.0), s(8.0), s(36.0));
-    let items: Vec<_> = labels(fullscreen, monitors)
+    let items: Vec<_> = labels(fullscreen, monitors, extras)
         .into_iter()
         .map(|(act, icon, text)| {
             let (icon, text) = (wide(&icon.to_string()), wide(&text));
@@ -384,7 +437,7 @@ fn render(scale: f64, fullscreen: bool, monitors: (u32, u32), hover: Option<Acti
     let mut buttons = Vec::new();
     let mut x = edge;
     for (act, _, _, iw, tw) in &items {
-        let bw = pad + iw + gap + tw + pad;
+        let bw = if *tw > 0 { pad + iw + gap + tw + pad } else { pad + iw + pad };
         buttons.push((*act, x as usize, (x + bw) as usize));
         x += bw;
     }
@@ -436,6 +489,7 @@ fn render(scale: f64, fullscreen: bool, monitors: (u32, u32), hover: Option<Acti
     // The monitor on screen is marked; the hovered button is lighter (or red).
     let pill = |act: Action| buttons.iter().find(|b| b.0 == act).map(|&(_, a, b)| (a, b));
     let active = (monitors.0 > 1).then(|| pill(Action::Monitor(monitors.1))).flatten().map(|(a, b)| (a, b, ACCENT));
+    let pinned = extras.pinned.then(|| pill(Action::Pin)).flatten().map(|(a, b)| (a, b, ACCENT));
     let hovered = hover
         .and_then(|h| pill(h).map(|(a, b)| (a, b, if h == Action::Disconnect { DANGER } else { HOVER })))
         .filter(|_| hover != Some(Action::Monitor(monitors.1)) || monitors.0 < 2);
@@ -445,7 +499,8 @@ fn render(scale: f64, fullscreen: bool, monitors: (u32, u32), hover: Option<Acti
             let in_pill = |p: Option<(usize, usize, (u8, u8, u8))>| {
                 p.filter(|&(a, b, _)| x >= a && x < b && inside_round(x - a, y, b - a, hu, scale)).map(|p| p.2)
             };
-            let bg = in_pill(hovered).or_else(|| in_pill(active)).unwrap_or((BG.0, BG.1, BG.2));
+            let bg =
+                in_pill(hovered).or_else(|| in_pill(active)).or_else(|| in_pill(pinned)).unwrap_or((BG.0, BG.1, BG.2));
             let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
             let cx = fx.clamp(r, w as f64 - r);
             let cy = fy.min(hu as f64 - r);
@@ -483,7 +538,7 @@ mod tests {
         let mut buf = vec![0u32; 1200 * 800];
         t.draw(&mut buf, 1200, 800);
         let s = t.sprite.as_ref().expect("sprite");
-        assert_eq!(s.buttons.len(), 5);
+        assert_eq!(s.buttons.len(), 6, "full screen, ctrl+alt+del, 2 monitors, pin, disconnect");
         assert!(s.w > 300 && s.w < 1000 && s.h == 36);
         // Some label pixels are bright.
         assert!(s.px.iter().any(|p| (p & 0xFF) > 200));
@@ -525,5 +580,31 @@ mod tests {
         t.pointer(960.0, 500.0);
         assert!(t.visible(), "lingers briefly");
         assert!(t.deadline().is_some());
+    }
+
+    #[test]
+    fn extras_time_quality_and_pin() {
+        let mut t = Toolbar::new();
+        t.set_state(1.0, false, (1, 0));
+        let extras = Extras { elapsed: "1:05".into(), quality: Some("720p".into()), pinned: true };
+        t.set_extras(extras.clone());
+        let mut buf = vec![0u32; 1600 * 900];
+        t.draw(&mut buf, 1600, 900);
+        let acts: Vec<Action> = t.sprite.as_ref().unwrap().buttons.iter().map(|b| b.0).collect();
+        assert_eq!(
+            acts,
+            [Action::Elapsed, Action::Fullscreen, Action::CtrlAltDel, Action::Quality, Action::Pin, Action::Disconnect]
+        );
+        // Pinned: stays open with the pointer away and no deadline.
+        t.visible_until = None;
+        t.pointer(800.0, 600.0);
+        assert!(t.visible() && t.deadline().is_none());
+        // The time is not a button.
+        let (a, b, _) = t.button_rect(Action::Elapsed).unwrap();
+        t.pointer(((a + b) / 2) as f64, 10.0);
+        assert_eq!(t.hover, None);
+        assert!(t.press());
+        assert_eq!(t.release(), (true, None));
+        assert!(!t.set_extras(extras), "unchanged");
     }
 }

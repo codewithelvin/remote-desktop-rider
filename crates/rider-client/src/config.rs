@@ -24,11 +24,41 @@ pub struct ClientConfig {
     /// Rendezvous server for reaching hosts on other networks.
     #[serde(default)]
     pub server: Option<rider_core::rendezvous::ServerRef>,
+    /// Session window preferences, remembered between sessions.
+    #[serde(default)]
+    pub viewer: ViewerPrefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ViewerPrefs {
+    /// Keep the session toolbar open.
+    #[serde(default)]
+    pub pin_toolbar: bool,
+    /// Picture quality: at most this many lines, 0 = automatic.
+    #[serde(default)]
+    pub quality: u32,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
-        Self { device_name: rider_core::machine_name(), hosts: Vec::new(), server: None }
+        Self {
+            device_name: rider_core::machine_name(),
+            hosts: Vec::new(),
+            server: None,
+            viewer: ViewerPrefs::default(),
+        }
+    }
+}
+
+/// Change the viewer preferences in the saved config (re-read first: the
+/// desktop app may have changed other settings meanwhile).
+pub fn update_viewer(f: impl FnOnce(&mut ViewerPrefs)) {
+    let saved = ClientConfig::load().and_then(|mut c| {
+        f(&mut c.viewer);
+        c.save()
+    });
+    if let Err(e) = saved {
+        tracing::warn!("cannot save viewer settings: {e:#}");
     }
 }
 

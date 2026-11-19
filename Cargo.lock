@@ -3088,6 +3088,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "eframe",
+ "raw-window-handle",
  "rider-client",
  "rider-core",
  "serde",

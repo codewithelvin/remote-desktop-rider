@@ -5,7 +5,8 @@
 
 use crate::sys::{self, RemoteAccess};
 use anyhow::{Result, bail};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -28,9 +29,54 @@ const WM_QUIT_APP: u32 = WM_APP + 3;
 const ID_OPEN: usize = 1;
 const ID_MANAGE: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_UPDATE: usize = 4;
+/// The user clicked one of the icon's notifications.
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 const TIMER_STATUS: usize = 1;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// The tray window, for announcements from other threads.
+static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
+/// A newer version found by the update check ("0.1.8").
+static UPDATE: Mutex<Option<String>> = Mutex::new(None);
+/// "Update to ..." was chosen in the menu; the UI picks this up.
+static INSTALL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Announce a newer version: one notification per version, and an "Update
+/// to ..." item in the menu. Callable from any thread.
+pub fn announce_update(version: &str) {
+    {
+        let mut u = UPDATE.lock().unwrap();
+        if u.as_deref() == Some(version) {
+            return;
+        }
+        *u = Some(version.to_owned());
+    }
+    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
+    if hwnd == 0 {
+        return;
+    }
+    let mut nid = base(HWND(hwnd as *mut _));
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    copy(&mut nid.szInfoTitle, &format!("Remote Desktop Rider {version} is available"));
+    copy(&mut nid.szInfo, "Click here or choose Update in the tray menu to install it.");
+    // SAFETY: nid is fully initialised and refers to our icon; Shell_NotifyIconW
+    // may be called from any thread.
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+/// Whether "Update to ..." was chosen since the last call.
+pub fn take_install_request() -> bool {
+    INSTALL_REQUESTED.swap(false, Ordering::Relaxed)
+}
+
+fn request_install() {
+    INSTALL_REQUESTED.store(true, Ordering::Relaxed);
+    show_main(); // shows the download progress
+}
 
 pub struct Tray {
     hwnd: HWND,
@@ -73,6 +119,7 @@ impl Tray {
                 None,
             )?;
             TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+            TRAY_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
             add_icon(hwnd);
             SetTimer(Some(hwnd), TIMER_STATUS, 5000, None);
             Ok(Self { hwnd })
@@ -236,7 +283,15 @@ fn menu(hwnd: HWND) {
     unsafe {
         let Ok(m) = CreatePopupMenu() else { return };
         let status: Vec<u16> = status_text().encode_utf16().chain(std::iter::once(0)).collect();
+        let update: Option<Vec<u16>> = UPDATE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|v| format!("Update to {v}").encode_utf16().chain(std::iter::once(0)).collect());
         let _ = AppendMenuW(m, MF_STRING, ID_OPEN, w!("Open Remote Desktop Rider"));
+        if let Some(text) = &update {
+            let _ = AppendMenuW(m, MF_STRING, ID_UPDATE, PCWSTR(text.as_ptr()));
+        }
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(m, MF_STRING | MF_GRAYED, 0, PCWSTR(status.as_ptr()));
         let _ = AppendMenuW(m, MF_STRING, ID_MANAGE, w!("Manage this computer…"));
@@ -256,6 +311,7 @@ fn menu(hwnd: HWND) {
                 let _ = sys::relaunch_elevated("--manage");
             }
             ID_QUIT => quit(hwnd),
+            ID_UPDATE => request_install(),
             _ => {}
         }
     }
@@ -274,6 +330,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             match lparam.0 as u32 {
                 WM_LBUTTONUP | WM_LBUTTONDBLCLK => show_main(),
                 WM_RBUTTONUP | WM_CONTEXTMENU => menu(hwnd),
+                NIN_BALLOONUSERCLICK if UPDATE.lock().unwrap().is_some() => request_install(),
                 _ => {}
             }
             LRESULT(0)

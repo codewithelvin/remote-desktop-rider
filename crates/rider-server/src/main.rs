@@ -124,7 +124,7 @@ async fn serve(
     let cfg = rider_core::tls::server_config_alpn(
         &identity,
         Arc::new(rider_core::tls::AnyClient),
-        rider_core::tls::RENDEZVOUS_ALPN,
+        &[rider_core::tls::RENDEZVOUS_ALPN],
     )?;
     let endpoint = quinn::Endpoint::server(cfg, listen).with_context(|| format!("cannot listen on UDP {listen}"))?;
     let server = Arc::new(Server {

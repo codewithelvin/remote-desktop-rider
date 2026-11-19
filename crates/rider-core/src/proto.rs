@@ -76,7 +76,18 @@ pub enum ClientMsg {
     },
     /// Ctrl+Alt+Del on the host (cannot be sent as normal keystrokes).
     SendSas,
+    /// Encode at most this many lines (e.g. 720), 0 = full resolution.
+    /// Only sent to hosts that speak `tls::ALPN_V2`.
+    SetQuality {
+        max_height: u32,
+    },
+    /// Lock the host (Win+L cannot be sent: Windows reserves it locally).
+    /// Only sent to hosts that speak `tls::ALPN_V2`.
+    LockScreen,
 }
+
+/// Quality choices offered to the user: (max height, label); 0 = automatic.
+pub const QUALITIES: [(u32, &str); 4] = [(0, "Auto"), (1080, "1080p"), (720, "720p"), (480, "480p")];
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum HostMsg {

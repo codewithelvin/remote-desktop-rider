@@ -1,56 +1,59 @@
-<p align="center">
-  <img src="docs/screenshots/session.jpg" alt="A remote session in Remote Desktop Rider" width="820">
-</p>
-
 <h1 align="center">Remote Desktop Rider</h1>
 
 <p align="center">
   <b>Fast, private 1:1 remote desktop for Windows that stays usable on bad connections.</b><br>
   Help a family member, reach your office PC from home, or support a customer:<br>
-  over mobile data, hotel Wi-Fi or a VPN with high latency and packet loss.
+  over mobile data, hotel Wi-Fi, a strict company firewall or a slow VPN.
 </p>
 
 <p align="center">
-  <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/codewithelvin/remote-desktop-rider?label=download&color=2f6feb"></a>
-  <a href="https://github.com/codewithelvin/remote-desktop-rider/actions/workflows/ci.yml"><img alt="Build" src="https://github.com/codewithelvin/remote-desktop-rider/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4">
-  <img alt="Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
+  <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/codewithelvin/remote-desktop-rider?label=release&color=2f6feb"></a>
+  <a href="https://github.com/codewithelvin/remote-desktop-rider/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/codewithelvin/remote-desktop-rider/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <img alt="Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4">
+  <img alt="Server: Linux" src="https://img.shields.io/badge/server-Linux%20x86__64-555">
+  <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
 
-## Highlights
+<p align="center">
+  <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest"><b>Download</b></a> ·
+  <a href="#quick-start"><b>Quick start</b></a> ·
+  <a href="#security"><b>Security</b></a> ·
+  <a href="#self-hosting-the-server"><b>Self-hosting</b></a> ·
+  <a href="#troubleshooting"><b>Troubleshooting</b></a>
+</p>
 
-- **Smooth on poor networks.** QUIC over UDP, a cursor drawn locally, stale
-  frames dropped instead of resent, and bitrate that adapts live (300 kbps–20 Mbps).
-- **Private by design.** Devices pair once by comparing a code, every session is
-  end-to-end encrypted and needs the computer's PIN. No accounts, no cloud.
-- **Works everywhere.** Login screen, lock screen, UAC prompts and after a
-  restart. Direct connection on the same network, NAT hole punching or an
-  encrypted relay across the internet.
-- **Self-hosted.** The optional `rider-server` runs on any small Linux server and
-  only introduces devices: it can't see or take over sessions.
-- **Small and native.** One ~8 MB installer, hardware H.264 encoding
-  (QuickSync / NVENC / AMF), clipboard sync and file drop.
+<p align="center">
+  <img src="docs/screenshots/session.jpg" alt="A remote session in Remote Desktop Rider" width="820">
+</p>
 
-## Download
+## Features
 
-Get **rdr-setup-x.y.z.exe** from the
+| | |
+|---|---|
+| **Smooth on poor networks** | QUIC over UDP, hardware H.264 (QuickSync / NVENC / AMF), a locally drawn cursor, stale frames dropped instead of resent, and live adaptive bitrate (300 kbps–20 Mbps). |
+| **Quality you can pick** | **Auto / 1080p / 720p / 480p** in the session toolbar. *Auto* lowers the resolution on slow connections and raises it again when the link recovers. |
+| **Private by design** | Devices pair once by comparing a code. Every session is end-to-end encrypted and needs the computer's PIN. No accounts, no cloud. |
+| **Gets through firewalls** | Direct on the LAN, NAT hole punching or an encrypted relay across the internet. Falls back to a random UDP port, then to an HTTPS (TCP 443) tunnel through the system proxy. |
+| **Works everywhere on the host** | Login screen, lock screen, UAC prompts and after a restart. |
+| **Everyday tools** | Text clipboard sync both ways, drag-and-drop files to the host, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
+| **Self-hosted** | The optional `rider-server` runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions. |
+| **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
+| **Small and native** | One ~8 MB installer. Rust end to end. |
+
+## Quick start
+
+### 1. Install
+
+Download **`rdr-setup-x.y.z.exe`** from the
 [latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest)
-and run it on both computers (Windows 10/11, 64-bit). Every change on `main` is
-built and published there automatically.
+and run it on **both** computers (Windows 10/11, 64-bit). Every push to `main`
+is built and published there automatically.
 
+> [!NOTE]
 > The installer is not code-signed yet, so Windows SmartScreen may warn about an
 > unknown publisher: click **More info → Run anyway**.
 
-**Updates install themselves.** The app checks the releases every few hours and
-shows *Version x is available → Install update* (one Windows permission prompt;
-it reopens by itself). A computer with remote access turned on also updates
-unattended: its service installs a new release when nobody is connected and is
-back online within a minute, so a PC you only reach remotely stays current.
-Every download is checked against the SHA-256 published with the release. Both
-can be turned off (Settings → Updates; Manage → Remote access), and IT can still
-deploy silently with `rdr-setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`.
-
-## How it works
+### 2. Pair (once per device)
 
 <table>
   <tr>
@@ -58,94 +61,183 @@ deploy silently with `rdr-setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTA
     <td width="50%"><img src="docs/screenshots/computers.png" alt="Computers this device can control"></td>
   </tr>
   <tr>
-    <td><b>1. On the computer to control</b>: open <i>This computer → Manage this
+    <td><b>On the computer to control</b>: open <i>This computer → Manage this
     computer</i>, set a PIN, turn on remote access and click <b>Add a device</b>.
     It shows a short code.</td>
-    <td><b>2. On your device</b>: click <b>Add computer</b>, enter that code and
-    check that both screens show the same verification code. Done once.</td>
+    <td><b>On your device</b>: click <b>Add computer</b>, enter that code and
+    check that both screens show the same verification code.</td>
   </tr>
 </table>
 
+To pair and connect across networks, set your `rider-server` address and
+fingerprint once per computer in **This computer → Manage → Server** (see
+[Self-hosting](#self-hosting-the-server)). It applies in both directions: being
+reached and reaching others. Without a server, devices on the same network can
+still pair by address.
+
+### 3. Connect
+
 <img src="docs/screenshots/connect.png" alt="Connect dialog asking for the PIN" align="right" width="360">
 
-**3. Connect** whenever you need: click **Connect** and enter the PIN. Tick
-**Remember PIN on this device** and later connections open straight away, like
-unattended access in other tools (the PIN is encrypted for your Windows
-account). The remote computer shows a red banner while someone is connected;
-clicking it ends the session.
+Click **Connect** and enter the PIN. Tick **Remember PIN on this device** and
+later connections open straight away, like unattended access in other tools
+(the PIN is encrypted for your Windows account).
 
-The app lives in the notification area, starts when you sign in (can be turned
-off in Settings) and shows which of your computers are online. To reach
-computers on other networks, enter your `rider-server` address and fingerprint
-once per computer in **This computer → Manage → Server**: it applies to both
-directions (being reached and reaching others). Networks that filter UDP port
-47800 (some company firewalls) are handled automatically: the host falls back
-to a random high port for the server and for sessions through it. Where no
-UDP gets through at all, both sides switch to an HTTPS tunnel to the server
-on port 443 (through the system proxy, like a browser) and sessions go
-through its relay, still end-to-end encrypted.
+The remote computer shows a red banner while someone is connected. Clicking it
+ends the session.
+
+The app lives in the notification area, starts when you sign in (you can turn
+this off in Settings) and shows which of your computers are online.
 
 <br clear="right">
 
-### In a session
+## In a session
 
-Click the small tab at the top centre of the session window for the toolbar:
-**Full screen**, **Ctrl+Alt+Del**, one button per remote **monitor** and
-**Disconnect**. Windows key combinations (Win+R, Win+E, Win+P…), Alt+Tab, Alt+Esc and
-Alt+F4 act on the remote computer while its window is in front. Win+L and
-Ctrl+Alt+Del always stay on your own computer (Windows reserves them), so use
-the toolbar or `Ctrl+Alt+End` for the remote one.
+Click the small tab at the top centre of the session window to open the toolbar:
+
+| Toolbar item | What it does |
+|---|---|
+| Session timer | How long you have been connected |
+| **Full screen** | Toggle full screen |
+| **Ctrl+Alt+Del** | Send Ctrl+Alt+Del to the remote computer |
+| **1, 2, …** | Switch between remote monitors (shown when there are several) |
+| **Quality ▾** | Auto / 1080p / 720p / 480p |
+| Pin | Keep the toolbar open instead of hiding it |
+| **Disconnect** | End the session |
+
+While the session window is in front, Windows key combinations (Win+R, Win+E,
+Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.
 
 | Shortcut | Action |
 |---|---|
 | `Ctrl+Alt+End` | Ctrl+Alt+Del on the remote computer (login / lock screen) |
-| `Ctrl+Alt+Shift+M` | next monitor |
-| `Ctrl+Alt+Shift+F` | toggle fullscreen |
-| `Ctrl+Alt+Shift+Q` | disconnect |
-| drag a file onto the window | send it to the remote user's `Downloads\Rider` |
+| `Ctrl+Alt+Shift+L` | Lock the remote computer |
+| `Ctrl+Alt+Shift+F` | Toggle full screen |
+| `Ctrl+Alt+Shift+M` | Next monitor |
+| `Ctrl+Alt+Shift+Q` | Disconnect |
+| Drag a file onto the window | Send it to the remote user's `Downloads\Rider` |
 
-Text clipboard syncs both ways. Picture quality adjusts itself to the
-connection: there is nothing to set. The title bar shows fps, round-trip time,
+The text clipboard syncs both ways. The title bar shows fps, round-trip time,
 estimated latency and the encoder in use.
 
-## Under the hood
+## How it connects
 
-### Why it stays fast
+```mermaid
+flowchart LR
+    C["Your PC<br/>(rider-app / rider-client)"]
+    H["Remote PC<br/>(rider-host service)"]
+    S["Your rider-server<br/>rendezvous + relay"]
 
-| Problem on bad links | What Rider does |
-|---|---|
-| TCP head-of-line blocking (one lost packet freezes everything) | **QUIC over UDP**. Each video frame travels on its own stream, and mouse motion goes as unreliable datagrams. |
-| Retransmitting stale pixels | Frames that are not delivered within 500 ms are **abandoned**. The client asks for a fresh keyframe instead of waiting. |
-| Queues building up (bufferbloat) | **At most 3 frames in flight**. If the network is busy, capture is skipped, so the next frame is always *now*. |
-| Random loss collapsing throughput | **BBR** congestion control plus a delay-based **adaptive bitrate** (300 kbps–20 Mbps, changed live without keyframes). |
-| Encoder/decoder buffering | H.264 in **low-latency mode**: no B-frames, CBR, hardware encoder (QuickSync / NVENC / AMF) with software fallback. |
-| Laggy pointer | The **cursor is drawn locally** on the client, so it never waits for the network. |
-| Wasted bandwidth on static screens | **Zero traffic** when nothing changes, then a few refinement frames sharpen the image. |
+    C <-->|"1 · direct QUIC/UDP<br/>(LAN or hole punched)"| H
+    C -.->|"find host, punch NAT"| S
+    H -.->|"register, stay reachable"| S
+    C <-->|"2 · relayed QUIC/UDP"| S
+    S <--> H
+    C <-->|"3 · HTTPS tunnel, TCP 443<br/>(when no UDP gets through)"| S
+```
 
-### Security model
+1. **Direct.** On the same network, or across the internet once the server has
+   helped both sides punch through their NATs. LAN addresses are tried first.
+2. **Relay.** When no direct path works, the session goes through the server's
+   UDP relay.
+3. **HTTPS tunnel.** Where no UDP gets through at all (some company networks),
+   both sides carry their traffic inside a WebSocket over HTTPS on port 443,
+   through the system proxy, like a browser. Sessions then use the relay.
 
-- Every device has its own **Ed25519 identity key**. There is no CA and no central
-  server that could be compromised to impersonate a host.
-- **One-time pairing:** the host opens a pairing window (`rider-host pair`). Both
-  screens show a 6-digit **verification code** derived from both keys *and* the
-  live TLS session. The two people compare the codes; a man-in-the-middle would
-  produce different codes.
-- After pairing, both sides **pin** each other's key. The host rejects unpaired
-  devices **during the TLS handshake**, before any application code runs. The
-  client refuses a host whose key changed.
-- Every session also requires the host **PIN** (Argon2id-hashed, exponential
-  back-off, locked for 15 minutes after 10 failures). A stolen client laptop is
-  not enough on its own.
-- While someone is connected, the host shows a **red banner**. The banner is
-  hidden from the stream. Clicking it ends the session immediately.
+On every path the session is end-to-end encrypted with the keys pinned at
+pairing. The server and relay only see ciphertext. If the host's usual UDP
+port 47800 is filtered, it also uses a second, random high port for the server
+and for sessions through it. If the server is down, a known direct address is
+still tried. The viewer shows which path it chose.
+
+## Security
+
+- **Device keys, pinned at pairing.** Every device has its own **Ed25519
+  identity key**. There is no CA and no central server that could be
+  compromised to impersonate a host.
+- **Pairing by code, confirmed on both sides.** The host opens a pairing window
+  and shows a short code. Both screens then show a 6-digit **verification code**
+  derived from both keys *and* the live TLS session. The two people compare
+  them; a man-in-the-middle would produce different codes.
+- **Mutual TLS.** After pairing, both sides pin each other's key. The host
+  rejects unpaired devices **during the TLS handshake**, before any application
+  code runs. The client refuses a host whose key changed.
+- **A PIN for every session.** Argon2id-hashed, exponential back-off, locked
+  for 15 minutes after 10 failures. A stolen client laptop is not enough on its
+  own.
+- **One session at a time**, with a red banner on the host while someone is
+  connected. The banner is hidden from the stream; clicking it ends the session.
+- **The server sees only ciphertext.** It can't watch, take over or
+  impersonate a host. It answers the same "offline or not allowed" to everyone
+  not paired with a host and rate-limits requests per IP (for the HTTPS tunnel,
+  per real client address).
+- **Locked-down files.** The host's private key and trust store live in
+  `%ProgramData%\RemoteDesktopRider`, readable only by SYSTEM and Administrators.
+
+### Connection diagnostics
+
+To help tune connections, both ends of a session send **your own server** a
+small report when it ends (and every 10 minutes during long ones). Every 5
+seconds it samples round-trip time, packet loss, frame rate, bitrate, encode or
+decode time and latency, plus whether the path was direct, relayed or tunneled.
+
+Reports hold **numbers only**: no screen content, input, names or addresses.
+The server accepts them only from devices it knows and writes them to its log
+(`journalctl -u rider-server | grep diag`). Host and client reports of one
+session share a random session number.
+
+## Updates
+
+The app and the host service check GitHub Releases every hour.
+
+- **App:** shows a tray notification and an **Update to x.y.z** item in the tray
+  menu. One Windows permission prompt, then it reopens by itself.
+- **Service:** on a computer with remote access turned on, installs a new
+  release unattended when nobody is connected and is back online within a
+  minute, so a PC you only reach remotely stays current.
+- Every download is checked against the **SHA-256** published with the release.
+- Both can be turned off (Settings → Updates; Manage → Remote access, or
+  `rider-host auto-update off`). IT can deploy silently with
+  `rdr-setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`.
+
+## Self-hosting the server
+
+Without a server, devices reach each other only on the same network, over a
+VPN or through a port forward. To connect from anywhere, run the small
+`rider-server` on any machine both sides can reach (a cheap VPS is plenty). A
+Linux x86_64 binary is attached to every release.
+
+**Install or upgrade (systemd):**
+
+1. Download `rider-server-<version>-linux-x86_64` from the
+   [latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest)
+   and save it as `rider-server` next to [`deploy/install.sh`](deploy/install.sh)
+   and [`deploy/rider-server.service`](deploy/rider-server.service).
+2. Run `sudo bash install.sh [public-ip]` (the IP is needed behind cloud NAT).
+   It installs the hardened unit, opens UDP 47900 and 47901–47999 in ufw and
+   keeps the server key across upgrades, so the fingerprint never changes.
+3. Print the fingerprint with `rider-server info`.
+4. **Optional, for networks that block UDP:** put nginx with a real certificate
+   (e.g. Let's Encrypt) in front for the HTTPS tunnel, as described in
+   [`deploy/nginx-rider-tunnel.conf`](deploy/nginx-rider-tunnel.conf), and open
+   TCP 443.
+
+**Then, once per computer:** enter the server name (e.g. `rider.example.com`)
+and fingerprint in **This computer → Manage → Server**, or use the command line:
+
+```powershell
+rider-host   set-server rider.example.com <server-fingerprint>   # host; restart the service after
+rider-client set-server rider.example.com <server-fingerprint>
+```
 
 ## Command line
 
-The app runs these tools for you; they also work on their own. All host
-commands need an **elevated** terminal (Run as administrator): the host's private key and trust store live in `%ProgramData%\RemoteDesktopRider`,
-readable only by SYSTEM and Administrators.
+The app runs these tools for you; they also work on their own.
 
-On the **host** (the machine to be controlled):
+<details>
+<summary><b>Host</b> (<code>rider-host</code>, the machine to be controlled)</summary>
+
+All host commands need an **elevated** terminal (Run as administrator).
 
 ```powershell
 rider-host set-pin             # once
@@ -156,71 +248,132 @@ rider-host pair                # once per new client device (pauses the service 
 `service install` copies the binary to `%ProgramFiles%\RemoteDesktopRider`, so
 only administrators can replace what runs as SYSTEM. It also adds a firewall
 rule for UDP 47800, registers auto-restart on failure, and allows Ctrl+Alt+Del
-from services. `rider-host service status|stop|start|uninstall` manage it, and
+from services.
+
+| Command | Purpose |
+|---|---|
+| `service status\|start\|stop\|uninstall` | Manage the service (uninstall keeps pairings) |
+| `set-pin` | Set or change the session PIN |
+| `clients` / `revoke <device>` | List or remove paired devices |
+| `info` | Show this host's identity and settings |
+| `set-server <addr> <fingerprint>` | Use a rendezvous server |
+| `auto-update on\|off` | Unattended updates (on by default) |
+| `run [--pair]` | Serve from the terminal until Ctrl+C, without the service |
+
 `set-pin`, `revoke` and `clients` apply to the running service immediately.
-`rider-host auto-update on|off` controls unattended updates (on by default).
 Logs: `%ProgramData%\RemoteDesktopRider\host\logs`.
 
-Without the service, `rider-host` (or `rider-host run --pair`) serves from the
-terminal until Ctrl+C.
+</details>
 
-On the **client**:
+<details>
+<summary><b>Client</b> (<code>rider-client</code>)</summary>
 
 ```powershell
-rider-client pair 192.168.1.20 --name office   # compare the code with the host
+rider-client pair 192.168.1.20 --name office   # same network: compare the code with the host
+rider-client pair SF6-CK6                       # any network, with a server set
 rider-client connect office                     # asks for the PIN
 ```
 
-### Across the internet with the command line
+| Command | Purpose |
+|---|---|
+| `pair <code or address>` | One-time pairing with a host running `rider-host pair` |
+| `connect <name or address>` | Open a session |
+| `list` / `forget <host>` | List or remove paired hosts |
+| `info` | Show this device's identity |
+| `set-server <addr> <fingerprint>` | Use a rendezvous server |
 
-Without a server, the client needs the host's address, so it only works on the
-same network, over a VPN or through a port forward. To connect from anywhere,
-run the small `rider-server` on any machine both sides can reach (a cheap VPS):
+With a server set, `rider-host pair` also shows a short code (e.g. `SF6-CK6`).
+`connect` asks the server for the host's addresses, punches through both NATs
+and uses a direct path when one works (LAN first), or the relay when it
+doesn't.
+
+</details>
+
+<details>
+<summary><b>Server</b> (<code>rider-server</code>)</summary>
 
 ```sh
 rider-server run                 # UDP 47900 + relay ports 47901-47999
-rider-server info                # prints the fingerprint for the commands below
+rider-server info                # prints the fingerprint and setup commands
 ```
 
-To install or upgrade it on a Linux server with systemd, download
-`rider-server-<version>-linux-x86_64` from the
-[latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest),
-save it as `rider-server` next to `deploy/install.sh` and `deploy/rider-server.service` and run
-`sudo bash install.sh <public-ip>`. It sets up the hardened unit, opens the UDP
-ports in ufw and prints the fingerprint. For the HTTPS fallback (networks
-that block UDP), put nginx with a real certificate in front as described in
-`deploy/nginx-rider-tunnel.conf`. Then, once per device:
+`run` also takes `--public-ip` (behind NAT), `--relay-ports` and
+`--tunnel-listen 127.0.0.1:47900` (the HTTPS tunnel behind a TLS web server).
+See [`deploy/rider-server.service`](deploy/rider-server.service) for the full
+command line used in production.
 
-```powershell
-rider-host   set-server vps.example.com <server-fingerprint>   # host; restart the service after
-rider-client set-server vps.example.com <server-fingerprint>
-```
+</details>
 
-`rider-host pair` now also shows a short code (e.g. `SF6-CK6`); on the client,
-`rider-client pair SF6-CK6` works from any network. `connect` asks the server
-for the host's addresses, punches through both NATs and uses a direct path
-when one works (LAN first), or the server's relay when it doesn't. The viewer
-prints which path it chose. If the server is down, a known direct address is
-still tried.
+## Troubleshooting
 
-The server only introduces devices. Sessions stay end-to-end encrypted with
-the keys pinned at pairing, so the server can't watch or take over a session,
-and it can't impersonate a host (the verification code would differ when
-pairing by code). It answers the same "offline or not allowed" to everyone who
-isn't paired with a host and rate-limits requests per IP (for the HTTPS
-tunnel, per real client address).
+<details>
+<summary><b>Win+L locks my own PC, not the remote one</b></summary>
 
-To help tune connections, both ends of a session send the server a small
-diagnostics report when it ends (and every 10 minutes during long ones):
-every 5 s the round-trip time, packet loss, frame rate, bitrate, encode or
-decode time and latency, plus whether the path was direct, relayed or
-tunneled. Reports hold numbers only: no screen content, input, names or
-addresses. The server accepts them only from devices it knows and writes them
-to its log (`journalctl -u rider-server | grep diag`), where host and client
-reports of one session share a random session number.
+Windows reserves Win+L (and Ctrl+Alt+Del) for the local computer. Use
+`Ctrl+Alt+Shift+L` to lock the remote computer, and `Ctrl+Alt+End` or the
+toolbar for Ctrl+Alt+Del.
 
+</details>
 
-### How unattended access works
+<details>
+<summary><b>No code appears when I click "Add a device"</b></summary>
+
+The code comes from your server. Set the **Server** in **This computer →
+Manage** (address and fingerprint), then try again. Without a server, only
+devices on the same network can add this computer, using one of the addresses
+the dialog shows.
+
+</details>
+
+<details>
+<summary><b>It doesn't connect from a company network</b></summary>
+
+This is handled automatically when the server is set up for it. If UDP 47800
+is filtered, the host uses a random high port. If no UDP gets through at all,
+both sides switch to the HTTPS tunnel on TCP 443 through the system proxy. That
+needs nginx with a real certificate on the server: see
+[`deploy/nginx-rider-tunnel.conf`](deploy/nginx-rider-tunnel.conf).
+
+</details>
+
+<details>
+<summary><b>The picture is blurry or choppy</b></summary>
+
+On *Auto*, quality follows the connection. Pick a fixed resolution in the
+toolbar's quality menu if you prefer: 720p or 480p often feels smoother on a
+weak link. The title bar shows round-trip time and latency to tell you how the
+connection is doing.
+
+</details>
+
+<details>
+<summary><b>SmartScreen warns about the installer</b></summary>
+
+The installer isn't code-signed yet. Click **More info → Run anyway**. Updates
+are checked against the SHA-256 published with each release.
+
+</details>
+
+## Under the hood
+
+<details>
+<summary><b>Why it stays fast</b></summary>
+
+| Problem on bad links | What Rider does |
+|---|---|
+| TCP head-of-line blocking (one lost packet freezes everything) | **QUIC over UDP**. Each video frame travels on its own stream, and mouse motion goes as unreliable datagrams. |
+| Retransmitting stale pixels | Frames that are not delivered within 500 ms are **abandoned**. The client asks for a fresh keyframe instead of waiting. |
+| Queues building up (bufferbloat) | **At most 3 frames in flight**. If the network is busy, capture is skipped, so the next frame is always *now*. |
+| Random loss collapsing throughput | **BBR** congestion control plus a delay-based **adaptive bitrate** (300 kbps–20 Mbps, changed live without keyframes). |
+| Too many pixels for the bitrate | **Auto quality** drops to 720p or 480p when the bitrate stays low, and steps back up after a long good stretch. |
+| Encoder/decoder buffering | H.264 in **low-latency mode**: no B-frames, CBR, hardware encoder (QuickSync / NVENC / AMF) with software fallback. |
+| Laggy pointer | The **cursor is drawn locally** on the client, so it never waits for the network. |
+| Wasted bandwidth on static screens | **Zero traffic** when nothing changes, then a few refinement frames sharpen the image. |
+
+</details>
+
+<details>
+<summary><b>How unattended access works</b></summary>
 
 A service running in session 0 can't see the screen. The `RemoteDesktopRider`
 service (LocalSystem) therefore launches `rider-host agent` **as SYSTEM inside
@@ -230,23 +383,9 @@ kill-on-close job object, so it never outlives the service. Its capture and
 input threads follow the *input desktop*, which is how they reach the login
 screen, lock screen and UAC prompts. Ctrl+Alt+Del is generated with `SendSAS`.
 
-### Layout
+</details>
 
-```
-crates/
-  rider-core    identity, pinned TLS, pairing code, protocol, clipboard, pixel conversion
-  rider-media   Media Foundation H.264 encoder (hardware first) and decoder
-  rider-host    capture (DXGI, GDI fallback), video pipeline, input injection, banner,
-                sessions, Windows service + SYSTEM session agent
-  rider-client  CLI, network session, in-order decoder thread, viewer window
-  rider-server  rendezvous (registration, pairing codes, NAT hole punching) and UDP relay
-  rider-app     the desktop app (computer list, pairing, this computer's settings, tray)
-packaging/      Windows installer (Inno Setup)
-deploy/         systemd unit and install script for rider-server
-test/           Vagrant VMs: Windows 11 host (vm/), Ubuntu rider-server (server-vm/)
-```
-
-## Building
+## Building from source
 
 Needs Rust stable, the MSVC build tools and the Windows 10/11 SDK (`rc.exe`, for
 the app icon).
@@ -257,13 +396,37 @@ cargo build --profile quick        # day-to-day: no LTO, ~30 s rebuilds (target\
 .\packaging\windows\build.ps1      # installer (needs Inno Setup 6) -> target\installer
 ```
 
-Releases are made by GitHub Actions: every push to `main` passes fmt, clippy and
-the tests, gets the next patch version (`v0.1.0`, `v0.1.1`, …) and is published
-with its installer. Bump `major.minor` in `Cargo.toml` for bigger steps.
+<details>
+<summary><b>Releases</b></summary>
+
+GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)) builds every push. Each
+push to `main` that passes fmt, clippy and the tests gets the next patch version
+(`v0.1.0`, `v0.1.1`, …) and is published with `rdr-setup-<version>.exe` and
+`rider-server-<version>-linux-x86_64`. Bump `major.minor` in `Cargo.toml` for
+bigger steps.
+
+</details>
+
+## Project layout
+
+```
+crates/
+  rider-app     the desktop app (computer list, pairing, this computer's settings, tray)
+  rider-client  viewer window, network session, in-order decoder thread, CLI
+  rider-host    capture (DXGI, GDI fallback), video pipeline, input injection, banner,
+                sessions, Windows service + SYSTEM session agent
+  rider-core    identity, pinned TLS, pairing code, protocol, rendezvous, HTTPS tunnel,
+                diagnostics, clipboard, pixel conversion
+  rider-media   Media Foundation H.264 encoder (hardware first) and decoder
+  rider-server  rendezvous (registration, pairing codes, NAT hole punching), UDP relay,
+                HTTPS tunnel endpoint, diagnostics log
+packaging/      Windows installer (Inno Setup)
+deploy/         systemd unit, install script and nginx config for rider-server
+test/           Vagrant VMs: Windows 11 host (vm/), Ubuntu rider-server (server-vm/)
+```
 
 ## Roadmap
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: all monitors in one window,
-code signing, then performance on poor links (GPU
-conversion and decoding, FEC, intra-refresh) and host→client files, audio and
-an audit log.
+code signing, then performance on poor links (GPU conversion and decoding, FEC,
+intra-refresh) and host→client files, audio and an audit log.

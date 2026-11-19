@@ -298,7 +298,7 @@ impl PeerSocket {
         server: &ServerRef,
     ) -> Result<(quinn::Connection, quinn::SendStream, quinn::RecvStream)> {
         let addr = server.resolve().await?;
-        let cfg = tls::client_config_alpn(identity, Some(server.fingerprint()?), tls::RENDEZVOUS_ALPN)?;
+        let cfg = tls::client_config_alpn(identity, Some(server.fingerprint()?), &[tls::RENDEZVOUS_ALPN])?;
         let conn =
             tokio::time::timeout(Duration::from_secs(10), self.endpoint.connect_with(cfg, addr, tls::SERVER_NAME)?)
                 .await

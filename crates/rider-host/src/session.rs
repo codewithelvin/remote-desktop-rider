@@ -333,6 +333,8 @@ async fn stream(
     let expired = Arc::new(AtomicU32::new(0));
     let (vtx, mut vrx) = mpsc::channel::<VideoPacket>(4);
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<VideoCmd>();
+    // The client's quality choice: max lines, 0 = automatic.
+    let quality = Arc::new(AtomicU32::new(0));
     let max_bitrate = cfg.max_bitrate_kbps.max(500) * 1000;
     let video_thread = video::spawn(video::Pipeline {
         monitors: monitors.clone(),
@@ -417,7 +419,7 @@ async fn stream(
         let cmd_tx = cmd_tx.clone();
         let out_tx = out_tx.clone();
         let expired = expired.clone();
-        let (state, recorder) = (state.clone(), recorder.clone());
+        let (state, recorder, quality) = (state.clone(), recorder.clone(), quality.clone());
         tokio::spawn(async move {
             let mut bitrate = START_BITRATE.min(max_bitrate);
             // Diagnostics totals over one sample interval.
@@ -425,6 +427,7 @@ async fn stream(
             let (mut d_bytes, mut d_frames, mut d_enc, mut d_sent, mut d_lost) = (0u64, 0u32, 0u64, 0u64, 0u64);
             let per_sample = (diag::SAMPLE_EVERY.as_millis() / 500) as u32;
             let mut last = conn.stats().path;
+            let mut auto = AutoResolution::default();
             let mut tick = tokio::time::interval(Duration::from_millis(500));
             let mut n = 0u32;
             let (mut fr_acc, mut by_acc, mut enc_acc) = (0u32, 0u64, 0u64);
@@ -460,6 +463,9 @@ async fn stream(
                 if new.abs_diff(bitrate) > bitrate / 20 {
                     bitrate = new;
                     let _ = cmd_tx.send(VideoCmd::SetBitrate(bitrate));
+                }
+                if let Some(h) = auto.update(quality.load(Ordering::Relaxed), bitrate) {
+                    let _ = cmd_tx.send(VideoCmd::MaxHeight(h));
                 }
 
                 fr_acc += frames;
@@ -531,6 +537,22 @@ async fn stream(
                 ClientMsg::Clipboard { text } => {
                     let _ = clip_remote_tx.send(text);
                 }
+                ClientMsg::SetQuality { max_height } => {
+                    tracing::info!(
+                        "quality: {}",
+                        if max_height == 0 { "auto".into() } else { format!("{max_height}p") }
+                    );
+                    quality.store(max_height, Ordering::Relaxed);
+                    // Auto starts again from full resolution.
+                    let _ = cmd_tx.send(VideoCmd::MaxHeight(max_height));
+                }
+                ClientMsg::LockScreen => {
+                    tracing::info!("locking at the client's request");
+                    // SAFETY: no arguments; fails harmlessly if nobody is signed in.
+                    if let Err(e) = unsafe { windows::Win32::System::Shutdown::LockWorkStation() } {
+                        tracing::warn!("cannot lock: {e}");
+                    }
+                }
                 ClientMsg::Hello { .. } | ClientMsg::Auth { .. } | ClientMsg::PairConfirm { .. } => {}
             }
         }
@@ -580,6 +602,71 @@ async fn stream(
     drop(input); // the input thread releases held keys once the mouse task is gone too
     let _ = tokio::task::spawn_blocking(move || video_thread.join()).await;
     result
+}
+
+/// "Auto" quality: lower the resolution when the adaptive bitrate stays low
+/// (fewer pixels at the same bitrate look sharper and move smoother), and
+/// raise it again once the connection has room. Hysteresis keeps it from
+/// flapping: down after a few seconds, up only after a long good stretch.
+#[derive(Default)]
+struct AutoResolution {
+    /// Current automatic cap (0 = full resolution).
+    current: u32,
+    /// A different cap the bitrate asks for, and since when.
+    pending: Option<(u32, Instant)>,
+    /// The user's choice at the last update.
+    choice: u32,
+}
+
+impl AutoResolution {
+    const DOWN_AFTER: Duration = Duration::from_secs(4);
+    const UP_AFTER: Duration = Duration::from_secs(20);
+
+    /// The cap for this bitrate, ignoring history.
+    fn wanted(bitrate: u32) -> u32 {
+        match bitrate {
+            ..900_000 => 480,
+            900_000..2_200_000 => 720,
+            _ => 0,
+        }
+    }
+
+    /// Lines as a comparable size (0 = full = largest).
+    fn size(cap: u32) -> u32 {
+        if cap == 0 { u32::MAX } else { cap }
+    }
+
+    /// Called twice a second; returns a new cap to apply.
+    fn update(&mut self, choice: u32, bitrate: u32) -> Option<u32> {
+        if choice != self.choice {
+            // A fixed choice was made (applied by the control loop), or Auto
+            // was picked again and restarts from full resolution.
+            (self.choice, self.current, self.pending) = (choice, 0, None);
+            return None;
+        }
+        if choice != 0 {
+            return None;
+        }
+        let want = Self::wanted(bitrate);
+        if want == self.current {
+            self.pending = None;
+            return None;
+        }
+        let since = match self.pending {
+            Some((p, t)) if p == want => t,
+            _ => {
+                self.pending = Some((want, Instant::now()));
+                return None;
+            }
+        };
+        let wait = if Self::size(want) < Self::size(self.current) { Self::DOWN_AFTER } else { Self::UP_AFTER };
+        if since.elapsed() < wait {
+            return None;
+        }
+        self.current = want;
+        self.pending = None;
+        Some(want)
+    }
 }
 
 /// Diagnostics for this session, when a server is configured to send them to.
@@ -671,4 +758,27 @@ async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) 
     write_msg(&mut send, &FileResult { ok, message }).await?;
     let _ = send.finish();
     Ok(())
+}
+
+#[cfg(test)]
+mod auto_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn steps_down_quickly_up_slowly_and_respects_choice() {
+        let mut a = AutoResolution::default();
+        assert_eq!(a.update(0, 5_000_000), None, "full resolution already");
+        assert_eq!(a.update(0, 600_000), None, "not at once");
+        a.pending = a.pending.map(|(p, t)| (p, t - AutoResolution::DOWN_AFTER));
+        assert_eq!(a.update(0, 600_000), Some(480));
+        assert_eq!(a.update(0, 3_000_000), None);
+        a.pending = a.pending.map(|(p, t)| (p, t - AutoResolution::DOWN_AFTER));
+        assert_eq!(a.update(0, 3_000_000), None, "going up waits longer");
+        a.pending = a.pending.map(|(p, t)| (p, t - AutoResolution::UP_AFTER));
+        assert_eq!(a.update(0, 3_000_000), Some(0));
+        // A fixed choice turns the automatic steps off.
+        assert_eq!(a.update(720, 100_000), None);
+        assert_eq!(a.update(720, 100_000), None);
+        assert!(a.pending.is_none());
+    }
 }

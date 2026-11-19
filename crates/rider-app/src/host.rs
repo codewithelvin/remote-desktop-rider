@@ -589,7 +589,8 @@ fn parse_event(line: &str) -> Option<PairEvent> {
 }
 
 impl eframe::App for HostApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        crate::sys::smooth_monitor_moves(frame);
         let ctx = ui.ctx().clone();
         self.handle_messages();
         egui::CentralPanel::default()

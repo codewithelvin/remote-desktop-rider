@@ -218,6 +218,21 @@ pub fn first_instance() -> bool {
     }
 }
 
+/// Stop the main window shaking when dragged between monitors with
+/// different scaling (see `rider_core::dpi`). Cheap after the first call.
+pub fn smooth_monitor_moves(frame: &eframe::Frame) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    static DONE: std::sync::Once = std::sync::Once::new();
+    if DONE.is_completed() {
+        return;
+    }
+    if let Ok(h) = frame.window_handle()
+        && let RawWindowHandle::Win32(h) = h.as_raw()
+    {
+        DONE.call_once(|| rider_core::dpi::follow_windows(windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

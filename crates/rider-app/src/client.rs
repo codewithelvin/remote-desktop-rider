@@ -745,7 +745,7 @@ impl ClientApp {
                 let state = self.updater.state();
                 let checking = matches!(state, State::Checking { .. });
                 if ui.add_enabled(!checking, egui::Button::new("Check now")).clicked() {
-                    self.updater.check(true);
+                    self.updater.check();
                 }
                 match state {
                     State::Checking { manual: true } => {
@@ -940,7 +940,8 @@ impl ClientApp {
 }
 
 impl eframe::App for ClientApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        crate::sys::smooth_monitor_moves(frame);
         let ctx = ui.ctx().clone();
         if self.hide_in > 0 {
             self.hide_in -= 1;
@@ -954,7 +955,9 @@ impl eframe::App for ClientApp {
         self.handle_messages();
         self.watch_config();
         self.poll_online();
-        self.updater.tick();
+        if crate::tray::take_install_request() {
+            self.updater.install_offered();
+        }
         // Keep timers (online polling, service state) ticking while shown.
         ctx.request_repaint_after(Duration::from_secs(2));
 

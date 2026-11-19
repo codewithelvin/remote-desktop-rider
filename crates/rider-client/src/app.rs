@@ -8,6 +8,7 @@
 //!   Ctrl+Alt+Shift+M  next monitor
 //!   Ctrl+Alt+Shift+F  toggle fullscreen
 //!   Ctrl+Alt+Shift+Q  disconnect
+//!   Ctrl+Alt+Shift+L  lock the remote computer (Win+L always locks this one)
 //!   Ctrl+Alt+End      Ctrl+Alt+Del on the host (login screen, lock screen)
 //!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc, Alt+F4 go to the host (keyhook)
 //!   Drag and drop a file onto the window to send it to the host.
@@ -15,10 +16,10 @@
 use crate::diag::{self, Diag};
 use crate::keyhook::KeyHook;
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
-use crate::toolbar::{Action, Toolbar};
+use crate::toolbar::{Action, Extras, Toolbar};
 use anyhow::Result;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
-use rider_core::proto::{ClientMsg, MonitorInfo, MouseButton};
+use rider_core::proto::{ClientMsg, MonitorInfo, MouseButton, QUALITIES};
 use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -44,7 +45,14 @@ pub fn run(
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
     let shared = Arc::new(Shared::default());
     let diag = report_to.map(|t| Diag::new(t, &session.conn, session.relayed, rt.handle().clone()));
+    // Hosts that speak protocol 2 take the quality setting (and lock).
+    let v2 = rider_core::tls::speaks_v2(&session.conn);
+    let prefs = crate::config::ClientConfig::load().map(|c| c.viewer).unwrap_or_default();
     let net = net::start(&rt, session, event_loop.create_proxy(), shared.clone());
+    let quality = if v2 { prefs.quality } else { 0 };
+    if quality != 0 {
+        net.send(ClientMsg::SetQuality { max_height: quality });
+    }
     let mut app = App {
         net,
         shared,
@@ -65,7 +73,12 @@ pub fn run(
         toolbar_shown: true,
         keyhook: None,
         diag,
+        started: Instant::now(),
+        v2,
+        quality,
+        pinned: prefs.pin_toolbar,
     };
+    app.refresh_extras();
     event_loop.run_app(&mut app)?;
     if let Some(d) = app.diag.take() {
         d.finish(&rt, app.closed.as_deref().unwrap_or("closed by the user"));
@@ -114,6 +127,12 @@ struct App {
     /// Win key, Alt+Tab... to the host while this window is in front.
     keyhook: Option<KeyHook>,
     diag: Option<Diag>,
+    started: Instant,
+    /// The host speaks protocol 2 (quality setting, lock).
+    v2: bool,
+    /// Max lines asked of the host, 0 = automatic.
+    quality: u32,
+    pinned: bool,
 }
 
 impl App {
@@ -144,8 +163,9 @@ impl App {
         let fps = frames.wrapping_sub(self.last_frames);
         self.last_frames = frames;
         let mut title = format!(
-            "{} — {fps} fps · RTT {:.0} ms · latency ~{:.0} ms · decode {:.1} ms · {}",
+            "{} — {} · {fps} fps · RTT {:.0} ms · latency ~{:.0} ms · decode {:.1} ms · {}",
             self.host_name,
+            elapsed(self.started.elapsed()),
             s.rtt_us.load(Ordering::Relaxed) as f64 / 1000.0,
             s.latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
             s.decode_us.load(Ordering::Relaxed) as f64 / 1000.0,
@@ -189,6 +209,11 @@ impl App {
             }
             PhysicalKey::Code(KeyCode::KeyF) => Action::Fullscreen,
             PhysicalKey::Code(KeyCode::KeyQ) => Action::Disconnect,
+            // Win+L itself always locks this computer: Windows reserves it.
+            PhysicalKey::Code(KeyCode::KeyL) => {
+                self.lock_remote();
+                return true;
+            }
             _ => return false,
         };
         self.act(el, action);
@@ -213,12 +238,82 @@ impl App {
                     self.net.send(ClientMsg::SelectMonitor { index });
                 }
             }
+            Action::Quality => self.quality_menu(),
+            Action::Pin => {
+                self.pinned = !self.pinned;
+                let pinned = self.pinned;
+                crate::config::update_viewer(|v| v.pin_toolbar = pinned);
+                self.refresh_extras();
+                self.redraw_soon();
+            }
+            Action::Elapsed => {}
             Action::Disconnect => {
                 self.release_keys();
                 self.closed = Some("disconnected by you".into());
                 self.net.conn.close(0u32.into(), b"bye");
                 el.exit();
             }
+        }
+    }
+
+    /// Time, quality and pin on the toolbar; true if the bar must be redrawn.
+    fn refresh_extras(&mut self) -> bool {
+        let label = QUALITIES.iter().find(|q| q.0 == self.quality).map_or("Auto", |q| q.1);
+        self.toolbar.set_extras(Extras {
+            elapsed: elapsed(self.started.elapsed()),
+            quality: self.v2.then(|| label.to_owned()),
+            pinned: self.pinned,
+        })
+    }
+
+    /// The quality dropdown, under its toolbar button.
+    fn quality_menu(&mut self) {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::ClientToScreen;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            AppendMenuW, CreatePopupMenu, DestroyMenu, MF_CHECKED, MF_STRING, MF_UNCHECKED, TPM_LEFTALIGN,
+            TPM_RETURNCMD, TPM_TOPALIGN, TrackPopupMenu,
+        };
+        let Some(h) = self.window.as_deref().and_then(hwnd) else { return };
+        let Some((x0, _, bar_h)) = self.toolbar.button_rect(Action::Quality) else { return };
+        let mut pt = POINT { x: x0 as i32, y: bar_h as i32 };
+        // SAFETY: a popup menu owned and destroyed here; strings outlive the calls.
+        let cmd = unsafe {
+            let _ = ClientToScreen(h, &mut pt);
+            let Ok(menu) = CreatePopupMenu() else { return };
+            let texts: Vec<Vec<u16>> = QUALITIES
+                .iter()
+                .map(|&(lines, label)| {
+                    let text = if lines == 0 { "Auto (adapts to the connection)" } else { label };
+                    text.encode_utf16().chain(std::iter::once(0)).collect()
+                })
+                .collect();
+            for (i, (&(lines, _), text)) in QUALITIES.iter().zip(&texts).enumerate() {
+                let check = if lines == self.quality { MF_CHECKED } else { MF_UNCHECKED };
+                let _ = AppendMenuW(menu, MF_STRING | check, i + 1, windows::core::PCWSTR(text.as_ptr()));
+            }
+            let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, h, None);
+            let _ = DestroyMenu(menu);
+            cmd.0 as usize
+        };
+        let Some(&(lines, _)) = cmd.checked_sub(1).and_then(|i| QUALITIES.get(i)) else { return };
+        if lines != self.quality {
+            self.quality = lines;
+            self.net.send(ClientMsg::SetQuality { max_height: lines });
+            crate::config::update_viewer(|v| v.quality = lines);
+            self.refresh_extras();
+            self.redraw_soon();
+        }
+    }
+
+    /// Lock the remote computer (what Win+L would do there).
+    fn lock_remote(&mut self) {
+        self.release_keys();
+        if self.v2 {
+            self.net.send(ClientMsg::LockScreen);
+        } else {
+            self.notice = Some(("Locking needs a newer version on the remote computer".into(), Instant::now()));
+            self.update_title();
         }
     }
 
@@ -259,6 +354,9 @@ impl ApplicationHandler<UiEvent> for App {
         }
         // Unused, and raw keyboard input would stop the keyboard hook (keyhook.rs).
         el.listen_device_events(winit::event_loop::DeviceEvents::Never);
+        if let Some(h) = hwnd(&window) {
+            rider_core::dpi::follow_windows(h); // no shaking when dragged across monitors
+        }
         self.keyhook = hwnd(&window).and_then(|h| KeyHook::install(h, self.net.ctrl.clone()));
         if self.keyhook.is_none() {
             tracing::warn!("Win key and Alt+Tab will act on this computer (keyboard hook unavailable)");
@@ -393,6 +491,9 @@ impl ApplicationHandler<UiEvent> for App {
             if let Some(d) = &mut self.diag {
                 d.tick(&self.net.conn, &self.shared);
             }
+            if self.refresh_extras() {
+                self.redraw_soon();
+            }
         }
         // Hide (or show) the toolbar on time even when no frames arrive.
         if self.toolbar.visible() != self.toolbar_shown {
@@ -400,5 +501,15 @@ impl ApplicationHandler<UiEvent> for App {
         }
         let wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
         el.set_control_flow(ControlFlow::WaitUntil(wake));
+    }
+}
+
+/// Session time as "m:ss", or "h:mm:ss" from an hour on.
+fn elapsed(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
     }
 }

@@ -19,6 +19,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const ALPN: &[u8] = b"rider/1";
+/// Session protocol 1 plus newer control messages (quality setting). Hosts
+/// and clients offer both; older peers only know "rider/1", so a session
+/// still connects and the newer messages are simply not used.
+pub const ALPN_V2: &[u8] = b"rider/2";
+const SESSION_ALPNS: &[&[u8]] = &[ALPN_V2, ALPN];
 /// ALPN for the rendezvous server, so a server connection can never be
 /// mistaken for a host session (or the reverse).
 pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
@@ -154,21 +159,21 @@ impl ClientTrust for AnyClient {
 }
 
 pub fn server_config(id: &Identity, trust: Arc<dyn ClientTrust>) -> Result<quinn::ServerConfig> {
-    server_config_alpn(id, trust, ALPN)
+    server_config_alpn(id, trust, SESSION_ALPNS)
 }
 
 pub fn client_config(id: &Identity, expected_host: Option<Fingerprint>) -> Result<quinn::ClientConfig> {
-    client_config_alpn(id, expected_host, ALPN)
+    client_config_alpn(id, expected_host, SESSION_ALPNS)
 }
 
-pub fn server_config_alpn(id: &Identity, trust: Arc<dyn ClientTrust>, alpn: &[u8]) -> Result<quinn::ServerConfig> {
+pub fn server_config_alpn(id: &Identity, trust: Arc<dyn ClientTrust>, alpn: &[&[u8]]) -> Result<quinn::ServerConfig> {
     let provider = provider();
     let verifier = Arc::new(PinnedClientVerifier { trust, provider: provider.clone() });
     let mut crypto = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(verifier)
         .with_single_cert(vec![id.cert.clone()], id.private_key())?;
-    crypto.alpn_protocols = vec![alpn.to_vec()];
+    crypto.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
     let qsc = quinn::crypto::rustls::QuicServerConfig::try_from(crypto)?;
     let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(qsc));
     cfg.transport_config(transport());
@@ -178,7 +183,7 @@ pub fn server_config_alpn(id: &Identity, trust: Arc<dyn ClientTrust>, alpn: &[u8
 pub fn client_config_alpn(
     id: &Identity,
     expected_host: Option<Fingerprint>,
-    alpn: &[u8],
+    alpn: &[&[u8]],
 ) -> Result<quinn::ClientConfig> {
     let provider = provider();
     let verifier = Arc::new(PinnedServerVerifier { expected: expected_host, provider: provider.clone() });
@@ -187,11 +192,19 @@ pub fn client_config_alpn(
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(vec![id.cert.clone()], id.private_key())?;
-    crypto.alpn_protocols = vec![alpn.to_vec()];
+    crypto.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
     let qcc = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(qcc));
     cfg.transport_config(transport());
     Ok(cfg)
+}
+
+/// Whether the peer of an established session speaks [`ALPN_V2`].
+pub fn speaks_v2(conn: &quinn::Connection) -> bool {
+    conn.handshake_data()
+        .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|d| d.protocol)
+        .is_some_and(|p| p == ALPN_V2)
 }
 
 /// Fingerprint of the certificate the peer presented on an established connection.
