@@ -5,6 +5,8 @@ use eframe::egui::{
     self, Align2, Button, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
     Response, RichText, Sense, Stroke, Ui, vec2,
 };
+use rider_core::i18n::{Lang, tr};
+use rider_core::trf;
 use std::sync::{Arc, mpsc};
 
 /// Messages from background work to the UI thread; sending wakes the UI.
@@ -163,7 +165,31 @@ pub fn setup(ctx: &egui::Context) {
             v.error_fg_color = Color32::from_rgb(196, 43, 28);
         }
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border(dark));
+        // Text fields need their own outline and fill: egui draws them with
+        // no border, so in light mode a white field on a white card (PIN,
+        // server, pairing code) was invisible.
+        v.text_edit_bg_color = Some(input_fill(dark));
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, input_border(dark));
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, if dark { Color32::from_rgb(110, 114, 126) } else { GREY });
     });
+}
+
+/// Force light or dark (`RIDER_THEME=light|dark`), for screenshots and
+/// checking both looks; otherwise egui follows the Windows setting.
+pub fn theme_override(ctx: &egui::Context) {
+    match std::env::var("RIDER_THEME").as_deref() {
+        Ok("light") => ctx.set_theme(egui::Theme::Light),
+        Ok("dark") => ctx.set_theme(egui::Theme::Dark),
+        _ => {}
+    }
+}
+
+fn input_fill(dark: bool) -> Color32 {
+    if dark { Color32::from_rgb(20, 21, 24) } else { Color32::from_rgb(250, 251, 253) }
+}
+
+fn input_border(dark: bool) -> Color32 {
+    if dark { Color32::from_rgb(72, 75, 84) } else { Color32::from_rgb(190, 194, 204) }
 }
 
 fn border(dark: bool) -> Color32 {
@@ -236,7 +262,7 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
 /// Text followed by a copy button.
 pub fn copyable(ui: &mut Ui, text: &str, shown: RichText) {
     ui.label(shown);
-    if icon_button(ui, icon::COPY, "Copy").clicked() {
+    if icon_button(ui, icon::COPY, tr("Copy", "Kopyala")).clicked() {
         ui.ctx().copy_text(text.to_owned());
     }
 }
@@ -344,7 +370,7 @@ pub fn big_code(ui: &mut Ui, code: &str) {
                     let w = 34.0 + code.len() as f32 * 21.0;
                     ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                     ui.label(RichText::new(code).monospace().size(34.0).strong());
-                    if icon_button(ui, icon::COPY, "Copy").clicked() {
+                    if icon_button(ui, icon::COPY, tr("Copy", "Kopyala")).clicked() {
                         ui.ctx().copy_text(code.to_owned());
                     }
                 });
@@ -382,12 +408,92 @@ pub fn ago(then: u64) -> String {
     let now = rider_core::now_us() / 1_000_000;
     let s = now.saturating_sub(then);
     match s {
-        0..60 => "just now".into(),
-        60..3600 => format!("{} min ago", s / 60),
-        3600..86_400 => format!("{} h ago", s / 3600),
-        86_400..172_800 => "yesterday".into(),
-        _ => format!("{} days ago", s / 86_400),
+        0..60 => tr("just now", "indicə").into(),
+        60..3600 => trf!("{} min ago", "{} dəq. əvvəl", s / 60),
+        3600..86_400 => trf!("{} h ago", "{} saat əvvəl", s / 3600),
+        86_400..172_800 => tr("yesterday", "dünən").into(),
+        _ => trf!("{} days ago", "{} gün əvvəl", s / 86_400),
     }
+}
+
+/// English / Azerbaijani switch: two flags. Returns the language picked.
+pub fn language_switch(ui: &mut Ui) -> Option<Lang> {
+    let current = rider_core::i18n::lang();
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        // Always English first, also inside right-to-left layouts (page headers).
+        let mut order = Lang::ALL;
+        if ui.layout().prefer_right_to_left() {
+            order.reverse();
+        }
+        for l in order {
+            if flag(ui, l, l == current).clicked() && l != current {
+                picked = Some(l);
+            }
+        }
+    });
+    if let Some(l) = picked {
+        let _ = rider_core::i18n::save(l);
+        ui.ctx().request_repaint();
+    }
+    picked
+}
+
+/// A clickable flag (30×20) for a language; the current one is outlined.
+pub fn flag(ui: &mut Ui, lang: Lang, selected: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(36.0, 26.0), Sense::click());
+    let resp = resp.on_hover_text(lang.native_name()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, lang.native_name()));
+    let r = egui::Rect::from_center_size(rect.center(), vec2(30.0, 20.0));
+    let p = ui.painter().with_clip_rect(r);
+    let opacity = if selected || resp.hovered() { 1.0 } else { 0.55 };
+    let c = |r: u8, g: u8, b: u8| Color32::from_rgb(r, g, b).gamma_multiply(opacity);
+    let white = Color32::WHITE.gamma_multiply(opacity);
+    match lang {
+        Lang::Az => {
+            // Blue, red and green bands; white crescent and eight-pointed star.
+            let h = r.height() / 3.0;
+            let band = |i: f32| egui::Rect::from_min_size(r.min + vec2(0.0, h * i), vec2(r.width(), h));
+            p.rect_filled(band(0.0), 0, c(0, 181, 226));
+            p.rect_filled(band(1.0), 0, c(239, 51, 64));
+            p.rect_filled(band(2.0), 0, c(80, 158, 47));
+            let m = r.center();
+            p.circle_filled(m + vec2(-1.6, 0.0), 2.9, white);
+            p.circle_filled(m + vec2(-0.7, 0.0), 2.4, c(239, 51, 64));
+            let star = m + vec2(2.6, 0.0);
+            for angle in [0.0f32, std::f32::consts::FRAC_PI_4] {
+                let pts = (0..4)
+                    .map(|k| {
+                        let a = angle + k as f32 * std::f32::consts::FRAC_PI_2;
+                        star + 1.35 * vec2(a.cos(), a.sin())
+                    })
+                    .collect();
+                p.add(egui::Shape::convex_polygon(pts, white, Stroke::NONE));
+            }
+        }
+        Lang::En => {
+            // Union Flag: blue field, diagonals, then the cross.
+            let red = c(200, 16, 46);
+            p.rect_filled(r, 0, c(1, 33, 105));
+            for (a, b) in [(r.left_top(), r.right_bottom()), (r.left_bottom(), r.right_top())] {
+                p.line_segment([a, b], Stroke::new(4.0, white));
+                p.line_segment([a, b], Stroke::new(1.4, red));
+            }
+            let m = r.center();
+            p.rect_filled(egui::Rect::from_center_size(m, vec2(r.width(), 6.0)), 0, white);
+            p.rect_filled(egui::Rect::from_center_size(m, vec2(6.0, r.height())), 0, white);
+            p.rect_filled(egui::Rect::from_center_size(m, vec2(r.width(), 3.4)), 0, red);
+            p.rect_filled(egui::Rect::from_center_size(m, vec2(3.4, r.height())), 0, red);
+        }
+    }
+    let outline = if selected {
+        Stroke::new(2.0, ACCENT)
+    } else {
+        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
+    };
+    ui.painter().rect_stroke(r.expand(if selected { 2.0 } else { 0.5 }), 3, outline, egui::StrokeKind::Middle);
+    resp
 }
 
 /// `2E1B-049F-6F4C-840D` from a hex fingerprint.
@@ -401,6 +507,7 @@ mod tests {
 
     #[test]
     fn ages_read_naturally() {
+        rider_core::i18n::set_current(Lang::En);
         let now = rider_core::now_us() / 1_000_000;
         assert_eq!(ago(now), "just now");
         assert_eq!(ago(now - 125), "2 min ago");

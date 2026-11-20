@@ -1,5 +1,6 @@
 //! Main window (no administrator rights needed): the computers this device
-//! can control, adding one, connecting, and this device's settings.
+//! can control, adding one, connecting, quick connect by one-time code,
+//! getting help with a one-time code, and this device's settings.
 
 use crate::pins;
 use crate::sys::{self, RemoteAccess};
@@ -9,10 +10,13 @@ use crate::widgets::{self, ACCENT, AMBER, Bus, GREEN, GREY, Tx, icon};
 use eframe::egui::{self, Align, Id, Key, Layout, Modal, RichText, ScrollArea, TextEdit, TextureHandle, Ui, vec2};
 use rider_client::PairPrompt;
 use rider_client::config::{ClientConfig, KnownHost};
+use rider_core::i18n::tr;
 use rider_core::identity::{Identity, fp_from_hex};
+use rider_core::trf;
 use std::collections::{HashMap, HashSet};
-use std::process::Stdio;
-use std::sync::Arc;
+use std::io::Write;
+use std::process::{Child, ChildStdin, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use windows::core::w;
@@ -36,6 +40,8 @@ enum Msg {
     PairPrompt(PairPrompt, oneshot::Sender<bool>),
     PairDone(Result<KnownHost, String>),
     Session { id: u64, update: SessionUpdate },
+    Quick { id: u64, update: QuickUpdate },
+    Support { id: u64, event: SupportEvent },
 }
 
 enum SessionUpdate {
@@ -80,6 +86,83 @@ struct Session {
     saved_pin: bool,
 }
 
+// ------------------------------------------------- quick connect (helper side)
+
+/// Lines from `rider-client quick` (its stdout is meant to be read like this).
+enum QuickUpdate {
+    Waiting(String),
+    Code(String),
+    Connected { host: String, route: String },
+    Stderr(String),
+    Exited,
+}
+
+enum QuickStage {
+    Input { error: Option<String> },
+    Connecting,
+    Waiting { host: String, code: Option<String> },
+    Connected { host: String, route: String },
+}
+
+struct QuickDialog {
+    id: u64,
+    code: String,
+    stage: QuickStage,
+    stderr: String,
+    child: Option<Arc<Mutex<Child>>>,
+}
+
+impl QuickDialog {
+    fn stop(&mut self) {
+        if let Some(c) = self.child.take() {
+            let _ = c.lock().unwrap().kill();
+        }
+    }
+}
+
+// ------------------------------------- one-time code (the person being helped)
+
+/// Events from `rider-host --json support`.
+enum SupportEvent {
+    Code(Option<String>),
+    ServerError(String),
+    Request { device: String, code: String },
+    Started(String),
+    Ended,
+    Cancelled,
+    Declined,
+    Expired,
+    Exited(String),
+}
+
+#[derive(Clone)]
+enum SupportStage {
+    Waiting,
+    Asking { device: String, code: String },
+    Active { device: String },
+    Ended,
+    Expired,
+    Failed(String),
+}
+
+struct Support {
+    id: u64,
+    stdin: Option<ChildStdin>,
+    code: Option<String>,
+    server_error: Option<String>,
+    /// A short note under the code, e.g. after declining someone.
+    note: Option<String>,
+    stage: SupportStage,
+}
+
+impl Support {
+    fn send(&mut self, line: &str) {
+        if let Some(s) = &mut self.stdin {
+            let _ = writeln!(s, "{line}");
+        }
+    }
+}
+
 pub struct ClientApp {
     rt: tokio::runtime::Runtime,
     bus: Bus<Msg>,
@@ -95,11 +178,13 @@ pub struct ClientApp {
     server_error: Option<String>,
     add: Option<AddDialog>,
     connect: Option<ConnectDialog>,
+    quick: Option<QuickDialog>,
+    support: Option<Support>,
     remove: Option<String>,
     /// Computers with a remembered PIN.
     saved_pins: HashSet<String>,
     sessions: Vec<Session>,
-    next_session: u64,
+    next_id: u64,
     remote: RemoteAccess,
     remote_checked: Instant,
     manage_error: Option<String>,
@@ -124,7 +209,14 @@ impl ClientApp {
         });
         let (cfg, identity, fatal) = match loaded {
             Ok((cfg, id)) => (cfg, Some(Arc::new(id)), None),
-            Err(e) => (ClientConfig::default(), None, Some(format!("Cannot load this device's settings: {e:#}"))),
+            Err(e) => (
+                ClientConfig::default(),
+                None,
+                Some(trf!(
+                    "Cannot load this device's settings: {e:#}",
+                    "Bu cihazın ayarlarını yükləmək mümkün olmadı: {e:#}"
+                )),
+            ),
         };
         let logo = egui::ColorImage::from_rgba_unmultiplied([64, 64], &rider_core::icon::rgba(64));
         let mut app = Self {
@@ -142,10 +234,12 @@ impl ClientApp {
             server_error: None,
             add: None,
             connect: None,
+            quick: None,
+            support: None,
             remove: None,
             saved_pins: HashSet::new(),
             sessions: Vec::new(),
-            next_session: 0,
+            next_id: 0,
             remote: sys::remote_access(),
             remote_checked: Instant::now(),
             manage_error: None,
@@ -157,7 +251,36 @@ impl ClientApp {
             updater: Updater::new(ctx),
         };
         app.refresh_saved_pins();
+        app.preview();
         app
+    }
+
+    /// `RIDER_PREVIEW=this|settings|add|quick|connect`: start on that page or
+    /// dialog, to look at every view (both themes and languages).
+    fn preview(&mut self) {
+        match std::env::var("RIDER_PREVIEW").as_deref() {
+            Ok("this") => self.tab = Tab::ThisComputer,
+            Ok("settings") => self.tab = Tab::Settings,
+            Ok("add") => self.open_add(),
+            Ok("quick") => self.open_quick(),
+            Ok("connect") => {
+                if let Some(h) = self.cfg.hosts.first() {
+                    self.connect = Some(ConnectDialog {
+                        fingerprint: h.fingerprint.clone(),
+                        name: h.name.clone(),
+                        pin: String::new(),
+                        remember: true,
+                        error: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn next_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
     }
 
     fn refresh_saved_pins(&mut self) {
@@ -213,7 +336,7 @@ impl ClientApp {
     fn edit(&mut self, change: impl FnOnce(&mut ClientConfig)) -> Result<(), String> {
         let mut cfg = ClientConfig::load().map_err(|e| format!("{e:#}"))?;
         change(&mut cfg);
-        cfg.save().map_err(|e| format!("cannot save: {e:#}"))?;
+        cfg.save().map_err(|e| trf!("cannot save: {e:#}", "yadda saxlamaq mümkün olmadı: {e:#}"))?;
         self.cfg = cfg;
         self.polled = None;
         Ok(())
@@ -250,53 +373,134 @@ impl ClientApp {
                         };
                     }
                 }
-                Msg::Session { id, update } => {
-                    let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { continue };
-                    match update {
-                        SessionUpdate::Connected(route) => {
-                            s.connected = Some(route);
-                            if let Some(pin) = s.remember.take() {
-                                let host = s.host.clone();
-                                match pins::save(&host, &pin) {
-                                    Ok(()) => {
-                                        self.saved_pins.insert(host);
-                                    }
-                                    Err(e) => self.server_error = Some(format!("Cannot remember the PIN: {e:#}")),
-                                }
-                            }
-                            self.reload(); // the viewer just saved the last-connected time
-                        }
-                        SessionUpdate::Stderr(line) => {
-                            s.stderr.push_str(&line);
-                            s.stderr.push('\n');
-                        }
-                        SessionUpdate::Exited(ok) => {
-                            s.finished = Some(ok);
-                            // The remembered PIN no longer works (changed on
-                            // that computer): forget it and ask.
-                            let rejected = s.stderr.contains("wrong PIN") || s.stderr.contains("authentication failed");
-                            if !ok && s.saved_pin && s.connected.is_none() && rejected {
-                                let host = s.host.clone();
-                                self.sessions.retain(|s| s.id != id);
-                                self.forget_pin(&host);
-                                let name =
-                                    self.cfg.hosts.iter().find(|h| h.fingerprint == host).map(|h| h.name.clone());
-                                self.connect = Some(ConnectDialog {
-                                    fingerprint: host,
-                                    name: name.unwrap_or_default(),
-                                    pin: String::new(),
-                                    remember: true,
-                                    error: Some("The saved PIN no longer works. Enter the current one.".into()),
-                                });
-                            }
-                            self.reload(); // last-connected time changed
-                        }
-                    }
-                }
+                Msg::Session { id, update } => self.session_update(id, update),
+                Msg::Quick { id, update } => self.quick_update(id, update),
+                Msg::Support { id, event } => self.support_event(id, event),
             }
         }
         // Finished sessions without an error disappear on their own.
         self.sessions.retain(|s| s.finished != Some(true));
+    }
+
+    fn session_update(&mut self, id: u64, update: SessionUpdate) {
+        let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) else { return };
+        match update {
+            SessionUpdate::Connected(route) => {
+                s.connected = Some(route);
+                if let Some(pin) = s.remember.take() {
+                    let host = s.host.clone();
+                    match pins::save(&host, &pin) {
+                        Ok(()) => {
+                            self.saved_pins.insert(host);
+                        }
+                        Err(e) => {
+                            self.server_error = Some(trf!(
+                                "Cannot remember the PIN: {e:#}",
+                                "PIN kodu yadda saxlamaq mümkün olmadı: {e:#}"
+                            ))
+                        }
+                    }
+                }
+                self.reload(); // the viewer just saved the last-connected time
+            }
+            SessionUpdate::Stderr(line) => {
+                s.stderr.push_str(&line);
+                s.stderr.push('\n');
+            }
+            SessionUpdate::Exited(ok) => {
+                s.finished = Some(ok);
+                // The remembered PIN no longer works (changed on that
+                // computer): forget it and ask. (The host's messages are
+                // protocol text, always English.)
+                let rejected = s.stderr.contains("wrong PIN") || s.stderr.contains("authentication failed");
+                if !ok && s.saved_pin && s.connected.is_none() && rejected {
+                    let host = s.host.clone();
+                    self.sessions.retain(|s| s.id != id);
+                    self.forget_pin(&host);
+                    let name = self.cfg.hosts.iter().find(|h| h.fingerprint == host).map(|h| h.name.clone());
+                    self.connect = Some(ConnectDialog {
+                        fingerprint: host,
+                        name: name.unwrap_or_default(),
+                        pin: String::new(),
+                        remember: true,
+                        error: Some(
+                            tr(
+                                "The saved PIN no longer works. Enter the current one.",
+                                "Yadda saxlanılmış PIN kod artıq işləmir. Cari PIN kodu daxil edin.",
+                            )
+                            .into(),
+                        ),
+                    });
+                }
+                self.reload(); // last-connected time changed
+            }
+        }
+    }
+
+    fn quick_update(&mut self, id: u64, update: QuickUpdate) {
+        let Some(q) = self.quick.as_mut().filter(|q| q.id == id) else { return };
+        match update {
+            QuickUpdate::Waiting(host) => q.stage = QuickStage::Waiting { host, code: None },
+            QuickUpdate::Code(code) => {
+                if let QuickStage::Waiting { code: c, .. } = &mut q.stage {
+                    *c = Some(code);
+                }
+            }
+            QuickUpdate::Connected { host, route } => q.stage = QuickStage::Connected { host, route },
+            QuickUpdate::Stderr(line) => {
+                q.stderr.push_str(&line);
+                q.stderr.push('\n');
+            }
+            QuickUpdate::Exited => {
+                q.child = None;
+                if matches!(q.stage, QuickStage::Connected { .. }) {
+                    // The session ran and is over.
+                    self.quick = None;
+                } else {
+                    q.stage = QuickStage::Input { error: Some(sys::error_text(&q.stderr)) };
+                    q.stderr.clear();
+                }
+            }
+        }
+    }
+
+    fn support_event(&mut self, id: u64, event: SupportEvent) {
+        let Some(s) = self.support.as_mut().filter(|s| s.id == id) else { return };
+        match event {
+            SupportEvent::Code(code) => {
+                s.code = code;
+                s.server_error = None;
+            }
+            SupportEvent::ServerError(e) => s.server_error = Some(e),
+            SupportEvent::Request { device, code } => {
+                s.note = None;
+                s.stage = SupportStage::Asking { device, code };
+            }
+            SupportEvent::Started(device) => s.stage = SupportStage::Active { device },
+            SupportEvent::Ended => s.stage = SupportStage::Ended,
+            SupportEvent::Cancelled => {
+                s.stage = SupportStage::Waiting;
+                s.note = Some(tr("The other side gave up.", "Qarşı tərəf qoşulmadan imtina etdi.").into());
+            }
+            SupportEvent::Declined => {
+                s.stage = SupportStage::Waiting;
+                s.note = Some(
+                    tr(
+                        "Declined. The code still works until it expires.",
+                        "İmtina edildi. Kod müddəti bitənə qədər qüvvədədir.",
+                    )
+                    .into(),
+                );
+            }
+            SupportEvent::Expired => s.stage = SupportStage::Expired,
+            SupportEvent::Exited(stderr) => {
+                s.stdin = None;
+                if matches!(s.stage, SupportStage::Waiting | SupportStage::Asking { .. } | SupportStage::Active { .. })
+                {
+                    s.stage = SupportStage::Failed(sys::error_text(&stderr));
+                }
+            }
+        }
     }
 
     fn poll_online(&mut self) {
@@ -331,7 +535,13 @@ impl ClientApp {
         let target = d.target.trim().to_owned();
         if target.is_empty() {
             d.stage = AddStage::Input {
-                error: Some("Enter the pairing code or address shown on the other computer.".into()),
+                error: Some(
+                    tr(
+                        "Enter the pairing code or address shown on the other computer.",
+                        "Digər kompüterdə göstərilən cütləşdirmə kodunu və ya ünvanı daxil edin.",
+                    )
+                    .into(),
+                ),
             };
             return;
         }
@@ -357,8 +567,7 @@ impl ClientApp {
     fn start_session(&mut self, d: ConnectDialog, saved_pin: bool) {
         // A new attempt replaces the error of the previous one.
         self.sessions.retain(|s| s.finished.is_none() || s.host != d.fingerprint);
-        self.next_session += 1;
-        let id = self.next_session;
+        let id = self.next_id();
         let mut session = Session {
             id,
             host: d.fingerprint.clone(),
@@ -377,23 +586,21 @@ impl ClientApp {
         let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
-                session.stderr = format!("Error: cannot start rider-client.exe: {e}");
+                session.stderr =
+                    trf!("Error: cannot start rider-client.exe: {e}", "Error: rider-client.exe başladıla bilmir: {e}");
                 session.finished = Some(false);
                 self.sessions.push(session);
                 return;
             }
         };
         if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
             let _ = writeln!(stdin, "{}", d.pin);
         }
         let tx: Tx<Msg> = self.bus.tx();
         if let Some(out) = child.stdout.take() {
             let tx = tx.clone();
             sys::lines(out, move |line| {
-                // `Connected to "name" (direct 1.2.3.4:47800).`
-                if line.starts_with("Connected to ") {
-                    let route = line.rsplit_once(" (").map_or("", |(_, r)| r.trim_end_matches(").")).to_owned();
+                if let Some((_, route)) = parse_connected(&line) {
                     tx.send(Msg::Session { id, update: SessionUpdate::Connected(route) });
                 }
             });
@@ -409,9 +616,130 @@ impl ClientApp {
         self.sessions.push(session);
     }
 
+    /// Quick connect: run `rider-client quick <code>`; it opens the session
+    /// window once the person there allows it.
+    fn start_quick(&mut self) {
+        let id = self.next_id();
+        let Some(q) = &mut self.quick else { return };
+        q.id = id;
+        q.stderr.clear();
+        let spawned = sys::tool("rider-client.exe")
+            .args(["quick", q.code.trim()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => {
+                q.stage = QuickStage::Input {
+                    error: Some(trf!("cannot start rider-client.exe: {e}", "rider-client.exe başladıla bilmir: {e}")),
+                };
+                return;
+            }
+        };
+        q.stage = QuickStage::Connecting;
+        let tx: Tx<Msg> = self.bus.tx();
+        if let Some(out) = child.stdout.take() {
+            let tx = tx.clone();
+            sys::lines(out, move |line| {
+                let update = if let Some((host, route)) = parse_connected(&line) {
+                    QuickUpdate::Connected { host, route }
+                } else if let Some(rest) = line.strip_prefix("Waiting for \"") {
+                    QuickUpdate::Waiting(rest.split('"').next().unwrap_or_default().to_owned())
+                } else if let Some(code) = line.strip_prefix("Verification code: ") {
+                    QuickUpdate::Code(code.trim().to_owned())
+                } else {
+                    return;
+                };
+                tx.send(Msg::Quick { id, update });
+            });
+        }
+        if let Some(err) = child.stderr.take() {
+            let tx = tx.clone();
+            sys::lines(err, move |line| tx.send(Msg::Quick { id, update: QuickUpdate::Stderr(line) }));
+        }
+        let child = Arc::new(Mutex::new(child));
+        q.child = Some(child.clone());
+        std::thread::spawn(move || {
+            // Polled so Cancel can kill the process meanwhile.
+            loop {
+                if !matches!(child.lock().unwrap().try_wait(), Ok(None)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            // Let the stderr reader deliver the error first.
+            std::thread::sleep(Duration::from_millis(150));
+            tx.send(Msg::Quick { id, update: QuickUpdate::Exited });
+        });
+    }
+
+    /// Get a one-time code: run `rider-host --json support` as this user
+    /// (no administrator rights). It ends with the session or after 10 minutes.
+    fn start_support(&mut self) {
+        let Some(server) = self.cfg.server.clone() else { return };
+        let id = self.next_id();
+        let spawned = sys::tool("rider-host.exe")
+            .args(["--json", "support", &server.addr, &server.fingerprint])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => {
+                self.support = Some(Support {
+                    id,
+                    stdin: None,
+                    code: None,
+                    server_error: None,
+                    note: None,
+                    stage: SupportStage::Failed(trf!(
+                        "cannot start rider-host.exe: {e}",
+                        "rider-host.exe başladıla bilmir: {e}"
+                    )),
+                });
+                return;
+            }
+        };
+        let stdin = child.stdin.take();
+        let tx: Tx<Msg> = self.bus.tx();
+        if let Some(out) = child.stdout.take() {
+            let tx = tx.clone();
+            sys::lines(out, move |line| {
+                if let Some(event) = parse_support_event(&line) {
+                    tx.send(Msg::Support { id, event });
+                }
+            });
+        }
+        let stderr = child.stderr.take();
+        std::thread::spawn(move || {
+            let mut err = String::new();
+            if let Some(mut s) = stderr {
+                use std::io::Read;
+                let _ = s.read_to_string(&mut err);
+            }
+            let _ = child.wait();
+            tx.send(Msg::Support { id, event: SupportEvent::Exited(err) });
+        });
+        self.support =
+            Some(Support { id, stdin, code: None, server_error: None, note: None, stage: SupportStage::Waiting });
+    }
+
     fn open_add(&mut self) {
         self.add =
             Some(AddDialog { target: String::new(), name: String::new(), stage: AddStage::Input { error: None } });
+    }
+
+    fn open_quick(&mut self) {
+        self.quick = Some(QuickDialog {
+            id: 0,
+            code: String::new(),
+            stage: QuickStage::Input { error: None },
+            stderr: String::new(),
+            child: None,
+        });
     }
 
     // ---------------------------------------------------------------- views
@@ -427,9 +755,9 @@ impl ClientApp {
         });
         ui.add_space(18.0);
         for (tab, ic, text) in [
-            (Tab::Computers, icon::PC, "Computers"),
-            (Tab::ThisComputer, icon::HOME, "This computer"),
-            (Tab::Settings, icon::SETTINGS, "Settings"),
+            (Tab::Computers, icon::PC, tr("Computers", "Kompüterlər")),
+            (Tab::ThisComputer, icon::HOME, tr("This computer", "Bu kompüter")),
+            (Tab::Settings, icon::SETTINGS, tr("Settings", "Parametrlər")),
         ] {
             if widgets::nav_item(ui, ic, text, self.tab == tab) && self.tab != tab {
                 self.tab = tab;
@@ -438,17 +766,23 @@ impl ClientApp {
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.add_space(12.0);
-            widgets::hint(ui, &format!("   Version {}", env!("CARGO_PKG_VERSION")));
+            widgets::hint(ui, &format!("   {} {}", tr("Version", "Versiya"), env!("CARGO_PKG_VERSION")));
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 let (color, text) = match (&self.cfg.server, &self.server_error) {
-                    (None, _) => (None, "No server: this network only"),
-                    (Some(_), Some(_)) => (Some(AMBER), "Server unreachable"),
-                    (Some(_), None) if self.polled.is_none() && !self.cfg.hosts.is_empty() => (Some(GREY), "Server…"),
-                    (Some(_), None) => (Some(GREEN), "Server connected"),
+                    (None, _) => (None, tr("No server: this network only", "Server yoxdur: yalnız bu şəbəkə")),
+                    (Some(_), Some(_)) => (Some(AMBER), tr("Server unreachable", "Server əlçatan deyil")),
+                    (Some(_), None) if self.polled.is_none() && !self.cfg.hosts.is_empty() => {
+                        (Some(GREY), tr("Server…", "Server…"))
+                    }
+                    (Some(_), None) => (Some(GREEN), tr("Server connected", "Serverə qoşulub")),
                 };
                 widgets::dot(ui, color);
                 widgets::hint(ui, text);
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                widgets::language_switch(ui);
             });
         });
     }
@@ -456,14 +790,38 @@ impl ClientApp {
     fn computers(&mut self, ui: &mut Ui) {
         let has_hosts = !self.cfg.hosts.is_empty();
         let mut add = false;
-        widgets::page_header(ui, "Computers", "Computers this device can control.", |ui| {
-            if has_hosts {
-                add = widgets::primary(ui, true, &format!("{}   Add computer", icon::ADD)).clicked();
-            }
-        });
+        let mut quick = false;
+        widgets::page_header(
+            ui,
+            tr("Computers", "Kompüterlər"),
+            tr("Computers this device can control.", "Bu cihazın idarə edə bildiyi kompüterlər."),
+            |ui| {
+                if has_hosts {
+                    add = widgets::primary(
+                        ui,
+                        true,
+                        &format!("{}   {}", icon::ADD, tr("Add computer", "Kompüter əlavə et")),
+                    )
+                    .clicked();
+                }
+                quick = ui
+                    .button(format!("{}   {}", icon::PLAY, tr("Quick connect", "Sürətli qoşulma")))
+                    .on_hover_text(tr(
+                        "One-time session with the code another computer shows: no pairing, no PIN.",
+                        "Digər kompüterin göstərdiyi kodla birdəfəlik seans: cütləşdirmə və PIN kod tələb olunmur.",
+                    ))
+                    .clicked();
+            },
+        );
         if let Some(e) = &self.server_error {
             widgets::card(ui, |ui| {
-                widgets::error(ui, &format!("The server can't be reached, so online status is unknown. {e}"));
+                widgets::error(
+                    ui,
+                    &trf!(
+                        "The server can't be reached, so online status is unknown. {e}",
+                        "Serverə qoşulmaq mümkün deyil, ona görə onlayn vəziyyət məlum deyil. {e}"
+                    ),
+                );
             });
             ui.add_space(8.0);
         }
@@ -473,20 +831,35 @@ impl ClientApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(18.0);
                     ui.label(RichText::new(icon::PC).size(44.0).color(ACCENT));
-                    ui.label(widgets::title("No computers yet", 18.0));
+                    ui.label(widgets::title(tr("No computers yet", "Hələ kompüter yoxdur"), 18.0));
                     widgets::hint(
                         ui,
-                        "On the computer you want to control, open Remote Desktop Rider, go to\n\
-                         This computer > Manage this computer, and click Add a device.",
+                        tr(
+                            "On the computer you want to control, open Remote Desktop Rider, go to\n\
+                             This computer > Manage this computer, and click Add a device.\n\
+                             For one-time help, use Quick connect instead.",
+                            "İdarə etmək istədiyiniz kompüterdə Remote Desktop Rider-i açın,\n\
+                             «Bu kompüter» > «Bu kompüteri idarə et» bölməsində «Cihaz əlavə et» düyməsini klikləyin.\n\
+                             Birdəfəlik kömək üçün isə «Sürətli qoşulma»dan istifadə edin.",
+                        ),
                     );
                     ui.add_space(4.0);
-                    add = widgets::primary(ui, true, &format!("{}   Add computer", icon::ADD)).clicked();
+                    add = widgets::primary(
+                        ui,
+                        true,
+                        &format!("{}   {}", icon::ADD, tr("Add computer", "Kompüter əlavə et")),
+                    )
+                    .clicked()
+                        || add;
                     ui.add_space(18.0);
                 });
             });
         }
         if add {
             self.open_add();
+        }
+        if quick {
+            self.open_quick();
         }
 
         let mut hosts = self.cfg.hosts.clone();
@@ -516,20 +889,24 @@ impl ClientApp {
                     ui.label(widgets::title(&h.name, 16.0));
                     ui.horizontal(|ui| {
                         match online {
-                            Some(true) => widgets::pill(ui, "Online", GREEN),
-                            Some(false) => widgets::pill(ui, "Offline", GREY),
+                            Some(true) => widgets::pill(ui, tr("Online", "Onlayn"), GREEN),
+                            Some(false) => widgets::pill(ui, tr("Offline", "Oflayn"), GREY),
                             None if h.addr.is_empty() => {}
                             None => widgets::hint(ui, &h.addr),
                         }
-                        let last = h
-                            .last_connected
-                            .map_or("Never connected".into(), |t| format!("Last connected {}", widgets::ago(t)));
+                        let last = h.last_connected.map_or_else(
+                            || tr("Never connected", "Heç vaxt qoşulmayıb").to_owned(),
+                            |t| {
+                                let when = widgets::ago(t);
+                                trf!("Last connected {when}", "Son qoşulma: {when}")
+                            },
+                        );
                         widgets::hint(ui, &last);
                     });
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if self.remove.as_deref() == Some(h.fingerprint.as_str()) {
-                        if widgets::danger(ui, "Remove").clicked() {
+                        if widgets::danger(ui, tr("Remove", "Sil")).clicked() {
                             if let Err(e) = self.edit(|cfg| {
                                 cfg.forget(&h.fingerprint);
                             }) {
@@ -538,21 +915,41 @@ impl ClientApp {
                             self.forget_pin(&h.fingerprint);
                             self.remove = None;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(tr("Cancel", "Ləğv et")).clicked() {
                             self.remove = None;
                         }
-                        ui.label("Remove from this list?");
+                        ui.label(tr("Remove from this list?", "Siyahıdan silinsin?"));
                     } else {
-                        if widgets::icon_button(ui, icon::DELETE, "Remove from this list").clicked() {
+                        if widgets::icon_button(ui, icon::DELETE, tr("Remove from this list", "Siyahıdan sil"))
+                            .clicked()
+                        {
                             self.remove = Some(h.fingerprint.clone());
                         }
-                        let label = if in_session { "In session" } else { "Connect" };
-                        if widgets::primary(ui, !in_session, label).clicked() {
+                        let label = if in_session { tr("In session", "Seansdadır") } else { tr("Connect", "Qoşul") };
+                        // The server says the computer is offline: nothing to
+                        // connect to until it comes back (checked every 15 s).
+                        // Unknown status (no server, server unreachable) keeps
+                        // Connect: a direct address on the LAN may still work.
+                        let offline = online == Some(false);
+                        let connect = widgets::primary(ui, !in_session && !offline, label);
+                        if offline {
+                            connect.on_disabled_hover_text(tr(
+                                "This computer is offline. Connect becomes available as soon as it is back online.",
+                                "Bu kompüter oflayndır. Onlayn olan kimi «Qoşul» düyməsi aktivləşəcək.",
+                            ));
+                        } else if connect.clicked() {
                             self.connect_to(h.fingerprint.clone(), h.name.clone());
                         }
                         if self.saved_pins.contains(&h.fingerprint)
-                            && widgets::icon_button(ui, icon::KEY, "PIN remembered on this device. Click to forget it.")
-                                .clicked()
+                            && widgets::icon_button(
+                                ui,
+                                icon::KEY,
+                                tr(
+                                    "PIN remembered on this device. Click to forget it.",
+                                    "PIN kod bu cihazda yadda saxlanılıb. Silmək üçün klikləyin.",
+                                ),
+                            )
+                            .clicked()
                         {
                             self.forget_pin(&h.fingerprint);
                         }
@@ -565,16 +962,19 @@ impl ClientApp {
                 ui.horizontal(|ui| match (finished, connected) {
                     (None, None) => {
                         ui.spinner();
-                        ui.label("Connecting…");
+                        ui.label(tr("Connecting…", "Qoşulur…"));
                     }
                     (None, Some(route)) => {
                         widgets::dot(ui, Some(GREEN));
-                        ui.label(format!("Connected ({route}). The session is open in its own window."));
+                        ui.label(trf!(
+                            "Connected ({route}). The session is open in its own window.",
+                            "Qoşulub ({route}). Seans ayrıca pəncərədə açıqdır."
+                        ));
                     }
                     (Some(_), _) => {
                         widgets::error(ui, error);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Dismiss").clicked() {
+                            if ui.small_button(tr("Dismiss", "Bağla")).clicked() {
                                 dismiss = Some(*id);
                             }
                         });
@@ -592,60 +992,126 @@ impl ClientApp {
             self.remote = sys::remote_access();
             self.remote_checked = Instant::now();
         }
-        widgets::page_header(ui, "This computer", &format!("\"{}\"", self.cfg.device_name), |_| {});
-        widgets::card(ui, |ui| {
-            widgets::section(ui, icon::SHIELD, "Remote access");
-            ui.horizontal(|ui| {
-                let (color, state, text) = match self.remote {
-                    RemoteAccess::On => {
-                        (GREEN, "On", "Devices you added can control this computer, even at the sign-in screen.")
-                    }
-                    RemoteAccess::Stopped => (AMBER, "Stopped", "Remote access is set up but not running."),
-                    RemoteAccess::Off => (GREY, "Off", "Nobody can connect to this computer."),
-                };
-                widgets::pill(ui, state, color);
-                ui.label(text);
-            });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if widgets::primary(ui, true, &format!("{}   Manage this computer…", icon::SHIELD)).clicked() {
-                    self.manage_error = sys::relaunch_elevated("--manage").err().map(|e| format!("{e:#}"));
-                }
-                widgets::hint(ui, "Windows asks for permission once.");
-            });
-            if let Some(e) = &self.manage_error {
-                widgets::error(ui, e);
-            }
-        });
-        ui.add_space(10.0);
-        widgets::card(ui, |ui| {
-            widgets::section(ui, icon::INFO, "Let another device control this computer");
-            for (n, step) in [
-                "Click Manage this computer above.",
-                "Set a PIN and turn on remote access.",
-                "Click Add a device, then on the other device click Add computer and enter the code shown.",
-            ]
-            .iter()
-            .enumerate()
-            {
-                ui.horizontal_top(|ui| {
-                    ui.label(RichText::new(format!("{}.", n + 1)).color(ACCENT).strong());
-                    ui.add(egui::Label::new(*step).wrap());
+        widgets::page_header(ui, tr("This computer", "Bu kompüter"), &format!("\"{}\"", self.cfg.device_name), |_| {});
+        ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+            self.help_card(ui);
+            ui.add_space(10.0);
+            widgets::card(ui, |ui| {
+                widgets::section(ui, icon::SHIELD, tr("Remote access", "Uzaqdan giriş"));
+                ui.horizontal(|ui| {
+                    let (color, state, text) = match self.remote {
+                        RemoteAccess::On => (
+                            GREEN,
+                            tr("On", "Aktiv"),
+                            tr(
+                                "Devices you added can control this computer, even at the sign-in screen.",
+                                "Əlavə etdiyiniz cihazlar bu kompüteri, hətta giriş ekranında da idarə edə bilər.",
+                            ),
+                        ),
+                        RemoteAccess::Stopped => (
+                            AMBER,
+                            tr("Stopped", "Dayandırılıb"),
+                            tr("Remote access is set up but not running.", "Uzaqdan giriş quraşdırılıb, lakin işləmir."),
+                        ),
+                        RemoteAccess::Off => (
+                            GREY,
+                            tr("Off", "Söndürülüb"),
+                            tr("Nobody can connect to this computer.", "Heç kim bu kompüterə qoşula bilməz."),
+                        ),
+                    };
+                    widgets::pill(ui, state, color);
+                    ui.add(egui::Label::new(text).wrap());
                 });
-            }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if widgets::primary(
+                        ui,
+                        true,
+                        &format!("{}   {}", icon::SHIELD, tr("Manage this computer…", "Bu kompüteri idarə et…")),
+                    )
+                    .clicked()
+                    {
+                        self.manage_error = sys::relaunch_elevated("--manage").err().map(|e| format!("{e:#}"));
+                    }
+                    widgets::hint(ui, tr("Windows asks for permission once.", "Windows bir dəfə icazə istəyəcək."));
+                });
+                if let Some(e) = &self.manage_error {
+                    widgets::error(ui, e);
+                }
+            });
+            ui.add_space(10.0);
+            widgets::card(ui, |ui| {
+                widgets::section(
+                    ui,
+                    icon::INFO,
+                    tr(
+                        "Let another device control this computer",
+                        "Başqa cihazın bu kompüteri idarə etməsinə icazə verin",
+                    ),
+                );
+                for (n, step) in [
+                    tr("Click Manage this computer above.", "Yuxarıda «Bu kompüteri idarə et» düyməsini klikləyin."),
+                    tr("Set a PIN and turn on remote access.", "PIN kod təyin edin və uzaqdan girişi aktivləşdirin."),
+                    tr(
+                        "Click Add a device, then on the other device click Add computer and enter the code shown.",
+                        "«Cihaz əlavə et» düyməsini klikləyin, sonra digər cihazda «Kompüter əlavə et» seçib göstərilən kodu daxil edin.",
+                    ),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    ui.horizontal_top(|ui| {
+                        ui.label(RichText::new(format!("{}.", n + 1)).color(ACCENT).strong());
+                        ui.add(egui::Label::new(*step).wrap());
+                    });
+                }
+            });
+        });
+    }
+
+    /// "Get help now": a one-time code for someone to connect once.
+    fn help_card(&mut self, ui: &mut Ui) {
+        widgets::card(ui, |ui| {
+            widgets::section(ui, icon::KEY, tr("Get help now (one-time)", "İndi kömək alın (birdəfəlik)"));
+            ui.add(
+                egui::Label::new(tr(
+                    "Let someone see and control this screen once, without a PIN or adding their device. \
+                     You approve the connection, and nothing is kept afterwards.",
+                    "Kiminsə bu ekranı bir dəfə görməsinə və idarə etməsinə icazə verin: PIN kod və cihaz əlavə \
+                     etmək lazım deyil. Qoşulmanı siz təsdiqləyirsiniz, seansdan sonra heç nə saxlanılmır.",
+                ))
+                .wrap(),
+            );
+            let has_server = self.cfg.server.is_some();
+            ui.horizontal(|ui| {
+                let busy = self.support.is_some();
+                if widgets::primary(ui, has_server && !busy, tr("Get a one-time code", "Birdəfəlik kod al")).clicked()
+                {
+                    self.start_support();
+                }
+                if !has_server {
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "Needs a server: set it in Manage this computer → Server.",
+                            "Server tələb olunur: onu «Bu kompüteri idarə et» → «Server» bölməsində təyin edin.",
+                        ),
+                    );
+                }
+            });
         });
     }
 
     fn settings(&mut self, ui: &mut Ui) {
-        widgets::page_header(ui, "Settings", "", |_| {});
+        widgets::page_header(ui, tr("Settings", "Parametrlər"), "", |_| {});
         ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
             widgets::card(ui, |ui| {
-                widgets::section(ui, icon::PC, "This device");
+                widgets::section(ui, icon::PC, tr("This device", "Bu cihaz"));
                 egui::Grid::new("device").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-                    widgets::hint(ui, "Name");
+                    widgets::hint(ui, tr("Name", "Ad"));
                     ui.label(&self.cfg.device_name);
                     ui.end_row();
-                    widgets::hint(ui, "Fingerprint");
+                    widgets::hint(ui, tr("Fingerprint", "Barmaq izi"));
                     let fp = self
                         .identity
                         .as_ref()
@@ -656,13 +1122,33 @@ impl ClientApp {
                 });
             });
             ui.add_space(10.0);
+            widgets::card(ui, |ui| {
+                widgets::section(ui, icon::GLOBE, tr("Language", "Dil"));
+                ui.horizontal(|ui| {
+                    widgets::language_switch(ui);
+                    ui.label(rider_core::i18n::lang().native_name());
+                });
+                widgets::hint(
+                    ui,
+                    tr(
+                        "English or Azerbaijani. Applies right away, also to session windows and Manage this computer.",
+                        "İngilis və ya Azərbaycan dili. Dərhal tətbiq olunur: seans pəncərələri və «Bu kompüteri idarə et» də bu dildə açılır.",
+                    ),
+                );
+            });
+            ui.add_space(10.0);
             self.server_card(ui);
             ui.add_space(10.0);
             self.updates_card(ui);
             ui.add_space(10.0);
             widgets::card(ui, |ui| {
-                widgets::section(ui, icon::PLAY, "Startup");
-                if ui.checkbox(&mut self.autostart, "Start Remote Desktop Rider when I sign in").changed()
+                widgets::section(ui, icon::PLAY, tr("Startup", "Avtomatik başlatma"));
+                if ui
+                    .checkbox(
+                        &mut self.autostart,
+                        tr("Start Remote Desktop Rider when I sign in", "Sistemə daxil olduqda Remote Desktop Rider-i başlat"),
+                    )
+                    .changed()
                     && let Err(e) = sys::set_autostart(self.autostart)
                 {
                     self.autostart = sys::autostart();
@@ -670,8 +1156,14 @@ impl ClientApp {
                 }
                 widgets::hint(
                     ui,
-                    "Closing the window keeps the app in the notification area. Use Quit in its menu to exit.",
+                    tr(
+                        "Closing the window keeps the app in the notification area. Use Quit in its menu to exit.",
+                        "Pəncərə bağlandıqda proqram bildiriş sahəsində qalır. Tam çıxmaq üçün onun menyusunda «Çıxış» seçin.",
+                    ),
                 );
+                if let Some(Err(e)) = &self.settings_msg {
+                    widgets::error(ui, e);
+                }
             });
         });
     }
@@ -690,23 +1182,34 @@ impl ClientApp {
         widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::DOWNLOAD).size(18.0).color(ACCENT));
-                ui.label(RichText::new(format!("Version {} is available", release.version)).strong());
-                ui.hyperlink_to("What's new", &release.page);
+                let version = &release.version;
+                ui.label(
+                    RichText::new(trf!("Version {version} is available", "{version} versiyası mövcuddur")).strong(),
+                );
+                ui.hyperlink_to(tr("What's new", "Yeniliklər"), &release.page);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &state {
                     State::Downloading { done, .. } => {
                         let f = *done as f32 / release.size.max(1) as f32;
+                        let pct = f * 100.0;
                         ui.add(
                             egui::ProgressBar::new(f)
                                 .desired_width(220.0)
-                                .text(format!("Downloading… {:.0}%", f * 100.0)),
+                                .text(trf!("Downloading… {pct:.0}%", "Yüklənir… {pct:.0}%")),
                         );
                     }
                     State::Installing(_) => {
-                        widgets::hint(ui, "Installing… the app reopens by itself.");
+                        widgets::hint(
+                            ui,
+                            tr("Installing… the app reopens by itself.", "Quraşdırılır… proqram özü yenidən açılacaq."),
+                        );
                         ui.spinner();
                     }
                     _ => {
-                        let label = if matches!(state, State::Failed { .. }) { "Try again" } else { "Install update" };
+                        let label = if matches!(state, State::Failed { .. }) {
+                            tr("Try again", "Yenidən cəhd et")
+                        } else {
+                            tr("Install update", "Yeniləməni quraşdır")
+                        };
                         if widgets::primary(ui, true, label).clicked() {
                             self.updater.install(release.clone());
                         }
@@ -718,7 +1221,10 @@ impl ClientApp {
             } else if matches!(state, State::Available(_)) {
                 widgets::hint(
                     ui,
-                    "Windows asks for permission once. Open sessions from this device end while it installs.",
+                    tr(
+                        "Windows asks for permission once. Open sessions from this device end while it installs.",
+                        "Windows bir dəfə icazə istəyəcək. Quraşdırma zamanı bu cihazdan açılmış seanslar bağlanacaq.",
+                    ),
                 );
             }
         });
@@ -728,40 +1234,59 @@ impl ClientApp {
     fn updates_card(&mut self, ui: &mut Ui) {
         use updates::State;
         widgets::card(ui, |ui| {
-            widgets::section(ui, icon::DOWNLOAD, "Updates");
+            widgets::section(ui, icon::DOWNLOAD, tr("Updates", "Yeniləmələr"));
             ui.horizontal(|ui| {
-                widgets::hint(ui, "Version");
+                widgets::hint(ui, tr("Version", "Versiya"));
                 ui.label(updates::current().to_string());
             });
             if !self.updater.installed {
-                widgets::hint(ui, "Updates apply to the installed app (Program Files); this copy runs from elsewhere.");
+                widgets::hint(
+                    ui,
+                    tr(
+                        "Updates apply to the installed app (Program Files); this copy runs from elsewhere.",
+                        "Yeniləmələr quraşdırılmış proqrama (Program Files) tətbiq olunur; bu nüsxə başqa qovluqdan işləyir.",
+                    ),
+                );
                 return;
             }
             let mut auto = self.updater.auto;
-            if ui.checkbox(&mut auto, "Check for updates automatically").changed() {
+            if ui.checkbox(&mut auto, tr("Check for updates automatically", "Yeniləmələri avtomatik yoxla")).changed()
+            {
                 self.updater.set_auto(auto);
             }
             ui.horizontal(|ui| {
                 let state = self.updater.state();
                 let checking = matches!(state, State::Checking { .. });
-                if ui.add_enabled(!checking, egui::Button::new("Check now")).clicked() {
+                if ui.add_enabled(!checking, egui::Button::new(tr("Check now", "İndi yoxla"))).clicked() {
                     self.updater.check();
                 }
                 match state {
                     State::Checking { manual: true } => {
                         ui.spinner();
                     }
-                    State::UpToDate => widgets::success(ui, "You have the latest version."),
+                    State::UpToDate => {
+                        widgets::success(ui, tr("You have the latest version.", "Ən son versiya quraşdırılıb."))
+                    }
                     State::Failed { error, release: None } => widgets::error(ui, &error),
                     State::Available(r) => {
-                        widgets::hint(ui, &format!("Version {} is available (see the top).", r.version))
+                        let version = &r.version;
+                        widgets::hint(
+                            ui,
+                            &trf!(
+                                "Version {version} is available (see the top).",
+                                "{version} versiyası mövcuddur (yuxarıya baxın)."
+                            ),
+                        )
                     }
                     _ => {}
                 }
             });
             widgets::hint(
                 ui,
-                "Updates come from this project's GitHub releases and are checked against their published SHA-256.",
+                tr(
+                    "Updates come from this project's GitHub releases and are checked against their published SHA-256.",
+                    "Yeniləmələr layihənin GitHub buraxılışlarından yüklənir və dərc olunmuş SHA-256 ilə yoxlanılır.",
+                ),
             );
         });
     }
@@ -770,25 +1295,38 @@ impl ClientApp {
     /// only shows it.
     fn server_card(&mut self, ui: &mut Ui) {
         widgets::card(ui, |ui| {
-            widgets::section(ui, icon::GLOBE, "Server");
+            widgets::section(ui, icon::GLOBE, tr("Server", "Server"));
             match &self.cfg.server {
                 Some(s) => {
                     egui::Grid::new("server").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-                        widgets::hint(ui, "Address");
+                        widgets::hint(ui, tr("Address", "Ünvan"));
                         ui.label(&s.addr);
                         ui.end_row();
-                        widgets::hint(ui, "Fingerprint");
+                        widgets::hint(ui, tr("Fingerprint", "Barmaq izi"));
                         ui.label(RichText::new(widgets::short_fp(&s.fingerprint)).monospace());
                         ui.end_row();
                     });
                 }
-                None => widgets::hint(ui, "Not set: only computers on this network can be reached."),
+                None => widgets::hint(
+                    ui,
+                    tr(
+                        "Not set: only computers on this network can be reached.",
+                        "Təyin edilməyib: yalnız bu şəbəkədəki kompüterlərə qoşulmaq mümkündür.",
+                    ),
+                ),
             }
             ui.horizontal(|ui| {
-                if ui.button(format!("{}   Change in Manage this computer…", icon::SHIELD)).clicked() {
+                if ui
+                    .button(format!(
+                        "{}   {}",
+                        icon::SHIELD,
+                        tr("Change in Manage this computer…", "«Bu kompüteri idarə et» bölməsində dəyiş…")
+                    ))
+                    .clicked()
+                {
                     self.manage_error = sys::relaunch_elevated("--manage").err().map(|e| format!("{e:#}"));
                 }
-                widgets::hint(ui, "One setting for both directions.");
+                widgets::hint(ui, tr("One setting for both directions.", "Hər iki istiqamət üçün bir ayar."));
             });
             if let Some(e) = &self.manage_error {
                 widgets::error(ui, e);
@@ -802,51 +1340,69 @@ impl ClientApp {
         let mut close = false;
         let mut reply = None;
         Modal::new(Id::unique("add-computer")).show(ctx, |ui| {
-            ui.set_width(440.0);
-            ui.label(widgets::title("Add a computer", 19.0));
+            ui.set_width(460.0);
+            ui.label(widgets::title(tr("Add a computer", "Kompüter əlavə et"), 19.0));
             ui.add_space(4.0);
             match &d.stage {
                 AddStage::Input { error } => {
-                    ui.label("Code or address shown on the other computer");
+                    ui.label(tr(
+                        "Code or address shown on the other computer",
+                        "Digər kompüterdə göstərilən kod və ya ünvan",
+                    ));
                     let r = ui.add(
                         TextEdit::singleline(&mut d.target)
-                            .hint_text("e.g. SF6-CK6 or 192.168.1.20")
+                            .hint_text(tr("e.g. SF6-CK6 or 192.168.1.20", "məs., SF6-CK6 və ya 192.168.1.20"))
                             .font(egui::FontId::monospace(18.0))
                             .desired_width(f32::INFINITY),
                     );
                     if d.target.is_empty() {
                         r.request_focus();
                     }
-                    ui.label("Name in your list (optional)");
-                    ui.add(TextEdit::singleline(&mut d.name).hint_text("e.g. Office PC").desired_width(f32::INFINITY));
+                    ui.label(tr("Name in your list (optional)", "Siyahıdakı adı (istəyə bağlı)"));
+                    ui.add(
+                        TextEdit::singleline(&mut d.name)
+                            .hint_text(tr("e.g. Office PC", "məs., Ofis kompüteri"))
+                            .desired_width(f32::INFINITY),
+                    );
                     if let Some(e) = error {
                         widgets::error(ui, e);
                     }
                     widgets::dialog_buttons(ui, |ui| {
-                        start = widgets::primary(ui, !d.target.trim().is_empty(), "Continue").clicked()
+                        start = widgets::primary(ui, !d.target.trim().is_empty(), tr("Continue", "Davam et")).clicked()
                             || (!d.target.trim().is_empty() && ui.input(|i| i.key_pressed(Key::Enter)));
-                        close = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                        close =
+                            ui.button(tr("Cancel", "Ləğv et")).clicked() || ui.input(|i| i.key_pressed(Key::Escape));
                     });
                 }
                 AddStage::Connecting => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Connecting…");
+                        ui.label(tr("Connecting…", "Qoşulur…"));
                     });
-                    widgets::dialog_buttons(ui, |ui| close = ui.button("Cancel").clicked());
+                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
                 }
                 AddStage::Confirm { prompt, .. } => {
-                    ui.label(format!("\"{}\" ({}) shows a verification code:", prompt.host_name, prompt.remote.ip()));
+                    let (host, ip) = (&prompt.host_name, prompt.remote.ip());
+                    ui.add(
+                        egui::Label::new(trf!(
+                            "\"{host}\" ({ip}) shows a verification code:",
+                            "\"{host}\" ({ip}) təsdiq kodu göstərir:"
+                        ))
+                        .wrap(),
+                    );
                     widgets::big_code(ui, &prompt.code);
                     widgets::hint(
                         ui,
-                        "Only continue if it shows exactly this code. Otherwise someone may be listening in.",
+                        tr(
+                            "Only continue if it shows exactly this code. Otherwise someone may be listening in.",
+                            "Yalnız orada məhz bu kod göstərilirsə davam edin. Əks halda əlaqəni kimsə dinləyə bilər.",
+                        ),
                     );
                     widgets::dialog_buttons(ui, |ui| {
-                        if widgets::primary(ui, true, "Yes, it matches").clicked() {
+                        if widgets::primary(ui, true, tr("Yes, it matches", "Bəli, eynidir")).clicked() {
                             reply = Some(true);
                         }
-                        if ui.button("No").clicked() {
+                        if ui.button(tr("No", "Xeyr")).clicked() {
                             reply = Some(false);
                         }
                     });
@@ -854,15 +1410,25 @@ impl ClientApp {
                 AddStage::Waiting { host } => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(format!("Waiting for someone at \"{host}\" to confirm…"));
+                        ui.label(trf!(
+                            "Waiting for someone at \"{host}\" to confirm…",
+                            "\"{host}\" tərəfində təsdiq gözlənilir…"
+                        ));
                     });
-                    widgets::dialog_buttons(ui, |ui| close = ui.button("Cancel").clicked());
+                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
                 }
                 AddStage::Done { name } => {
-                    widgets::success(ui, &format!("\"{name}\" was added."));
-                    widgets::hint(ui, "Connect to it any time from your list, with its PIN.");
+                    widgets::success(ui, &trf!("\"{name}\" was added.", "\"{name}\" əlavə edildi."));
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "Connect to it any time from your list, with its PIN.",
+                            "Ona istənilən vaxt siyahınızdan PIN kodu ilə qoşula bilərsiniz.",
+                        ),
+                    );
                     widgets::dialog_buttons(ui, |ui| {
-                        close = widgets::primary(ui, true, "Done").clicked() || ui.input(|i| i.key_pressed(Key::Enter));
+                        close = widgets::primary(ui, true, tr("Done", "Hazırdır")).clicked()
+                            || ui.input(|i| i.key_pressed(Key::Enter));
                     });
                 }
             }
@@ -887,12 +1453,13 @@ impl ClientApp {
         let mut go = false;
         let mut close = false;
         Modal::new(Id::unique("connect")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.label(widgets::title(format!("Connect to \"{}\"", d.name), 19.0));
+            ui.set_width(380.0);
+            let name = &d.name;
+            ui.label(widgets::title(trf!("Connect to \"{name}\"", "\"{name}\" kompüterinə qoşulma"), 19.0));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::KEY).color(ACCENT));
-                ui.label("PIN of that computer");
+                ui.label(tr("PIN of that computer", "Həmin kompüterin PIN kodu"));
             });
             let r = ui.add(TextEdit::singleline(&mut d.pin).password(true).desired_width(f32::INFINITY));
             r.request_focus();
@@ -900,15 +1467,18 @@ impl ClientApp {
                 widgets::error(ui, e);
             }
             ui.add_space(2.0);
-            ui.checkbox(&mut d.remember, "Remember PIN on this device");
+            ui.checkbox(&mut d.remember, tr("Remember PIN on this device", "PIN kodu bu cihazda yadda saxla"));
             widgets::hint(
                 ui,
-                "Next time Connect opens the session directly. Anyone who can use your Windows account here could too.",
+                tr(
+                    "Next time Connect opens the session directly. Anyone who can use your Windows account here could too.",
+                    "Növbəti dəfə «Qoşul» seansı birbaşa açacaq. Bu kompüterdə Windows hesabınızdan istifadə edə bilən hər kəs də bunu edə bilər.",
+                ),
             );
             widgets::dialog_buttons(ui, |ui| {
-                go = widgets::primary(ui, !d.pin.is_empty(), "Connect").clicked()
+                go = widgets::primary(ui, !d.pin.is_empty(), tr("Connect", "Qoşul")).clicked()
                     || (!d.pin.is_empty() && ui.input(|i| i.key_pressed(Key::Enter)));
-                close = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                close = ui.button(tr("Cancel", "Ləğv et")).clicked() || ui.input(|i| i.key_pressed(Key::Escape));
             });
         });
         if go {
@@ -917,6 +1487,274 @@ impl ClientApp {
             }
         } else if close {
             self.connect = None;
+        }
+    }
+
+    /// Quick connect (helper side): enter the code, wait for Allow.
+    fn quick_dialog(&mut self, ctx: &egui::Context) {
+        let has_server = self.cfg.server.is_some();
+        let Some(q) = &mut self.quick else { return };
+        let mut go = false;
+        let mut close = false;
+        Modal::new(Id::unique("quick-connect")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.label(widgets::title(tr("Quick connect", "Sürətli qoşulma"), 19.0));
+            ui.add_space(4.0);
+            match &q.stage {
+                QuickStage::Input { error } => {
+                    if !has_server {
+                        widgets::error(
+                            ui,
+                            tr(
+                                "Quick connect needs a server: set it in This computer → Manage this computer → Server.",
+                                "Sürətli qoşulma üçün server lazımdır: onu «Bu kompüter» → «Bu kompüteri idarə et» → «Server» bölməsində təyin edin.",
+                            ),
+                        );
+                    }
+                    ui.label(tr(
+                        "One-time code shown on the other computer",
+                        "Digər kompüterdə göstərilən birdəfəlik kod",
+                    ));
+                    let r = ui.add(
+                        TextEdit::singleline(&mut q.code)
+                            .hint_text(tr("e.g. SF6-CK6", "məs., SF6-CK6"))
+                            .font(egui::FontId::monospace(18.0))
+                            .desired_width(f32::INFINITY),
+                    );
+                    if q.code.is_empty() {
+                        r.request_focus();
+                    }
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "The person there clicks Get a one-time code under This computer, then allows your connection.",
+                            "Orada olan şəxs «Bu kompüter» bölməsində «Birdəfəlik kod al» düyməsini klikləyir, sonra qoşulmanıza icazə verir.",
+                        ),
+                    );
+                    if let Some(e) = error {
+                        widgets::error(ui, e);
+                    }
+                    let ok = has_server && !q.code.trim().is_empty();
+                    widgets::dialog_buttons(ui, |ui| {
+                        go = widgets::primary(ui, ok, tr("Connect", "Qoşul")).clicked()
+                            || (ok && ui.input(|i| i.key_pressed(Key::Enter)));
+                        close =
+                            ui.button(tr("Cancel", "Ləğv et")).clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                    });
+                }
+                QuickStage::Connecting => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(tr("Connecting…", "Qoşulur…"));
+                    });
+                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
+                }
+                QuickStage::Waiting { host, code } => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.add(
+                            egui::Label::new(trf!(
+                                "Waiting for the person at \"{host}\" to allow the connection…",
+                                "\"{host}\" kompüterindəki şəxsin icazəsi gözlənilir…"
+                            ))
+                            .wrap(),
+                        );
+                    });
+                    if let Some(code) = code {
+                        widgets::hint(
+                            ui,
+                            tr(
+                                "Verification code (they see the same one):",
+                                "Təsdiq kodu (qarşı tərəf də eyni kodu görür):",
+                            ),
+                        );
+                        widgets::big_code(ui, code);
+                    }
+                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
+                }
+                QuickStage::Connected { host, route } => {
+                    widgets::success(
+                        ui,
+                        &trf!(
+                            "Connected to \"{host}\" ({route}). The session is open in its own window.",
+                            "\"{host}\" kompüterinə qoşuldunuz ({route}). Seans ayrıca pəncərədə açıqdır."
+                        ),
+                    );
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "It ends when you disconnect or the other side clicks its red bar. The code no longer works.",
+                            "Seans siz bağlantını kəsdikdə və ya qarşı tərəf qırmızı zolağa kliklədikdə bitir. Kod artıq etibarsızdır.",
+                        ),
+                    );
+                    widgets::dialog_buttons(ui, |ui| {
+                        // Hiding the dialog leaves the session running.
+                        if widgets::primary(ui, true, tr("OK", "Oldu")).clicked() {
+                            close = true;
+                        }
+                    });
+                }
+            }
+        });
+        if go {
+            self.start_quick();
+        } else if close
+            && let Some(mut q) = self.quick.take()
+            && !matches!(q.stage, QuickStage::Connected { .. })
+        {
+            q.stop();
+        }
+    }
+
+    /// Get help (the person being helped): the code, then Allow / Decline.
+    fn support_dialog(&mut self, ctx: &egui::Context) {
+        let Some(s) = &mut self.support else { return };
+        let mut close = false;
+        let mut answer = None;
+        let mut again = false;
+        Modal::new(Id::unique("support")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.label(widgets::title(tr("One-time code", "Birdəfəlik kod"), 19.0));
+            ui.add_space(4.0);
+            match s.stage.clone() {
+                SupportStage::Waiting => {
+                    match &s.code {
+                        Some(code) => {
+                            ui.label(tr(
+                                "Tell this code to the person who is helping you:",
+                                "Bu kodu sizə kömək edən şəxsə bildirin:",
+                            ));
+                            widgets::big_code(ui, code);
+                            widgets::hint(
+                                ui,
+                                tr(
+                                    "They enter it under Quick connect. It works once and expires in 10 minutes.",
+                                    "O, kodu «Sürətli qoşulma» bölməsində daxil edir. Kod bir dəfə işləyir və 10 dəqiqəyə qüvvədən düşür.",
+                                ),
+                            );
+                        }
+                        None if s.server_error.is_none() => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(tr("Getting a code from the server…", "Serverdən kod alınır…"));
+                            });
+                        }
+                        None => {}
+                    }
+                    if let Some(e) = &s.server_error {
+                        widgets::error(ui, &format!("{}: {e}", tr("Server", "Server")));
+                    }
+                    if let Some(n) = &s.note {
+                        widgets::hint(ui, n);
+                    }
+                    if s.code.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            widgets::hint(ui, tr("Waiting for the connection…", "Qoşulma gözlənilir…"));
+                        });
+                    }
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "In this kind of session, windows running as administrator and UAC prompts can't be controlled.",
+                            "Bu cür seansda administrator hüquqları ilə işləyən pəncərələri və UAC sorğularını idarə etmək mümkün deyil.",
+                        ),
+                    );
+                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
+                }
+                SupportStage::Asking { device, code } => {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(trf!(
+                                "\"{device}\" wants to see and control this screen.",
+                                "\"{device}\" bu ekranı görmək və idarə etmək istəyir."
+                            ))
+                            .strong(),
+                        )
+                        .wrap(),
+                    );
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "Verification code (the helper sees the same one):",
+                            "Təsdiq kodu (kömək edən şəxs də eyni kodu görür):",
+                        ),
+                    );
+                    widgets::big_code(ui, &code);
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "Allow only if you know who this is. You can end the session at any time by clicking the red bar at the top of the screen.",
+                            "Yalnız kim olduğunu bilirsinizsə icazə verin. Seansı istənilən vaxt ekranın yuxarısındakı qırmızı zolağa klikləməklə bitirə bilərsiniz.",
+                        ),
+                    );
+                    widgets::dialog_buttons(ui, |ui| {
+                        if widgets::primary(ui, true, tr("Allow", "İcazə ver")).clicked() {
+                            answer = Some(true);
+                        }
+                        if ui.button(tr("Decline", "İmtina et")).clicked() {
+                            answer = Some(false);
+                        }
+                    });
+                }
+                SupportStage::Active { device } => {
+                    ui.horizontal(|ui| {
+                        widgets::dot(ui, Some(GREEN));
+                        ui.add(
+                            egui::Label::new(trf!(
+                                "\"{device}\" is connected and can control this computer.",
+                                "\"{device}\" qoşulub və bu kompüteri idarə edə bilər."
+                            ))
+                            .wrap(),
+                        );
+                    });
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "To end it, click End session here or the red bar at the top of the screen.",
+                            "Bitirmək üçün burada «Seansı bitir» düyməsini və ya ekranın yuxarısındakı qırmızı zolağı klikləyin.",
+                        ),
+                    );
+                    widgets::dialog_buttons(ui, |ui| {
+                        close = widgets::danger(ui, tr("End session", "Seansı bitir")).clicked();
+                    });
+                }
+                SupportStage::Ended => {
+                    widgets::success(
+                        ui,
+                        tr(
+                            "The session has ended. The code no longer works.",
+                            "Seans başa çatdı. Kod artıq etibarsızdır.",
+                        ),
+                    );
+                    widgets::dialog_buttons(ui, |ui| close = widgets::primary(ui, true, tr("Close", "Bağla")).clicked());
+                }
+                SupportStage::Expired => {
+                    widgets::hint(
+                        ui,
+                        tr("The code expired without being used.", "Kod istifadə edilmədən qüvvədən düşdü."),
+                    );
+                    widgets::dialog_buttons(ui, |ui| {
+                        again = widgets::primary(ui, true, tr("Get a new code", "Yeni kod al")).clicked();
+                        close = ui.button(tr("Close", "Bağla")).clicked();
+                    });
+                }
+                SupportStage::Failed(e) => {
+                    widgets::error(ui, &e);
+                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Close", "Bağla")).clicked());
+                }
+            }
+        });
+        if let Some(yes) = answer {
+            s.send(if yes { "y" } else { "n" });
+        }
+        if close || again {
+            // Ends the one-time host (and a running session) at once.
+            s.send("quit");
+            self.support = None;
+        }
+        if again {
+            self.start_support();
         }
     }
 
@@ -932,11 +1770,37 @@ impl ClientApp {
         if !sys::flag(hint) {
             sys::set_flag(hint);
             tray.notify(
-                "Remote Desktop Rider is still running",
-                "It stays here in the notification area. Right-click the icon and choose Quit to exit.",
+                tr("Remote Desktop Rider is still running", "Remote Desktop Rider işləməyə davam edir"),
+                tr(
+                    "It stays here in the notification area. Right-click the icon and choose Quit to exit.",
+                    "Proqram bildiriş sahəsində qalır. Çıxmaq üçün nişanın üzərində sağ klikləyib «Çıxış» seçin.",
+                ),
             );
         }
     }
+}
+
+/// `Connected to "name" (direct 1.2.3.4:47800).` → (name, route).
+fn parse_connected(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("Connected to \"")?;
+    let (name, tail) = rest.rsplit_once("\" (")?;
+    Some((name.to_owned(), tail.trim_end_matches(").").to_owned()))
+}
+
+fn parse_support_event(line: &str) -> Option<SupportEvent> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
+    Some(match v.get("event")?.as_str()? {
+        "registered" => SupportEvent::Code(v.get("code").and_then(|c| c.as_str()).map(str::to_owned)),
+        "server_error" => SupportEvent::ServerError(s("message")),
+        "support_request" => SupportEvent::Request { device: s("device"), code: s("code") },
+        "support_started" => SupportEvent::Started(s("device")),
+        "support_ended" => SupportEvent::Ended,
+        "support_cancelled" => SupportEvent::Cancelled,
+        "declined" => SupportEvent::Declined,
+        "expired" => SupportEvent::Expired,
+        _ => return None,
+    })
 }
 
 impl eframe::App for ClientApp {
@@ -989,5 +1853,35 @@ impl eframe::App for ClientApp {
             });
         self.add_dialog(&ctx);
         self.connect_dialog(&ctx);
+        self.quick_dialog(&ctx);
+        self.support_dialog(&ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_viewer_lines() {
+        assert_eq!(
+            parse_connected("Connected to \"Office (2)\" (direct 1.2.3.4:47800)."),
+            Some(("Office (2)".into(), "direct 1.2.3.4:47800".into()))
+        );
+        assert!(parse_connected("Waiting for \"x\" to allow the connection.").is_none());
+    }
+
+    #[test]
+    fn parses_support_events() {
+        assert!(matches!(
+            parse_support_event(r#"{"event":"registered","server":"s","public":"1.2.3.4:5","code":"SF6-CK6"}"#),
+            Some(SupportEvent::Code(Some(c))) if c == "SF6-CK6"
+        ));
+        assert!(matches!(
+            parse_support_event(r#"{"event":"support_request","device":"Laptop","from":"1.2.3.4:5","code":"123 456"}"#),
+            Some(SupportEvent::Request { device, code }) if device == "Laptop" && code == "123 456"
+        ));
+        assert!(matches!(parse_support_event(r#"{"event":"expired"}"#), Some(SupportEvent::Expired)));
+        assert!(parse_support_event("not json").is_none());
     }
 }

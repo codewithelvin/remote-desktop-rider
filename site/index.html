@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Desktop Rider</title>
+  <meta name="description" data-i18n-attr="content:meta.desc" content="Fast, private 1:1 remote desktop for Windows that stays usable on bad connections. End-to-end encrypted, no accounts, no cloud, self-hosted server.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#2f6feb">
+  <meta property="og:title" content="Remote Desktop Rider">
+  <meta property="og:description" content="Fast, private 1:1 remote desktop for Windows that stays usable on bad connections.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://codewithelvin.github.io/remote-desktop-rider/">
+  <meta property="og:image" content="https://codewithelvin.github.io/remote-desktop-rider/screenshots/session.jpg">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6feb'/%3E%3Crect x='7' y='9' width='18' height='12' rx='2' fill='none' stroke='white' stroke-width='2.4'/%3E%3Cpath d='M12 25h8' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main" data-i18n="skip">Skip to content</a>
+
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#top" aria-label="Remote Desktop Rider, back to top" data-i18n-attr="aria-label:brand.label">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><rect x="7" y="9" width="18" height="12" rx="2" class="bm-line"/><path d="M12 25h8" class="bm-line"/></svg>
+        <span>Remote Desktop Rider</span>
+      </a>
+      <nav aria-label="Sections" data-i18n-attr="aria-label:nav.label">
+        <ul class="nav">
+          <li><a href="#features" data-i18n="nav.features">Features</a></li>
+          <li><a href="#how" data-i18n="nav.how">How it works</a></li>
+          <li><a href="#security" data-i18n="nav.security">Security</a></li>
+          <li><a href="#self-host" data-i18n="nav.selfhost">Self-host</a></li>
+          <li><a href="#faq" data-i18n="nav.faq">FAQ</a></li>
+        </ul>
+      </nav>
+      <div class="lang" role="group" aria-label="Language" data-i18n-attr="aria-label:lang.label">
+        <button type="button" class="lang-btn" data-lang="en" lang="en" aria-pressed="true" aria-label="English" title="English">
+          <svg viewBox="0 0 60 30" aria-hidden="true">
+            <clipPath id="flag-uk-clip"><rect width="60" height="30"/></clipPath>
+            <g clip-path="url(#flag-uk-clip)">
+              <rect width="60" height="30" fill="#012169"/>
+              <path d="M0 0 60 30M60 0 0 30" stroke="#fff" stroke-width="6"/>
+              <path d="M0 0 60 30M60 0 0 30" stroke="#c8102e" stroke-width="2"/>
+              <path d="M30 0v30M0 15h60" stroke="#fff" stroke-width="10"/>
+              <path d="M30 0v30M0 15h60" stroke="#c8102e" stroke-width="6"/>
+            </g>
+          </svg>
+        </button>
+        <button type="button" class="lang-btn" data-lang="az" lang="az" aria-pressed="false" aria-label="Azərbaycan dili" title="Azərbaycan dili">
+          <svg viewBox="0 0 1200 600" aria-hidden="true">
+            <rect width="1200" height="200" fill="#00b5e2"/>
+            <rect y="200" width="1200" height="200" fill="#ef3340"/>
+            <rect y="400" width="1200" height="200" fill="#509e2f"/>
+            <circle cx="580" cy="300" r="90" fill="#fff"/>
+            <circle cx="602" cy="300" r="75" fill="#ef3340"/>
+            <polygon fill="#fff" points="720,300 696.6,306.9 708.3,328.3 686.9,316.6 680,340 673.1,316.6 651.7,328.3 663.4,306.9 640,300 663.4,293.1 651.7,271.7 673.1,283.4 680,260 686.9,283.4 708.3,271.7 696.6,293.1"/>
+          </svg>
+        </button>
+      </div>
+      <a class="gh-link" href="https://github.com/codewithelvin/remote-desktop-rider" aria-label="Remote Desktop Rider on GitHub" data-i18n-attr="aria-label:gh.label">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Hero -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="wrap hero-inner">
+        <p class="eyebrow" data-i18n="hero.eyebrow">Open source · Windows 10/11 · Written in Rust</p>
+        <h1 id="hero-title">Remote Desktop Rider</h1>
+        <p class="tagline" data-i18n="hero.tagline">Fast, private 1:1 remote desktop for Windows that stays usable on bad connections.</p>
+        <p class="lede" data-i18n="hero.lede">Help a family member, reach your office PC from home, or support a customer: over mobile data, hotel Wi-Fi, a strict company firewall or a slow VPN.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+            <span data-i18n="cta.download">Download for Windows</span>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/codewithelvin/remote-desktop-rider">
+            <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            <span data-i18n="cta.github">View on GitHub</span>
+          </a>
+        </div>
+        <p class="fine" data-i18n="hero.fine">One ~8&nbsp;MB installer for Windows 10/11 (64-bit). Free and open source. No accounts, no cloud.</p>
+      </div>
+
+      <div class="wrap">
+        <figure class="shot shot-hero">
+          <div class="shot-chrome" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img src="screenshots/session.jpg" width="1618" height="997" data-i18n-attr="alt:hero.alt" alt="A remote session in Remote Desktop Rider: the remote Windows desktop fills the viewer window, with the session toolbar tab at the top centre.">
+        </figure>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <p class="kicker" data-i18n="nav.features">Features</p>
+        <h2 id="features-title" data-i18n="features.title">Built for the connection you actually have</h2>
+        <ul class="grid features">
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17c3-6 6-9 9-9s6 3 9 9"/><path d="M12 8V4"/><circle cx="12" cy="17" r="2"/></svg>
+            <h3 data-i18n="f1.h">Smooth on poor networks</h3>
+            <p data-i18n="f1.p">QUIC over UDP, hardware H.264 (QuickSync / NVENC / AMF), a locally drawn cursor, stale frames dropped instead of resent, and live adaptive bitrate (300&nbsp;kbps–20&nbsp;Mbps).</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h6"/><path d="m17 15 2 2 2-2"/></svg>
+            <h3 data-i18n="f2.h">Quality you can pick</h3>
+            <p data-i18n="f2.p">Auto / 1080p / 720p / 480p in the session toolbar. Auto lowers the resolution on slow connections and raises it again when the link recovers.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+            <h3 data-i18n="f3.h">Private by design</h3>
+            <p data-i18n="f3.p">Devices pair once by comparing a code. Every session is end-to-end encrypted and needs the computer's PIN. No accounts, no cloud.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 12h18M3 19h18"/><path d="M8 5v14M16 5v14" stroke-dasharray="2 3"/></svg>
+            <h3 data-i18n="f4.h">Gets through firewalls</h3>
+            <p data-i18n="f4.p">Direct on the LAN, NAT hole punching or an encrypted relay across the internet. Falls back to a random UDP port, then to an HTTPS (TCP 443) tunnel through the system proxy.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/><path d="M10 10h4"/></svg>
+            <h3 data-i18n="f5.h">Works everywhere on the host</h3>
+            <p data-i18n="f5.p">Login screen, lock screen, UAC prompts and after a restart.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><path d="M9 13h6M9 17h4"/></svg>
+            <h3 data-i18n="f6.h">Everyday tools</h3>
+            <p data-i18n="f6.p">Text clipboard sync both ways, drag-and-drop files to the host, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg>
+            <h3 data-i18n="f7.h">Self-hosted</h3>
+            <p data-i18n="f7.p">The optional <code>rider-server</code> runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+            <h3 data-i18n="f8.h">Keeps itself current</h3>
+            <p data-i18n="f8.p">Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>
+            <h3 data-i18n="f9.h">Small and native</h3>
+            <p data-i18n="f9.p">One ~8&nbsp;MB installer. Rust end to end.</p>
+          </li>
+          <li class="card">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>
+            <h3 data-i18n="f10.h">English and Azerbaijani</h3>
+            <p data-i18n="f10.p">The app, the session window and the Manage window are available in English and Azerbaijani. Switch with the flag buttons in the app's sidebar or in Settings.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="section alt" id="how" aria-labelledby="how-title">
+      <div class="wrap">
+        <p class="kicker" data-i18n="nav.how">How it works</p>
+        <h2 id="how-title" data-i18n="how.title">Pair once, then connect with a PIN</h2>
+        <p class="section-lede" data-i18n="how.lede">Install <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">the latest release</a> on both computers. Pairing happens once per device; after that, every session needs the computer's PIN.</p>
+
+        <ol class="steps">
+          <li class="step">
+            <span class="step-n" aria-hidden="true">1</span>
+            <div class="step-body">
+              <h3 data-i18n="s1.h">On the computer to control</h3>
+              <p data-i18n="s1.p">Open <b>This computer → Manage this computer</b>, set a PIN, turn on remote access and click <b>Add a device</b>. It shows a short code.</p>
+              <figure class="shot shot-sm">
+                <img src="screenshots/this-computer.png" width="680" height="563" loading="lazy" data-i18n-attr="alt:s1.alt" alt="The This computer screen: remote access switch, PIN setting and the list of paired devices.">
+              </figure>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step-n" aria-hidden="true">2</span>
+            <div class="step-body">
+              <h3 data-i18n="s2.h">On your device</h3>
+              <p data-i18n="s2.p">Click <b>Add computer</b>, enter that code and check that both screens show the same verification code.</p>
+              <figure class="shot shot-sm">
+                <img src="screenshots/computers.png" width="1093" height="772" loading="lazy" data-i18n-attr="alt:s2.alt" alt="The Computers screen listing the computers this device can control and whether they are online.">
+              </figure>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step-n" aria-hidden="true">3</span>
+            <div class="step-body">
+              <h3 data-i18n="s3.h">Connect</h3>
+              <p data-i18n="s3.p">Once the computer is online, click <b>Connect</b> and enter the PIN. Tick <b>Remember PIN on this device</b> and later connections open straight away, like unattended access in other tools (the PIN is encrypted for your Windows account). The remote computer shows a red banner while someone is connected; clicking it ends the session.</p>
+              <figure class="shot shot-sm">
+                <img src="screenshots/connect.png" width="500" height="240" loading="lazy" data-i18n-attr="alt:s3.alt" alt="The Connect dialog asking for the computer's PIN, with a Remember PIN on this device checkbox.">
+              </figure>
+            </div>
+          </li>
+        </ol>
+
+        <p class="note" data-i18n="how.note">To pair and connect across networks, set your <code>rider-server</code> address and fingerprint once per computer in <b>This computer → Manage → Server</b> (see <a href="#self-host">Self-host your server</a>). Without a server, devices on the same network can still pair by address.</p>
+
+        <!-- Quick connect -->
+        <section class="quick" id="quick-connect" aria-labelledby="quick-title">
+          <div class="quick-head">
+            <span class="badge" data-i18n="q.badge">New</span>
+            <h3 id="quick-title" data-i18n="q.title">Quick connect with a one-time code</h3>
+            <p data-i18n="q.lede">For one-off help, not long-term access. No admin rights, no PIN, no pairing.</p>
+          </div>
+          <ol class="quick-flow">
+            <li>
+              <span class="who" data-i18n="q.who.helped">Person who needs help</span>
+              <p data-i18n="q.f1">Opens Remote Desktop Rider and, on the <b>This computer</b> page, clicks <b>Get a one-time code</b>.</p>
+            </li>
+            <li>
+              <span class="who" data-i18n="q.who.helper">Helper</span>
+              <p data-i18n="q.f2">Clicks <b>Quick connect</b> and enters that code.</p>
+            </li>
+            <li>
+              <span class="who" data-i18n="q.who.helped">Person who needs help</span>
+              <p data-i18n="q.f3">Sees who wants to connect plus a verification code, and clicks <b>Allow</b> (or <b>Decline</b>).</p>
+            </li>
+          </ol>
+          <ul class="quick-facts">
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg><span data-i18n="q.x1">The code looks like SF6-CK6 (6 letters and digits, issued by your server). It works once and is valid for 10 minutes.</span></li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg><span data-i18n="q.x4">Quick connect needs the server to be set (<b>This computer → Manage → Server</b>).</span></li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span data-i18n="q.x2">Nothing is remembered after the session.</span></li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 8h18"/></svg><span data-i18n="q.x3">The helper's view ends when either side closes it; the red banner on the remote screen ends it too.</span></li>
+          </ul>
+          <p class="quick-limit" data-i18n="q.limit"><b>Limitation:</b> a quick session runs without admin rights, so windows running as administrator and UAC prompts can't be controlled. For that, use the regular paired access.</p>
+        </section>
+      </div>
+    </section>
+
+    <!-- How it connects -->
+    <section class="section" id="connects" aria-labelledby="connects-title">
+      <div class="wrap">
+        <p class="kicker" data-i18n="c.kicker">How it connects</p>
+        <h2 id="connects-title" data-i18n="c.title">Direct when it can, relay when it must, HTTPS when nothing else gets through</h2>
+
+        <figure class="paths">
+          <svg class="paths-svg" viewBox="0 0 720 300" role="img" aria-labelledby="paths-t paths-d">
+            <title id="paths-t" data-i18n="c.svg.title">Connection paths</title>
+            <desc id="paths-d" data-i18n="c.svg.desc">Your PC connects to the remote PC directly over QUIC/UDP when possible. Otherwise traffic goes through your rider-server's UDP relay, and where no UDP gets through, through an HTTPS tunnel on TCP 443 to the server.</desc>
+            <!-- nodes -->
+            <g class="node">
+              <rect x="10" y="20" width="170" height="70" rx="12"/>
+              <text x="95" y="51" class="n-title" data-i18n="c.n.you">Your PC</text>
+              <text x="95" y="71" class="n-sub">rider-app / client</text>
+            </g>
+            <g class="node">
+              <rect x="540" y="20" width="170" height="70" rx="12"/>
+              <text x="625" y="51" class="n-title" data-i18n="c.n.remote">Remote PC</text>
+              <text x="625" y="71" class="n-sub" data-i18n="c.n.remote.sub">rider-host service</text>
+            </g>
+            <g class="node node-server">
+              <rect x="265" y="205" width="190" height="75" rx="12"/>
+              <text x="360" y="237" class="n-title" data-i18n="c.n.server">Your rider-server</text>
+              <text x="360" y="258" class="n-sub">rendezvous + relay</text>
+            </g>
+            <!-- 1 direct -->
+            <path class="link l1" d="M180 55 H540"/>
+            <circle class="tag" cx="360" cy="55" r="13"/><text class="tag-n" x="360" y="60">1</text>
+            <text class="l-label" x="360" y="38" data-i18n="c.l1">direct QUIC/UDP (LAN or hole punched)</text>
+            <!-- 2 relay -->
+            <path class="link l2" d="M120 90 L300 205"/>
+            <path class="link l2" d="M420 205 L600 90"/>
+            <circle class="tag" cx="210" cy="147" r="13"/><text class="tag-n" x="210" y="152">2</text>
+            <circle class="tag" cx="510" cy="147" r="13"/><text class="tag-n" x="510" y="152">2</text>
+            <!-- 3 tunnel -->
+            <path class="link l3" d="M60 90 V242 H265"/>
+            <circle class="tag" cx="60" cy="170" r="13"/><text class="tag-n" x="60" y="175">3</text>
+            <text class="l-label l-left" x="80" y="232">HTTPS, TCP 443</text>
+          </svg>
+          <figcaption class="sr-only" data-i18n="c.caption">Diagram of the three connection paths, described in the list below.</figcaption>
+        </figure>
+
+        <ol class="path-list">
+          <li data-i18n="c.p1"><b>Direct.</b> On the same network, or across the internet once the server has helped both sides punch through their NATs. LAN addresses are tried first.</li>
+          <li data-i18n="c.p2"><b>Relay.</b> When no direct path works, the session goes through the server's UDP relay.</li>
+          <li data-i18n="c.p3"><b>HTTPS tunnel.</b> Where no UDP gets through at all (some company networks), both sides carry their traffic inside a WebSocket over HTTPS on port 443, through the system proxy, like a browser. Sessions then use the relay.</li>
+        </ol>
+        <p class="note" data-i18n="c.note">On every path the session is end-to-end encrypted with the keys pinned at pairing. The server and relay only see ciphertext. If the host's usual UDP port 47800 is filtered, it also uses a second, random high port. If the server is down, a known direct address is still tried. The viewer shows which path it chose.</p>
+      </div>
+    </section>
+
+    <!-- Security -->
+    <section class="section alt" id="security" aria-labelledby="security-title">
+      <div class="wrap">
+        <p class="kicker" data-i18n="nav.security">Security</p>
+        <h2 id="security-title" data-i18n="sec.title">No accounts, no cloud, no central point to compromise</h2>
+        <ul class="grid sec">
+          <li><h3 data-i18n="sec1.h">Device keys, pinned at pairing</h3><p data-i18n="sec1.p">Every device has its own Ed25519 identity key. There is no CA and no central server that could be compromised to impersonate a host.</p></li>
+          <li><h3 data-i18n="sec2.h">Pairing confirmed on both sides</h3><p data-i18n="sec2.p">Both screens show a 6-digit verification code derived from both keys <em>and</em> the live TLS session. A man-in-the-middle would produce different codes.</p></li>
+          <li><h3 data-i18n="sec3.h">Mutual TLS</h3><p data-i18n="sec3.p">The host rejects unpaired devices during the TLS handshake, before any application code runs. The client refuses a host whose key changed.</p></li>
+          <li><h3 data-i18n="sec4.h">A PIN for every session</h3><p data-i18n="sec4.p">Argon2id-hashed, exponential back-off, locked for 15 minutes after 10 failures. A stolen client laptop is not enough on its own.</p></li>
+          <li><h3 data-i18n="sec5.h">One session at a time</h3><p data-i18n="sec5.p">A red banner on the host while someone is connected. The banner is hidden from the stream; clicking it ends the session.</p></li>
+          <li><h3 data-i18n="sec6.h">The server sees only ciphertext</h3><p data-i18n="sec6.p">It can't watch, take over or impersonate a host. It answers the same "offline or not allowed" to everyone not paired with a host and rate-limits requests per IP.</p></li>
+          <li><h3 data-i18n="sec7.h">Locked-down files</h3><p data-i18n="sec7.p">The host's private key and trust store live in <code>%ProgramData%\RemoteDesktopRider</code>, readable only by SYSTEM and Administrators.</p></li>
+          <li><h3 data-i18n="sec8.h">Verified updates</h3><p data-i18n="sec8.p">Every download is checked against the SHA-256 published with the release. Automatic updates can be turned off.</p></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Self-host -->
+    <section class="section" id="self-host" aria-labelledby="selfhost-title">
+      <div class="wrap narrow">
+        <p class="kicker" data-i18n="sh.kicker">Self-host your server</p>
+        <h2 id="selfhost-title" data-i18n="sh.title">Your own server in one line</h2>
+        <p class="section-lede" data-i18n="sh.lede">Without a server, devices reach each other only on the same network, over a VPN or through a port forward. To connect from anywhere, run the small <code>rider-server</code> on any Linux machine both sides can reach. A cheap VPS is plenty.</p>
+
+        <div class="code" role="group" aria-label="Install command" data-i18n-attr="aria-label:sh.cmd.label">
+          <pre><code id="install-cmd">curl -fsSL https://codewithelvin.github.io/remote-desktop-rider/install.sh | sudo bash -s -- &lt;public-ip&gt;</code></pre>
+          <button class="copy" type="button" data-copy="install-cmd">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+            <span data-i18n="copy">Copy</span>
+          </button>
+        </div>
+        <p class="copy-status" role="status" aria-live="polite"></p>
+
+        <ul class="checks">
+          <li data-i18n="sh.c1">Installs or upgrades <code>rider-server</code> (Linux x86_64, systemd) from the latest GitHub release.</li>
+          <li data-i18n="sh.c2">Verifies its SHA-256.</li>
+          <li data-i18n="sh.c3">Opens UDP 47900 and 47901–47999 in ufw.</li>
+          <li data-i18n="sh.c4">Keeps the server key across upgrades, so the fingerprint never changes.</li>
+          <li data-i18n="sh.c5">Prints the fingerprint.</li>
+        </ul>
+        <p data-i18n="sh.ip"><code>&lt;public-ip&gt;</code> is optional, except behind cloud NAT.</p>
+
+        <h3 class="h-sub" data-i18n="sh.https.h">Optional: HTTPS fallback for networks that block UDP</h3>
+        <p data-i18n="sh.https.p">Add <code>--domain rider.example.com --email you@example.com</code> to also set up nginx and a Let's Encrypt certificate. This needs TCP 80 and 443 open and the DNS name pointing at the server.</p>
+        <div class="code" role="group" aria-label="Install command with HTTPS fallback" data-i18n-attr="aria-label:sh.cmd2.label">
+          <pre><code id="install-cmd-https">curl -fsSL https://codewithelvin.github.io/remote-desktop-rider/install.sh | sudo bash -s -- &lt;public-ip&gt; --domain rider.example.com --email you@example.com</code></pre>
+          <button class="copy" type="button" data-copy="install-cmd-https">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+            <span data-i18n="copy">Copy</span>
+          </button>
+        </div>
+
+        <h3 class="h-sub" data-i18n="sh.then.h">Then, on every computer</h3>
+        <p data-i18n="sh.then.p">Open <b>This computer → Manage → Server</b> and enter the server address and fingerprint. It applies in both directions: being reached and reaching others.</p>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section alt" id="faq" aria-labelledby="faq-title">
+      <div class="wrap narrow">
+        <p class="kicker" data-i18n="nav.faq">FAQ</p>
+        <h2 id="faq-title" data-i18n="faq.title">Troubleshooting</h2>
+        <div class="faq">
+          <details>
+            <summary data-i18n="faq1.q">SmartScreen warns about the installer</summary>
+            <p data-i18n="faq1.a">The installer isn't code-signed yet. Click <b>More info → Run anyway</b>. Updates are checked against the SHA-256 published with each release.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq2.q">No code appears when I click "Add a device"</summary>
+            <p data-i18n="faq2.a">The code comes from your server. Set the <b>Server</b> in <b>This computer → Manage</b> (address and fingerprint), then try again. Without a server, only devices on the same network can add this computer, using one of the addresses the dialog shows.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq3.q">It doesn't connect from a company network</summary>
+            <p data-i18n="faq3.a">This is handled automatically when the server is set up for it. If UDP 47800 is filtered, the host uses a random high port. If no UDP gets through at all, both sides switch to the HTTPS tunnel on TCP 443 through the system proxy. That needs nginx with a real certificate on the server (the <code>--domain</code> option above sets it up).</p>
+          </details>
+          <details>
+            <summary data-i18n="faq4.q">The picture is blurry or choppy</summary>
+            <p data-i18n="faq4.a">On Auto, quality follows the connection. Pick a fixed resolution in the toolbar's quality menu if you prefer: 720p or 480p often feels smoother on a weak link. The title bar shows round-trip time and latency.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq5.q">Win+L locks my own PC, not the remote one</summary>
+            <p data-i18n="faq5.a">Windows reserves Win+L (and Ctrl+Alt+Del) for the local computer. Use <kbd>Ctrl+Alt+Shift+L</kbd> to lock the remote computer, and <kbd>Ctrl+Alt+End</kbd> or the toolbar for Ctrl+Alt+Del.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq6.q">I can't click an administrator window during a quick connect session</summary>
+            <p data-i18n="faq6.a">Quick connect runs without admin rights, so windows running as administrator and UAC prompts can't be controlled. Use the regular paired access for that.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section class="final" aria-labelledby="final-title">
+      <div class="wrap">
+        <h2 id="final-title" data-i18n="final.title">Ready to ride?</h2>
+        <p data-i18n="final.p">Install it on both computers and pair in under a minute.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+            <span data-i18n="cta.download">Download for Windows</span>
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <p class="footer-brand">Remote Desktop Rider <span class="footer-copy">© 2026 Elvin Huseynov</span></p>
+      <ul class="footer-links">
+        <li><a href="https://github.com/codewithelvin/remote-desktop-rider/releases" data-i18n="ft.releases">Releases</a></li>
+        <li><a href="https://github.com/codewithelvin/remote-desktop-rider#readme">README</a></li>
+        <li><a href="https://github.com/codewithelvin/remote-desktop-rider/blob/main/docs/ROADMAP.md" data-i18n="ft.roadmap">Roadmap</a></li>
+        <li><a href="https://github.com/codewithelvin/remote-desktop-rider">GitHub</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script src="main.js" defer></script>
+</body>
+</html>

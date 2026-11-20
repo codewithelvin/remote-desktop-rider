@@ -2,6 +2,7 @@
 name = "rider-media"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 
 [dependencies]
 rider-core.workspace = true

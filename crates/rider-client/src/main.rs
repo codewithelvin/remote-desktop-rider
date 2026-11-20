@@ -32,6 +32,12 @@ enum Cmd {
         #[arg(long)]
         pin_stdin: bool,
     },
+    /// Quick connect: a one-time session by the code the other computer shows
+    /// under "Get a one-time code". No pairing or PIN; the person there allows it.
+    Quick {
+        /// The code, e.g. SF6-CK6.
+        code: String,
+    },
     /// List paired hosts.
     List,
     /// Forget a paired host.
@@ -125,6 +131,18 @@ fn main() -> Result<()> {
             }))?;
             println!("  Paired with \"{}\" ({}).", host.name, fp_short(&fp_from_hex(&host.fingerprint)?));
             println!("  Connect any time with:  rider-client connect \"{}\"", host.name);
+        }
+        Cmd::Quick { code } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            let (session, route, host_name) = rt.block_on(rider_client::quick(&cfg, &identity, &code, |p| {
+                // The desktop app reads these two lines.
+                println!("Waiting for \"{}\" to allow the connection.", p.host_name);
+                println!("Verification code: {}", p.code);
+            }))?;
+            println!("Connected to \"{host_name}\" ({route}).");
+            let report_to =
+                cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
+            rider_client::app::run(rt, session, host_name, report_to)?;
         }
         Cmd::Connect { host, pin_stdin } => {
             let known = cfg

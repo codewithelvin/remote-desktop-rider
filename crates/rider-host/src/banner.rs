@@ -59,14 +59,23 @@ fn run() {
         };
         RegisterClassW(&wc);
         let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        // Wide enough for the text (it differs by language), at least WIDTH.
+        let width = {
+            let text = TEXT.lock().unwrap().clone();
+            let dc = GetDC(None);
+            let mut size = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(dc, &text, &mut size);
+            ReleaseDC(None, dc);
+            (size.cx + 48).clamp(WIDTH, screen_w.max(WIDTH))
+        };
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class,
             w!("Remote Desktop Rider"),
             WS_POPUP | WS_VISIBLE,
-            (screen_w - WIDTH) / 2,
+            (screen_w - width) / 2,
             0,
-            WIDTH,
+            width,
             HEIGHT,
             None,
             None,

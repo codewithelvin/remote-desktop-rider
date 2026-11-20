@@ -34,7 +34,8 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "Remote Desktop Rider"
+      VALUE "CompanyName", "Elvin Huseynov"
+      VALUE "LegalCopyright", "© Elvin Huseynov"
       VALUE "FileDescription", "{description}"
       VALUE "FileVersion", "{version}"
       VALUE "InternalName", "{name}"

@@ -69,6 +69,20 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["addr", "fingerprint"])]
         off: bool,
     },
+    /// One-time support session: get a short code from the server, wait for
+    /// a helper to enter it, ask here before letting them in. No admin rights,
+    /// PIN or pairing; nothing is kept afterwards.
+    Support {
+        /// Server address, e.g. rider.example.com.
+        server: String,
+        /// Server fingerprint, printed by `rider-server info`.
+        fingerprint: String,
+    },
+    /// Language of the session banner the service shows (en or az).
+    Language {
+        #[arg(value_parser = ["en", "az"])]
+        lang: String,
+    },
     /// Let the service install new releases by itself when nobody is connected.
     AutoUpdate {
         #[arg(value_parser = ["on", "off"])]
@@ -110,20 +124,31 @@ fn main() -> Result<()> {
         _ => None,
     };
 
+    // One-time support runs as the signed-in user: no admin rights, and it
+    // never touches the machine's host key, PIN or paired devices.
+    if let Cmd::Support { server, fingerprint } = cmd {
+        init_logging(None)?;
+        dpi_aware();
+        let cfg = HostConfig {
+            server: Some(rider_core::rendezvous::ServerRef::new(&server, &fingerprint)?),
+            port: 0,
+            auto_update: false,
+            ..HostConfig::default()
+        };
+        return serve(cfg, Identity::ephemeral()?, Mode::Support);
+    }
+
     // The host's key and trust store are machine-wide and admin-only.
     system::require_elevated()?;
     let dir = HostConfig::init_dir()?;
     init_logging(headless.map(|name| dir.join("logs").join(format!("{name}.log"))))?;
-
-    // Physical pixels everywhere: capture, monitor rects and SendInput must agree.
-    // SAFETY: called once at startup, before any window is created.
-    unsafe {
-        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
-            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-        );
-    }
+    dpi_aware();
 
     let mut cfg = HostConfig::load()?;
+    // The service (SYSTEM) has no user language: use the one Manage saved.
+    if let Some(lang) = cfg.language.as_deref().and_then(rider_core::i18n::Lang::from_code) {
+        rider_core::i18n::set_current(lang);
+    }
     match cmd {
         Cmd::Service { action } => match action {
             ServiceCmd::Run => service::dispatch()?,
@@ -193,6 +218,12 @@ fn main() -> Result<()> {
                 None => println!("Rendezvous server disabled."),
             }
         }
+        Cmd::Support { .. } => unreachable!("handled above"),
+        Cmd::Language { lang } => {
+            cfg.language = Some(lang);
+            cfg.save()?;
+            println!("Banner language saved (applies from the next session).");
+        }
         Cmd::AutoUpdate { state } => {
             cfg.auto_update = state == "on";
             cfg.save()?;
@@ -211,6 +242,7 @@ fn main() -> Result<()> {
                 "paired": cfg.trusted_clients.len(),
                 "server": cfg.server,
                 "auto_update": cfg.auto_update,
+                "language": cfg.language,
                 "service": service::status(),
             });
             println!("{info}");
@@ -251,6 +283,16 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Physical pixels everywhere: capture, monitor rects and SendInput must agree.
+fn dpi_aware() {
+    // SAFETY: called once at startup, before any window is created.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
 }
 
 fn service_status() -> &'static str {
@@ -299,22 +341,30 @@ enum Mode {
     PairOnce,
     /// Headless SYSTEM agent launched by the service.
     Agent,
+    /// One-time support session by code, as the signed-in user.
+    Support,
 }
 
 fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
-    if !cfg.has_pin() {
+    let support = mode == Mode::Support;
+    if !cfg.has_pin() && !support {
         bail!("no PIN set. Run `rider-host set-pin` first - every session must provide it.");
     }
-    let pairing = matches!(mode, Mode::PairOnce | Mode::Interactive { pairing: true });
+    let pairing = matches!(mode, Mode::PairOnce | Mode::Interactive { pairing: true } | Mode::Support);
     let port = cfg.port;
     let name = cfg.name.clone();
     let fp = fp_short(&identity.fingerprint());
     let server = cfg.server.clone();
-    let state = Arc::new(HostState::new(cfg, identity, pairing));
+    let state =
+        Arc::new(if support { HostState::support(cfg, identity) } else { HostState::new(cfg, identity, pairing) });
 
     tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async move {
         let trust = Arc::new(HostTrust(state.clone()));
-        let server_cfg = rider_core::tls::server_config(&state.identity, trust)?;
+        let server_cfg = if support {
+            rider_core::tls::support_server_config(&state.identity, trust)?
+        } else {
+            rider_core::tls::server_config(&state.identity, trust)?
+        };
         // One UDP socket for clients AND the rendezvous server: NAT hole
         // punching only works if both use the same mapping.
         let socket = Arc::new(
@@ -342,8 +392,11 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
             "addresses": rider_core::rendezvous::local_candidates(port),
             "server": server.as_ref().map(|s| &s.addr),
             "pairing": pairing,
+            "support": support,
         }));
-        if mode != Mode::Agent && !ui::json() {
+        if support && !ui::json() {
+            println!("Waiting for the one-time code from {}…", server.as_ref().map_or("", |s| s.addr.as_str()));
+        } else if mode != Mode::Agent && !ui::json() {
             println!("Remote Desktop Rider host \"{name}\"");
             println!("  listening on UDP {port}");
             println!("  host fingerprint {fp}");
@@ -358,8 +411,23 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
             println!("Press Ctrl+C to stop.");
         }
 
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tokio::select! {
+                _ = state.done.notified(), if support => {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    break;
+                }
+                _ = tick.tick(), if support => {
+                    // Nobody used the code in time.
+                    if state.pairing_expired() && !state.is_busy() {
+                        ui::emit(serde_json::json!({ "event": "expired" }));
+                        if !ui::json() {
+                            println!("The code expired.");
+                        }
+                        break;
+                    }
+                }
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
                     tokio::spawn(session::handle(state.clone(), incoming, false));
@@ -373,7 +441,15 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
                     break;
                 }
                 _ = tokio::signal::ctrl_c() => break,
-                _ = quit.notified() => break,
+                _ = quit.notified() => {
+                    if support && state.is_busy() {
+                        // "End session" in the app: end it like the red bar does,
+                        // so the helper is told why instead of losing the connection.
+                        banner::DISCONNECT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), state.done.notified()).await;
+                    }
+                    break;
+                }
             }
         }
         endpoint.close(0u32.into(), b"host shutting down");

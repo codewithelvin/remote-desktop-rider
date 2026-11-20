@@ -24,12 +24,13 @@ use eframe::egui;
 fn main() -> eframe::Result {
     let has = |flag: &str| std::env::args().any(|a| a == flag);
     let manage = has("--manage");
-    if manage && !sys::is_elevated() {
+    if manage && !sys::is_elevated() && std::env::var_os("RIDER_PREVIEW").is_none() {
         // Started without rights (e.g. from a shortcut): ask once and hand over.
         let _ = sys::relaunch_elevated("--manage");
         return Ok(());
     }
-    if !manage && !sys::first_instance() {
+    // RIDER_PREVIEW: a test copy next to an installed one (screenshots).
+    if !manage && std::env::var_os("RIDER_PREVIEW").is_none() && !sys::first_instance() {
         // Already running (maybe only in the tray): show that one instead.
         tray::activate_other_instance();
         return Ok(());
@@ -38,11 +39,8 @@ fn main() -> eframe::Result {
         sys::default_autostart();
     }
     let hidden = !manage && has("--tray");
-    let (title, size) = if manage {
-        ("Remote Desktop Rider: this computer (administrator)", [680.0, 680.0])
-    } else {
-        (tray::MAIN_TITLE, [860.0, 580.0])
-    };
+    let (title, size) =
+        if manage { (host::window_title(), [700.0, 700.0]) } else { (tray::MAIN_TITLE, [860.0, 580.0]) };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(title)
         .with_icon(egui::IconData { rgba: rider_core::icon::rgba(64), width: 64, height: 64 })
@@ -58,6 +56,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             widgets::setup(&cc.egui_ctx);
+            widgets::theme_override(&cc.egui_ctx);
             Ok(if manage {
                 Box::new(host::HostApp::new(&cc.egui_ctx)) as Box<dyn eframe::App>
             } else {

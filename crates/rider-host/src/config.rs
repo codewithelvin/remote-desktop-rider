@@ -31,6 +31,10 @@ pub struct HostConfig {
     /// Let the service install new releases by itself when nobody is connected.
     #[serde(default = "yes")]
     pub auto_update: bool,
+    /// Language of the session banner (`en`, `az`); the service has no user
+    /// language of its own. Set by Manage.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn yes() -> bool {
@@ -49,6 +53,7 @@ impl Default for HostConfig {
             trusted_clients: Vec::new(),
             server: None,
             auto_update: true,
+            language: None,
         }
     }
 }

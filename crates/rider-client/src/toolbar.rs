@@ -11,6 +11,7 @@
 //! Segoe MDL2 icon font, grayscale anti-aliasing) into a premultiplied ARGB
 //! sprite, then alpha-blended over each frame: a few thousand pixels per draw.
 
+use rider_core::i18n::tr;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::SIZE;
 use windows::Win32::Graphics::Gdi::{
@@ -333,9 +334,9 @@ fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Act
         v.push((Action::Elapsed, '\u{E916}', extras.elapsed.clone()));
     }
     v.push(if fullscreen {
-        (Action::Fullscreen, '\u{E73F}', "Exit full screen".into())
+        (Action::Fullscreen, '\u{E73F}', tr("Exit full screen", "Tam ekrandan çıx").into())
     } else {
-        (Action::Fullscreen, '\u{E740}', "Full screen".into())
+        (Action::Fullscreen, '\u{E740}', tr("Full screen", "Tam ekran").into())
     });
     v.push((Action::CtrlAltDel, '\u{E765}', "Ctrl+Alt+Del".into()));
     if count > 1 {
@@ -346,7 +347,7 @@ fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Act
         v.push((Action::Quality, '\u{E7B3}', format!("{q}  \u{25BE}")));
     }
     v.push((Action::Pin, if extras.pinned { '\u{E77A}' } else { '\u{E718}' }, String::new()));
-    v.push((Action::Disconnect, '\u{E711}', "Disconnect".into()));
+    v.push((Action::Disconnect, '\u{E711}', tr("Disconnect", "Bağlantını kəs").into()));
     v
 }
 

@@ -5,6 +5,7 @@
 
 use crate::sys::{self, RemoteAccess};
 use anyhow::{Result, bail};
+use rider_core::i18n::tr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -59,8 +60,17 @@ pub fn announce_update(version: &str) {
     let mut nid = base(HWND(hwnd as *mut _));
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
-    copy(&mut nid.szInfoTitle, &format!("Remote Desktop Rider {version} is available"));
-    copy(&mut nid.szInfo, "Click here or choose Update in the tray menu to install it.");
+    copy(
+        &mut nid.szInfoTitle,
+        &rider_core::trf!("Remote Desktop Rider {version} is available", "Remote Desktop Rider {version} mövcuddur"),
+    );
+    copy(
+        &mut nid.szInfo,
+        tr(
+            "Click here or choose Update in the tray menu to install it.",
+            "Quraşdırmaq üçün bura klikləyin və ya bildiriş sahəsindəki menyudan yeniləməni seçin.",
+        ),
+    );
     // SAFETY: nid is fully initialised and refers to our icon; Shell_NotifyIconW
     // may be called from any thread.
     unsafe {
@@ -224,6 +234,11 @@ fn base(hwnd: HWND) -> NOTIFYICONDATAW {
     NOTIFYICONDATAW { cbSize: size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: 1, ..Default::default() }
 }
 
+/// NUL-terminated UTF-16 for menu items.
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 fn copy<const N: usize>(dst: &mut [u16; N], s: &str) {
     for (d, c) in dst.iter_mut().zip(s.encode_utf16().take(N - 1).chain(std::iter::once(0))) {
         *d = c;
@@ -232,9 +247,9 @@ fn copy<const N: usize>(dst: &mut [u16; N], s: &str) {
 
 fn status_text() -> &'static str {
     match sys::remote_access() {
-        RemoteAccess::On => "Remote access: on",
-        RemoteAccess::Stopped => "Remote access: stopped",
-        RemoteAccess::Off => "Remote access: off",
+        RemoteAccess::On => tr("Remote access: on", "Uzaqdan giriş: aktivdir"),
+        RemoteAccess::Stopped => tr("Remote access: stopped", "Uzaqdan giriş: dayandırılıb"),
+        RemoteAccess::Off => tr("Remote access: off", "Uzaqdan giriş: söndürülüb"),
     }
 }
 
@@ -283,20 +298,24 @@ fn menu(hwnd: HWND) {
     unsafe {
         let Ok(m) = CreatePopupMenu() else { return };
         let status: Vec<u16> = status_text().encode_utf16().chain(std::iter::once(0)).collect();
-        let update: Option<Vec<u16>> = UPDATE
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|v| format!("Update to {v}").encode_utf16().chain(std::iter::once(0)).collect());
-        let _ = AppendMenuW(m, MF_STRING, ID_OPEN, w!("Open Remote Desktop Rider"));
+        let update: Option<Vec<u16>> = UPDATE.lock().unwrap().as_ref().map(|v| {
+            rider_core::trf!("Update to {v}", "{v} versiyasına yenilə")
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect()
+        });
+        let open = wide(tr("Open Remote Desktop Rider", "Remote Desktop Rider-i aç"));
+        let manage = wide(tr("Manage this computer…", "Bu kompüteri idarə et…"));
+        let quit_text = wide(tr("Quit", "Çıxış"));
+        let _ = AppendMenuW(m, MF_STRING, ID_OPEN, PCWSTR(open.as_ptr()));
         if let Some(text) = &update {
             let _ = AppendMenuW(m, MF_STRING, ID_UPDATE, PCWSTR(text.as_ptr()));
         }
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(m, MF_STRING | MF_GRAYED, 0, PCWSTR(status.as_ptr()));
-        let _ = AppendMenuW(m, MF_STRING, ID_MANAGE, w!("Manage this computer…"));
+        let _ = AppendMenuW(m, MF_STRING, ID_MANAGE, PCWSTR(manage.as_ptr()));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, None);
-        let _ = AppendMenuW(m, MF_STRING, ID_QUIT, w!("Quit"));
+        let _ = AppendMenuW(m, MF_STRING, ID_QUIT, PCWSTR(quit_text.as_ptr()));
         let _ = SetMenuDefaultItem(m, ID_OPEN as u32, 0);
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);

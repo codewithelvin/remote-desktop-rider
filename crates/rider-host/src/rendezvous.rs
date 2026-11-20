@@ -189,8 +189,13 @@ async fn session(
                     }));
                     if interactive && !crate::ui::json() && pairing_code.is_some() && pairing_code != shown_code {
                         let code = pairing_code.as_deref().unwrap_or_default();
-                        println!("  Pairing code (via {}):  {code}", server.addr);
-                        println!("    On the client run:  rider-client pair {code}");
+                        if state.support {
+                            println!("  One-time code (valid 10 minutes):  {code}");
+                            println!("    The helper runs:  rider-client quick {code}");
+                        } else {
+                            println!("  Pairing code (via {}):  {code}", server.addr);
+                            println!("    On the client run:  rider-client pair {code}");
+                        }
                     }
                     shown_code = pairing_code;
                 }

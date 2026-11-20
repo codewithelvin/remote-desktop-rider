@@ -77,7 +77,9 @@ impl Diag {
     /// Send the last report; waits a few seconds at most.
     pub fn finish(self, rt: &tokio::runtime::Runtime, ended: &str) {
         let report = self.recorder.finish(ended);
-        let _ = rt.block_on(tokio::time::timeout(Duration::from_secs(8), send(&self.target, report)));
+        // The timeout must be created inside the runtime (it needs its timer);
+        // building it outside panicked at the end of every reported session.
+        let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(8), send(&self.target, report)).await });
     }
 }
 

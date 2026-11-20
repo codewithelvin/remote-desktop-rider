@@ -5,8 +5,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+authors = ["Elvin Huseynov"]
 
 [workspace.dependencies]
 rider-core = { path = "crates/rider-core" }
@@ -36,6 +37,7 @@ winit = "0.30"
 softbuffer = "0.4"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_NetworkManagement_IpHelper",
   "Win32_NetworkManagement_Ndis",
   "Win32_Networking_WinHttp",

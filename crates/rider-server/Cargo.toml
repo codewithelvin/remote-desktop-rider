@@ -2,6 +2,7 @@
 name = "rider-server"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 description = "Self-hosted rendezvous and relay server for Remote Desktop Rider"
 
 [dependencies]

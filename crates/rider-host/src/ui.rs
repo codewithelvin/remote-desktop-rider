@@ -42,7 +42,8 @@ pub fn start_input() -> Arc<Notify> {
                 line.clear();
                 match std::io::stdin().read_line(&mut line) {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => match line.trim() {
+                    // Some callers (.NET) start the stream with a UTF-8 byte order mark.
+                    Ok(_) => match line.trim().trim_start_matches('\u{feff}') {
                         "y" | "yes" => _ = tx.send(true),
                         "n" | "no" => _ = tx.send(false),
                         "quit" => break,

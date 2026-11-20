@@ -27,6 +27,10 @@ const SESSION_ALPNS: &[&[u8]] = &[ALPN_V2, ALPN];
 /// ALPN for the rendezvous server, so a server connection can never be
 /// mistaken for a host session (or the reverse).
 pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
+/// ALPN for one-time support sessions (quick connect by code). A support
+/// host offers only this, and only quick-connect clients ask for it, so a
+/// support session never mixes with paired, PIN-protected access.
+pub const SUPPORT_ALPN: &[u8] = b"rider-support/1";
 /// Server name used in the handshake. Ignored by our verifiers (we pin keys, not names).
 pub const SERVER_NAME: &str = "rider";
 
@@ -199,12 +203,13 @@ pub fn client_config_alpn(
     Ok(cfg)
 }
 
-/// Whether the peer of an established session speaks [`ALPN_V2`].
+/// Whether the peer of an established session speaks [`ALPN_V2`] (support
+/// sessions were introduced later and always do).
 pub fn speaks_v2(conn: &quinn::Connection) -> bool {
     conn.handshake_data()
         .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
         .and_then(|d| d.protocol)
-        .is_some_and(|p| p == ALPN_V2)
+        .is_some_and(|p| p == ALPN_V2 || p == SUPPORT_ALPN)
 }
 
 /// Fingerprint of the certificate the peer presented on an established connection.
@@ -214,4 +219,15 @@ pub fn peer_fingerprint(conn: &quinn::Connection) -> Result<Fingerprint> {
         any.downcast::<Vec<CertificateDer<'static>>>().map_err(|_| anyhow::anyhow!("unexpected peer identity type"))?;
     let cert = certs.first().ok_or_else(|| anyhow::anyhow!("empty peer certificate chain"))?;
     Ok(fingerprint(cert))
+}
+
+/// Host side of a one-time support session.
+pub fn support_server_config(id: &Identity, trust: Arc<dyn ClientTrust>) -> Result<quinn::ServerConfig> {
+    server_config_alpn(id, trust, &[SUPPORT_ALPN])
+}
+
+/// Client side of a one-time support session; `expected_host` is the key the
+/// rendezvous server named for the code.
+pub fn support_client_config(id: &Identity, expected_host: Option<Fingerprint>) -> Result<quinn::ClientConfig> {
+    client_config_alpn(id, expected_host, &[SUPPORT_ALPN])
 }

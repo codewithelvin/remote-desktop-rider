@@ -2,6 +2,7 @@
 name = "rider-app"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 description = "Remote Desktop Rider desktop app: computers list, pairing, and host settings"
 
 [[bin]]

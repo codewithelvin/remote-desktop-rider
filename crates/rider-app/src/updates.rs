@@ -142,8 +142,13 @@ impl Updater {
             // getting an answer here means it stopped early (e.g. the UAC
             // prompt was declined).
             let s = match launch(&file) {
-                Ok(code) => fail(format!("The update did not finish (installer exit code {code}).")),
-                Err(e) => fail(format!("Cannot start the installer: {e:#}")),
+                Ok(code) => fail(rider_core::trf!(
+                    "The update did not finish (installer exit code {code}).",
+                    "Yeniləmə başa çatmadı (quraşdırıcının çıxış kodu {code})."
+                )),
+                Err(e) => {
+                    fail(rider_core::trf!("Cannot start the installer: {e:#}", "Quraşdırıcı başladıla bilmir: {e:#}"))
+                }
             };
             let _ = std::fs::remove_file(&file);
             Self::set(&state, &ctx, s);

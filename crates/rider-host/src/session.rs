@@ -27,6 +27,11 @@ pub struct HostState {
     config_mtime: Mutex<Option<std::time::SystemTime>>,
     pub identity: Identity,
     pairing_until: Mutex<Option<Instant>>,
+    /// One-time support session (quick connect): no PIN, no saved trust, the
+    /// person at this computer allows the connection. Config lives in memory.
+    pub support: bool,
+    /// Support mode: signalled when the one session has ended.
+    pub done: tokio::sync::Notify,
     /// Signalled after a successful pairing (`rider-host pair` then exits).
     pub paired: tokio::sync::Notify,
     busy: AtomicBool,
@@ -46,15 +51,31 @@ impl HostState {
             config_mtime: Mutex::new(config_mtime()),
             identity,
             pairing_until: Mutex::new(pairing.then(|| Instant::now() + PAIRING_WINDOW)),
+            support: false,
+            done: tokio::sync::Notify::new(),
             paired: tokio::sync::Notify::new(),
             busy: AtomicBool::new(false),
             auth: Mutex::new(AuthGuard::default()),
         }
     }
 
+    /// A one-time support host: its code (the server's pairing code) stays
+    /// valid for 10 minutes or until a connection is allowed.
+    pub fn support(config: HostConfig, identity: Identity) -> Self {
+        Self {
+            config: Mutex::new(config),
+            config_mtime: Mutex::new(None),
+            support: true,
+            ..Self::new(HostConfig::default(), identity, true)
+        }
+    }
+
     /// Reload the config if it changed on disk, so `set-pin`, `revoke` and
     /// other management commands apply to a running host immediately.
     pub(crate) fn refresh(&self) {
+        if self.support {
+            return; // in memory only; the machine's host config is not ours
+        }
         let now = config_mtime();
         let mut seen = self.config_mtime.lock().unwrap();
         if now != *seen {
@@ -75,6 +96,15 @@ impl HostState {
 
     fn close_pairing(&self) {
         *self.pairing_until.lock().unwrap() = None;
+    }
+
+    /// The pairing / support window ran out (rather than being closed by use).
+    pub fn pairing_expired(&self) -> bool {
+        self.pairing_until.lock().unwrap().is_some_and(|t| Instant::now() >= t)
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
     }
 }
 
@@ -157,6 +187,15 @@ async fn run(
     let host_name = state.config.lock().unwrap().name.clone();
     write_msg(&mut send, &HostMsg::HelloAck { version: PROTOCOL_VERSION, host_name }).await?;
 
+    if state.support {
+        support_allow(state, conn, &mut send, &client_fp, &device_name).await?;
+        tracing::info!("support session started with {device_name} from {}", conn.remote_address());
+        let result = stream(state, conn, send, recv, device_name, tunnel).await;
+        crate::ui::emit(serde_json::json!({ "event": "support_ended" }));
+        state.done.notify_one();
+        return result;
+    }
+
     let known_name = state.config.lock().unwrap().client_name(&client_fp);
     let name = if pairing {
         pair(state, conn, &mut send, &mut recv, &client_fp, &device_name).await?;
@@ -174,6 +213,63 @@ async fn run(
     authenticate(state, &mut send, &mut recv, &name).await?;
     tracing::info!("session started with {name} ({}) from {}", fp_short(&client_fp), conn.remote_address());
     stream(state, conn, send, recv, name, tunnel).await
+}
+
+/// One-time support: the person at this computer sees who wants to connect
+/// (and the verification code the helper sees) and allows or declines. No PIN.
+async fn support_allow(
+    state: &Arc<HostState>,
+    conn: &quinn::Connection,
+    send: &mut quinn::SendStream,
+    client_fp: &Fingerprint,
+    device_name: &str,
+) -> Result<()> {
+    if !state.pairing_open() {
+        write_msg(send, &HostMsg::Bye { reason: "this code has expired or was already used".into() }).await?;
+        bail!("support request after the code expired");
+    }
+    let code = rider_core::sas::compute(conn, &state.identity.fingerprint(), client_fp)?;
+    crate::ui::emit(serde_json::json!({
+        "event": "support_request", "device": device_name, "from": conn.remote_address(), "code": code,
+    }));
+    let answer = async {
+        if crate::ui::json() {
+            return crate::ui::answer().await;
+        }
+        println!();
+        println!("  \"{device_name}\" ({}) wants to see and control this screen.", conn.remote_address());
+        println!("  Verification code: {code} (the helper sees the same code)");
+        print!("  Allow? [y/N] ");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        tokio::task::spawn_blocking(|| {
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            matches!(line.trim(), "y" | "Y" | "yes")
+        })
+        .await
+        .unwrap_or(false)
+    };
+    let allowed = tokio::select! {
+        a = answer => a,
+        _ = conn.closed() => {
+            crate::ui::emit(serde_json::json!({ "event": "support_cancelled", "device": device_name }));
+            bail!("{device_name} gave up before an answer");
+        }
+    };
+    if !allowed {
+        write_msg(send, &HostMsg::AuthResult { ok: false, message: "the person at that computer declined".into() })
+            .await?;
+        crate::ui::emit(serde_json::json!({ "event": "declined", "by": "this computer" }));
+        // Let the answer arrive: the helper closes once it has read it.
+        let _ = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
+        bail!("support request from {device_name} declined");
+    }
+    // The code is used up: the next registration update withdraws it.
+    state.close_pairing();
+    write_msg(send, &HostMsg::AuthResult { ok: true, message: String::new() }).await?;
+    crate::ui::emit(serde_json::json!({ "event": "support_started", "device": device_name }));
+    Ok(())
 }
 
 async fn pair(
@@ -312,7 +408,10 @@ async fn stream(
     let recorder = Arc::new(Mutex::new(recorder(state, conn, tunnel).await));
     let monitors = capture::monitors()?;
     let list: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
-    let _banner = Banner::show(format!("●  {name} is viewing this screen  —  click here to disconnect"));
+    let _banner = Banner::show(rider_core::trf!(
+        "●  {name} is viewing this screen  —  click here to disconnect",
+        "●  {name} bu ekranı izləyir  —  əlaqəni kəsmək üçün bura klikləyin"
+    ));
 
     // Control writer: everything sent to the client goes through this channel.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<HostMsg>();

@@ -12,6 +12,7 @@ mod video;
 
 use anyhow::{Context, Result, bail};
 use config::{ClientConfig, KnownHost};
+use rider_core::i18n::tr;
 use rider_core::identity::{Fingerprint, Identity, fp_from_hex, fp_hex};
 use rider_core::proto::*;
 use rider_core::rendezvous::{self, Path, PeerMsg, ServerMsg, ServerRef, Target};
@@ -30,12 +31,14 @@ pub async fn resolve(addr: &str) -> Result<SocketAddr> {
 /// `pinned`: the host key we expect (`None` only while pairing by code; then
 /// the key the server names is pinned and the verification code check catches
 /// a lying server). `direct`: a known direct address to try as well.
+/// `support`: a one-time support session (quick connect), not a paired one.
 pub async fn via_server(
     identity: &Identity,
     server: &ServerRef,
     target: Target,
     pinned: Option<Fingerprint>,
     direct: Option<SocketAddr>,
+    support: bool,
 ) -> Result<(quinn::Connection, Path)> {
     let (socket, rv, mut send, mut recv) = rendezvous::reach_server(identity, server).await?;
     let local = rendezvous::local_candidates(socket.port());
@@ -60,7 +63,11 @@ pub async fn via_server(
     if socket.is_tunnel() || std::env::var_os("RIDER_FORCE_RELAY").is_some() {
         candidates.clear();
     }
-    let cfg = rider_core::tls::client_config(identity, Some(pinned.unwrap_or(host)))?;
+    let cfg = if support {
+        rider_core::tls::support_client_config(identity, Some(host))?
+    } else {
+        rider_core::tls::client_config(identity, Some(pinned.unwrap_or(host)))?
+    };
     let (result, ()) = tokio::join!(
         rendezvous::race(&socket.endpoint, cfg, &candidates, relay.map(|r| r.addr)),
         socket.punch(&candidates, relay.as_ref()),
@@ -122,7 +129,7 @@ pub async fn pair(
                 and enter the code it shows, e.g. SF6-CK6.";
     let (conn, addr) = match (rendezvous::normalize_code(target), &cfg.server) {
         (Some(code), Some(server)) => {
-            let (conn, path) = via_server(identity, server, Target::Code(code), None, None)
+            let (conn, path) = via_server(identity, server, Target::Code(code), None, None, false)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:#}\n{hint} Codes expire after 10 minutes."))?;
             // Remember a direct address only; relay ports are per session.
@@ -182,7 +189,7 @@ pub async fn connect(
     let (conn, route, relayed) = match &cfg.server {
         Some(server) => {
             let direct = if host.addr.is_empty() { None } else { resolve(&host.addr).await.ok() };
-            let via = via_server(identity, server, Target::Host(pinned), Some(pinned), direct);
+            let via = via_server(identity, server, Target::Host(pinned), Some(pinned), direct, false);
             let (conn, path) = match direct {
                 None => via.await?,
                 Some(addr) => {
@@ -237,6 +244,70 @@ pub async fn connect(
         }
     }
     bail!("authentication failed")
+}
+
+/// Shown to the helper while the person at the other computer decides.
+#[derive(Debug, Clone)]
+pub struct QuickPrompt {
+    pub host_name: String,
+    /// The same six digits the other computer shows next to Allow.
+    pub code: String,
+}
+
+/// Quick connect: a one-time session by the code the other computer shows
+/// ("Get a one-time code"). No pairing and no PIN: the person there allows
+/// it. Nothing is saved. Returns the session, its route and the host's name.
+pub async fn quick(
+    cfg: &ClientConfig,
+    identity: &Identity,
+    code: &str,
+    waiting: impl FnOnce(&QuickPrompt),
+) -> Result<(net::Session, String, String)> {
+    let Some(server) = &cfg.server else {
+        bail!(tr(
+            "quick connect needs a server: set it in This computer → Manage → Server",
+            "sürətli qoşulma üçün server lazımdır: onu «Bu kompüter» → «İdarə et» → «Server» bölməsində təyin edin"
+        ));
+    };
+    let Some(code) = rendezvous::normalize_code(code) else {
+        bail!(tr(
+            "that is not a valid code: it has 6 letters and digits, like SF6-CK6",
+            "kod düzgün deyil: o, 6 hərf və rəqəmdən ibarətdir, məsələn, SF6-CK6"
+        ));
+    };
+    let (conn, path) = via_server(identity, server, Target::Code(code), None, None, true).await.map_err(|e| {
+        let text = format!("{e:#}");
+        // A pairing code's host does not speak the support protocol.
+        if text.contains("no_application_protocol") || text.contains("error 120") {
+            anyhow::anyhow!(tr(
+                "this code is for adding a computer (Add computer), not for quick connect",
+                "bu kod sürətli qoşulma üçün deyil, kompüter əlavə etmək («Kompüter əlavə et») üçündür"
+            ))
+        } else if text.contains("offline or this device is not allowed") {
+            anyhow::anyhow!(tr(
+                "no computer is waiting with this code: it may have expired (10 minutes) or been used",
+                "bu kodla gözləyən kompüter yoxdur: kodun müddəti bitib (10 dəqiqə) və ya o artıq istifadə olunub"
+            ))
+        } else {
+            e
+        }
+    })?;
+    let host_fp = rider_core::tls::peer_fingerprint(&conn)?;
+    let (send, mut recv, host_name) = hello(&conn, &cfg.device_name, false).await?;
+    let code = rider_core::sas::compute(&conn, &host_fp, &identity.fingerprint())?;
+    waiting(&QuickPrompt { host_name: host_name.clone(), code });
+    match read_msg::<HostMsg>(&mut recv).await? {
+        Some(HostMsg::AuthResult { ok: true, .. }) => {}
+        // The host's text is protocol English; this one the helper should read in their language.
+        Some(HostMsg::AuthResult { ok: false, message }) if message.contains("declined") => {
+            bail!(tr("the person at that computer declined", "həmin kompüterdəki şəxs imtina etdi"))
+        }
+        Some(HostMsg::AuthResult { ok: false, message }) => bail!("{message}"),
+        Some(HostMsg::Bye { reason }) => bail!("{reason}"),
+        _ => bail!(tr("the other computer closed the connection", "digər kompüter bağlantını bağladı")),
+    }
+    let relayed = matches!(path, Path::Relay(_));
+    Ok((net::Session { conn, send, recv, relayed }, path.to_string(), host_name))
 }
 
 /// Ask the rendezvous server which of `hosts` are online (for this device).

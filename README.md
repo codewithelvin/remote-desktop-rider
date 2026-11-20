@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <a href="https://codewithelvin.github.io/remote-desktop-rider/"><b>Website</b></a> ·
   <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest"><b>Download</b></a> ·
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#security"><b>Security</b></a> ·
@@ -38,6 +39,8 @@
 | **Everyday tools** | Text clipboard sync both ways, drag-and-drop files to the host, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
 | **Self-hosted** | The optional `rider-server` runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions. |
 | **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
+| **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow**. The code works once and expires after 10 minutes. |
+| **English and Azerbaijani** | The whole interface in either language, switched with a click on the flag. |
 | **Small and native** | One ~8 MB installer. Rust end to end. |
 
 ## Quick start
@@ -87,9 +90,36 @@ The remote computer shows a red banner while someone is connected. Clicking it
 ends the session.
 
 The app lives in the notification area, starts when you sign in (you can turn
-this off in Settings) and shows which of your computers are online.
+this off in Settings) and shows which of your computers are online. **Connect**
+stays disabled while a computer is offline and turns on when it comes back.
 
 <br clear="right">
+
+### Quick connect: one-time help with a code
+
+For helping someone once, without pairing devices or sharing a PIN:
+
+1. **The person who needs help** opens Remote Desktop Rider, goes to
+   **This computer** and clicks **Get a one-time code**. No administrator
+   rights are needed. A code such as `SF6-CK6` appears.
+2. **The helper** clicks **Quick connect** on the Computers page and enters
+   that code.
+3. The person sees who wants to connect and a verification code (the helper
+   sees the same one) and clicks **Allow**.
+
+The code works **once** and expires after **10 minutes**. Nothing is kept
+afterwards: the computer uses a throwaway key and is not added anywhere. Either
+side can end the session (the red bar or **End session** on the computer being
+helped, **Disconnect** for the helper). Both computers need the server set
+(see [Self-hosting](#self-hosting-the-server)). In a quick session, windows
+running as administrator and UAC prompts can't be controlled; use regular
+paired access for those.
+
+### Language
+
+The interface is available in **English** and **Azerbaijani**. Switch with the
+flag buttons in the sidebar or in **Settings**. The session window and the
+Manage window follow the same choice, and so does the red session banner.
 
 ## In a session
 
@@ -207,20 +237,43 @@ VPN or through a port forward. To connect from anywhere, run the small
 `rider-server` on any machine both sides can reach (a cheap VPS is plenty). A
 Linux x86_64 binary is attached to every release.
 
-**Install or upgrade (systemd):**
+**Install or upgrade with one command** (Linux x86_64 with systemd):
+
+```sh
+curl -fsSL https://codewithelvin.github.io/remote-desktop-rider/install.sh | sudo bash -s -- <public-ip>
+```
+
+It downloads the latest `rider-server` release, checks its SHA-256, installs
+the hardened systemd unit, opens UDP 47900 and 47901–47999 in ufw and prints
+the **address and fingerprint** to enter on your computers. Run it again to
+upgrade: the server key is kept, so the fingerprint never changes.
+
+- `<public-ip>` is optional. Without it the script detects the address, but
+  pass it behind cloud NAT (AWS, GCP, …) to be sure. Note the `-s --`:
+  `bash <ip>` alone would treat the address as a script name.
+- **For networks that block UDP**, add the HTTPS fallback in the same step:
+  `… | sudo bash -s -- <public-ip> --domain rider.example.com --email you@example.com`.
+  This installs nginx and a Let's Encrypt certificate for that name (its DNS must
+  already point at the server; open TCP 80 and 443).
+- `--version 0.1.8` installs a specific release.
+- The script is [`deploy/get.sh`](deploy/get.sh) (also at
+  `https://raw.githubusercontent.com/codewithelvin/remote-desktop-rider/main/deploy/get.sh`).
+  Read it first if you prefer.
+
+<details>
+<summary>Manual install</summary>
 
 1. Download `rider-server-<version>-linux-x86_64` from the
    [latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest)
    and save it as `rider-server` next to [`deploy/install.sh`](deploy/install.sh)
    and [`deploy/rider-server.service`](deploy/rider-server.service).
-2. Run `sudo bash install.sh [public-ip]` (the IP is needed behind cloud NAT).
-   It installs the hardened unit, opens UDP 47900 and 47901–47999 in ufw and
-   keeps the server key across upgrades, so the fingerprint never changes.
-3. Print the fingerprint with `rider-server info`.
-4. **Optional, for networks that block UDP:** put nginx with a real certificate
-   (e.g. Let's Encrypt) in front for the HTTPS tunnel, as described in
+2. Run `sudo bash install.sh [public-ip]`.
+3. Print the fingerprint with `sudo rider-server --state-dir /var/lib/rider-server info`.
+4. Optional: nginx in front for the HTTPS tunnel, as described in
    [`deploy/nginx-rider-tunnel.conf`](deploy/nginx-rider-tunnel.conf), and open
    TCP 443.
+
+</details>
 
 **Then, once per computer:** enter the server name (e.g. `rider.example.com`)
 and fingerprint in **This computer → Manage → Server**, or use the command line:
@@ -237,7 +290,7 @@ The app runs these tools for you; they also work on their own.
 <details>
 <summary><b>Host</b> (<code>rider-host</code>, the machine to be controlled)</summary>
 
-All host commands need an **elevated** terminal (Run as administrator).
+All host commands except `support` need an **elevated** terminal (Run as administrator).
 
 ```powershell
 rider-host set-pin             # once
@@ -259,6 +312,8 @@ from services.
 | `set-server <addr> <fingerprint>` | Use a rendezvous server |
 | `auto-update on\|off` | Unattended updates (on by default) |
 | `run [--pair]` | Serve from the terminal until Ctrl+C, without the service |
+| `language en\|az` | Language of the red session banner the service shows (Manage keeps it in step with the app) |
+| `support <server> <fingerprint>` | One-time support session (quick connect): shows a code and asks before letting anyone in. **No administrator rights needed**; uses a throwaway key and none of the settings above |
 
 `set-pin`, `revoke` and `clients` apply to the running service immediately.
 Logs: `%ProgramData%\RemoteDesktopRider\host\logs`.
@@ -272,12 +327,14 @@ Logs: `%ProgramData%\RemoteDesktopRider\host\logs`.
 rider-client pair 192.168.1.20 --name office   # same network: compare the code with the host
 rider-client pair SF6-CK6                       # any network, with a server set
 rider-client connect office                     # asks for the PIN
+rider-client quick SF6-CK6                      # one-time session; the person there clicks Allow
 ```
 
 | Command | Purpose |
 |---|---|
 | `pair <code or address>` | One-time pairing with a host running `rider-host pair` |
 | `connect <name or address>` | Open a session |
+| `quick <code>` | Quick connect: a one-time session by the code the other computer shows (no pairing or PIN; the person there allows it) |
 | `list` / `forget <host>` | List or remove paired hosts |
 | `info` | Show this device's identity |
 | `set-server <addr> <fingerprint>` | Use a rendezvous server |
@@ -429,4 +486,10 @@ test/           Vagrant VMs: Windows 11 host (vm/), Ubuntu rider-server (server-
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: all monitors in one window,
 code signing, then performance on poor links (GPU conversion and decoding, FEC,
-intra-refresh) and host→client files, audio and an audit log.
+intra-refresh) and host→client files, audio and an audit log. **macOS** support
+is being prepared: [docs/MACOS.md](docs/MACOS.md) has the plan and lists what
+is already portable.
+
+## Publisher
+
+Remote Desktop Rider is developed and published by **Elvin Huseynov**.

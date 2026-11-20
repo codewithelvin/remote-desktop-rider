@@ -18,6 +18,7 @@ use crate::keyhook::KeyHook;
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
 use crate::toolbar::{Action, Extras, Toolbar};
 use anyhow::Result;
+use rider_core::i18n::tr;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
 use rider_core::proto::{ClientMsg, MonitorInfo, MouseButton, QUALITIES};
 use std::collections::HashSet;
@@ -163,11 +164,13 @@ impl App {
         let fps = frames.wrapping_sub(self.last_frames);
         self.last_frames = frames;
         let mut title = format!(
-            "{} — {} · {fps} fps · RTT {:.0} ms · latency ~{:.0} ms · decode {:.1} ms · {}",
+            "{} — {} · {fps} fps · RTT {:.0} ms · {} ~{:.0} ms · {} {:.1} ms · {}",
             self.host_name,
             elapsed(self.started.elapsed()),
             s.rtt_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            tr("latency", "gecikmə"),
             s.latency_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            tr("decode", "dekodlama"),
             s.decode_us.load(Ordering::Relaxed) as f64 / 1000.0,
             s.host_stats.lock().unwrap(),
         );
@@ -258,7 +261,10 @@ impl App {
 
     /// Time, quality and pin on the toolbar; true if the bar must be redrawn.
     fn refresh_extras(&mut self) -> bool {
-        let label = QUALITIES.iter().find(|q| q.0 == self.quality).map_or("Auto", |q| q.1);
+        let label = QUALITIES
+            .iter()
+            .find(|q| q.0 == self.quality)
+            .map_or(tr("Auto", "Avto"), |q| if q.0 == 0 { tr("Auto", "Avto") } else { q.1 });
         self.toolbar.set_extras(Extras {
             elapsed: elapsed(self.started.elapsed()),
             quality: self.v2.then(|| label.to_owned()),
@@ -284,7 +290,11 @@ impl App {
             let texts: Vec<Vec<u16>> = QUALITIES
                 .iter()
                 .map(|&(lines, label)| {
-                    let text = if lines == 0 { "Auto (adapts to the connection)" } else { label };
+                    let text = if lines == 0 {
+                        tr("Auto (adapts to the connection)", "Avto (bağlantıya uyğunlaşır)")
+                    } else {
+                        label
+                    };
                     text.encode_utf16().chain(std::iter::once(0)).collect()
                 })
                 .collect();
@@ -312,7 +322,14 @@ impl App {
         if self.v2 {
             self.net.send(ClientMsg::LockScreen);
         } else {
-            self.notice = Some(("Locking needs a newer version on the remote computer".into(), Instant::now()));
+            self.notice = Some((
+                tr(
+                    "Locking needs a newer version on the remote computer",
+                    "Kilidləmə üçün uzaq kompüterdə daha yeni versiya lazımdır",
+                )
+                .into(),
+                Instant::now(),
+            ));
             self.update_title();
         }
     }
@@ -330,7 +347,7 @@ impl ApplicationHandler<UiEvent> for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title(format!("{} — connecting...", self.host_name))
+            .with_title(format!("{} — {}", self.host_name, tr("connecting…", "qoşulur…")))
             .with_inner_size(LogicalSize::new(1280.0, 760.0))
             .with_window_icon(app_icon(32))
             .with_taskbar_icon(app_icon(64));

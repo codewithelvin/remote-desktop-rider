@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    paths-ignore: ["**.md", "docs/**", ".claude/**"]
+    paths-ignore: ["**.md", "docs/**", ".claude/**", "site/**", ".github/workflows/pages.yml"]
   pull_request:
 
 # One release at a time, so version numbers never collide.
@@ -62,6 +62,19 @@ jobs:
           path: dist/
           retention-days: 7
 
+  # macOS groundwork (docs/MACOS.md): the portable crates must keep building
+  # and passing their tests on macOS. Does not gate releases.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p rider-core -p rider-server --all-targets -- -D warnings
+      - run: cargo test -p rider-core -p rider-server
+
   build:
     needs: [version, server]
     runs-on: windows-latest
@@ -111,5 +124,7 @@ jobs:
           $server = "dist/rider-server-$env:VERSION-linux-x86_64"
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           $shash = (Get-FileHash $server -Algorithm SHA256).Hash.ToLower()
+          # sha256sum format, checked by deploy/get.sh (the one-line server install).
+          "$hash  rdr-setup-$env:VERSION.exe`n$shash  rider-server-$env:VERSION-linux-x86_64`n" | Set-Content -NoNewline -Encoding ascii dist/SHA256SUMS
           $notes = "Download **rdr-setup-$env:VERSION.exe** below and run it (Windows 10/11, 64-bit).`n`nSHA-256: ``$hash```n`nServer (Linux x86_64): **rider-server-$env:VERSION-linux-x86_64**, SHA-256: ``$shash``"
-          gh release create "v$env:VERSION" $setup $server --target $env:GITHUB_SHA --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest
+          gh release create "v$env:VERSION" $setup $server dist/SHA256SUMS --target $env:GITHUB_SHA --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest

@@ -50,6 +50,8 @@ pub fn tool(exe: &str) -> Command {
         std::env::current_exe().ok().and_then(|p| p.parent().map(|dir| dir.join(exe))).unwrap_or_else(|| exe.into());
     let mut cmd = Command::new(path);
     cmd.creation_flags(CREATE_NO_WINDOW);
+    // Text the tool shows (errors, the session window) in the app's language.
+    cmd.env("RIDER_LANG", rider_core::i18n::lang().code());
     cmd
 }
 
@@ -61,7 +63,7 @@ pub fn run(exe: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Stri
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("cannot start {exe}: {e}"))?;
+        .map_err(|e| rider_core::trf!("cannot start {exe}: {e}", "{exe} başladıla bilmir: {e}"))?;
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
         use std::io::Write;
         let _ = writeln!(pipe, "{input}");
@@ -85,7 +87,9 @@ pub fn run(exe: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Stri
 
 /// The meaningful part of a tool's stderr: the anyhow error report, without log lines.
 /// Shown when a tool exits without saying why (e.g. ended from Task Manager).
-pub const NO_DETAILS: &str = "It stopped unexpectedly.";
+pub fn no_details() -> &'static str {
+    rider_core::i18n::tr("It stopped unexpectedly.", "Gözlənilmədən dayandı.")
+}
 
 pub fn error_text(stderr: &str) -> String {
     let report = stderr.find("Error: ").map_or(stderr, |i| &stderr[i + 7..]);
@@ -94,7 +98,7 @@ pub fn error_text(stderr: &str) -> String {
         .map(str::trim)
         .filter(|l| !l.is_empty() && l != &"Caused by:" && !l.contains(" INFO ") && !l.contains(" WARN "))
         .collect();
-    if text.is_empty() { NO_DETAILS.into() } else { text.join("\n") }
+    if text.is_empty() { no_details().into() } else { text.join("\n") }
 }
 
 /// Forward each line of a pipe to `f` on a background thread.
@@ -242,6 +246,6 @@ mod tests {
         let stderr =
             "2026-11-18T10:00:00Z  INFO rider: starting\nError: authentication failed\n\nCaused by:\n    wrong PIN\n";
         assert_eq!(error_text(stderr), "authentication failed\nwrong PIN");
-        assert_eq!(error_text(""), NO_DETAILS);
+        assert_eq!(error_text(""), no_details());
     }
 }

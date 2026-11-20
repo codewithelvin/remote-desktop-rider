@@ -28,13 +28,19 @@ impl Identity {
             let key = std::fs::read(&key_path).context("reading identity key")?;
             return Ok(Self { cert: CertificateDer::from(cert), key_pkcs8: key });
         }
-        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
-        let params = rcgen::CertificateParams::new(vec!["rider".to_string()])?;
-        let cert = params.self_signed(&key_pair)?;
-        let id = Self { cert: cert.der().clone(), key_pkcs8: key_pair.serialize_der() };
+        let id = Self::ephemeral()?;
         std::fs::write(&key_path, &id.key_pkcs8).context("writing identity key")?;
         std::fs::write(&cert_path, id.cert.as_ref()).context("writing identity certificate")?;
         Ok(id)
+    }
+
+    /// A fresh identity that lives only in memory: one-time support sessions
+    /// leave no key behind that anyone could be paired with later.
+    pub fn ephemeral() -> Result<Self> {
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
+        let params = rcgen::CertificateParams::new(vec!["rider".to_string()])?;
+        let cert = params.self_signed(&key_pair)?;
+        Ok(Self { cert: cert.der().clone(), key_pkcs8: key_pair.serialize_der() })
     }
 
     pub fn private_key(&self) -> PrivateKeyDer<'static> {
