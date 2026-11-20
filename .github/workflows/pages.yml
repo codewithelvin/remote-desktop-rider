@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # deploy-pages finds the uploaded site
   pages: write
   id-token: write
 
@@ -28,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - name: Assemble site
         run: |
@@ -37,9 +38,9 @@ jobs:
           cp -r docs/screenshots _site/screenshots
           cp deploy/get.sh _site/install.sh
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
