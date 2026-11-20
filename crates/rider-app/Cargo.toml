@@ -16,6 +16,8 @@ anyhow.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 windows.workspace = true
 raw-window-handle = "0.6"
 windows-service.workspace = true
@@ -24,6 +26,19 @@ windows-service.workspace = true
 # GLES and Metal backends keeps the build and the binary much smaller.
 eframe = { version = "0.37", default-features = false, features = ["wgpu_no_default_features", "default_fonts", "accesskit", "clipboard"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+
+# macOS: wgpu on Metal; remembered PINs in the Keychain.
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["wgpu_no_default_features", "default_fonts", "accesskit", "clipboard"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
+security-framework = "3"
+# Icons: egui's emoji fonts stand in for the Windows icon font.
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+
+# Linux: OpenGL (glow) runs on every desktop, including VMs without a GPU (Mesa).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard", "x11", "wayland"] }
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
 
 [lints]
 workspace = true

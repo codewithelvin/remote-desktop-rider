@@ -5,7 +5,10 @@
 pub mod app;
 pub mod config;
 pub mod diag;
+#[cfg(windows)]
 mod keyhook;
+#[cfg(any(not(windows), test))]
+mod keymap;
 pub mod net;
 mod toolbar;
 mod video;

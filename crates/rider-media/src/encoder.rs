@@ -1,6 +1,6 @@
 //! Low-latency H.264 encoder over a Media Foundation transform.
 
-use crate::*;
+use crate::mf::*;
 use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
 use windows::Win32::Media::MediaFoundation::*;

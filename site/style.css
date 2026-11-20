@@ -363,6 +363,30 @@ p { margin: 0.6em 0; }
     center / 12px no-repeat;
 }
 
+/* ---------- Download ---------- */
+.cta-alt { margin: 14px 0 0; font-size: 0.93rem; }
+.cta-alt a { color: var(--muted); }
+.cta-alt a:hover { color: var(--accent-text); }
+
+.downloads { grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.dl-card {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 22px;
+}
+.dl-card.is-yours { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.dl-card h3 { font-size: 1.2rem; }
+.dl-req { margin: 4px 0 0; font-size: 0.86rem; font-weight: 600; color: var(--accent-text); }
+.dl-does { font-size: 0.95rem; }
+.dl-hint { font-size: 0.88rem; color: var(--muted); margin-top: 0; }
+.dl-action { margin-top: auto; padding-top: 14px; }
+.dl-btn { width: 100%; }
+.dl-meta { min-height: 1.3em; margin: 8px 0 0; font-size: 0.82rem; color: var(--muted); text-align: center; overflow-wrap: anywhere; }
+.code.compact { margin: 4px 0 0; box-shadow: none; }
+.code.compact pre { padding: 12px 14px 50px; font-size: 0.8rem; }
+.code.compact .copy { top: auto; bottom: 8px; right: 8px; }
+.sums-link { display: inline-block; margin-top: 6px; font-weight: 600; }
+
 /* ---------- FAQ ---------- */
 .faq { margin-top: 32px; display: grid; gap: 10px; }
 .faq details {

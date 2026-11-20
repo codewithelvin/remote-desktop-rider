@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/codewithelvin/remote-desktop-rider?label=release&color=2f6feb"></a>
   <a href="https://github.com/codewithelvin/remote-desktop-rider/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/codewithelvin/remote-desktop-rider/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <img alt="Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4">
+  <img alt="Windows, macOS, Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4">
   <img alt="Server: Linux" src="https://img.shields.io/badge/server-Linux%20x86__64-555">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
 </p>
@@ -41,20 +41,31 @@
 | **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
 | **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow**. The code works once and expires after 10 minutes. |
 | **English and Azerbaijani** | The whole interface in either language, switched with a click on the flag. |
+| **Windows, macOS and Linux** | Control computers from Windows, a Mac (Apple Silicon and Intel) or Debian/Ubuntu. Being controlled is Windows-only for now. |
 | **Small and native** | One ~8 MB installer. Rust end to end. |
 
 ## Quick start
 
 ### 1. Install
 
-Download **`rdr-setup-x.y.z.exe`** from the
-[latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest)
-and run it on **both** computers (Windows 10/11, 64-bit). Every push to `main`
-is built and published there automatically.
+From the [latest release](https://github.com/codewithelvin/remote-desktop-rider/releases/latest)
+(or the [website](https://codewithelvin.github.io/remote-desktop-rider/#download)):
+
+| System | File | Can |
+|---|---|---|
+| Windows 10/11, 64-bit | `rdr-setup-x.y.z.exe`: run it | control and be controlled |
+| macOS 11+, Apple Silicon and Intel | `RemoteDesktopRider-x.y.z-macos.dmg`: drag the app to Applications | control |
+| Debian 12+ / Ubuntu 22.04+, x86_64 | `remote-desktop-rider_x.y.z_amd64.deb`: `sudo apt install ./remote-desktop-rider_x.y.z_amd64.deb` | control |
+
+The computer you want to control needs Windows. Every push to `main` is built
+and published automatically; `SHA256SUMS` in each release covers every file.
 
 > [!NOTE]
-> The installer is not code-signed yet, so Windows SmartScreen may warn about an
-> unknown publisher: click **More info → Run anyway**.
+> Nothing is code-signed yet (that needs a paid certificate). **Windows:**
+> SmartScreen may warn about an unknown publisher: click **More info → Run
+> anyway**. **macOS:** the first launch is blocked: open **System Settings →
+> Privacy & Security** and click **Open Anyway** (or right-click the app →
+> **Open**).
 
 ### 2. Pair (once per device)
 
@@ -75,7 +86,8 @@ is built and published there automatically.
 To pair and connect across networks, set your `rider-server` address and
 fingerprint once per computer in **This computer → Manage → Server** (see
 [Self-hosting](#self-hosting-the-server)). It applies in both directions: being
-reached and reaching others. Without a server, devices on the same network can
+reached and reaching others. On macOS and Linux it is in **Settings → Server**.
+Without a server, devices on the same network can
 still pair by address.
 
 ### 3. Connect
@@ -453,13 +465,22 @@ cargo build --profile quick        # day-to-day: no LTO, ~30 s rebuilds (target\
 .\packaging\windows\build.ps1      # installer (needs Inno Setup 6) -> target\installer
 ```
 
+macOS and Linux build the app and the session viewer (not the host):
+
+```sh
+cargo build --release -p rider-app -p rider-client
+packaging/macos/build.sh 0.3.0       # universal .app and .dmg (on a Mac)
+packaging/linux/build-deb.sh 0.3.0   # .deb (on Debian/Ubuntu)
+```
+
 <details>
 <summary><b>Releases</b></summary>
 
 GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)) builds every push. Each
 push to `main` that passes fmt, clippy and the tests gets the next patch version
 (`v0.1.0`, `v0.1.1`, …) and is published with `rdr-setup-<version>.exe` and
-`rider-server-<version>-linux-x86_64`. Bump `major.minor` in `Cargo.toml` for
+`rider-server-<version>-linux-x86_64`; the macOS `.dmg` and the Debian/Ubuntu
+`.deb` are added by their own jobs a few minutes later. Bump `major.minor` in `Cargo.toml` for
 bigger steps.
 
 </details>
@@ -486,9 +507,9 @@ test/           Vagrant VMs: Windows 11 host (vm/), Ubuntu rider-server (server-
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: all monitors in one window,
 code signing, then performance on poor links (GPU conversion and decoding, FEC,
-intra-refresh) and host→client files, audio and an audit log. **macOS** support
-is being prepared: [docs/MACOS.md](docs/MACOS.md) has the plan and lists what
-is already portable.
+intra-refresh) and host→client files, audio and an audit log. Macs and Linux PCs
+can control others today; letting them be controlled is next
+([docs/MACOS.md](docs/MACOS.md)).
 
 ## Publisher
 

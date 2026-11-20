@@ -57,6 +57,7 @@ pub const GREY: Color32 = Color32::from_rgb(138, 140, 148);
 pub const AMBER: Color32 = Color32::from_rgb(214, 140, 20);
 
 /// Segoe Fluent Icons / MDL2 Assets code points (fall back to the text font).
+#[cfg(windows)]
 pub mod icon {
     pub const PC: &str = "\u{E7F4}";
     pub const HOME: &str = "\u{E80F}";
@@ -73,6 +74,27 @@ pub mod icon {
     pub const INFO: &str = "\u{E946}";
     pub const PLAY: &str = "\u{E768}";
     pub const DOWNLOAD: &str = "\u{E896}";
+}
+
+/// macOS and Linux: the same icons from egui's bundled emoji fonts.
+#[cfg(not(windows))]
+#[allow(dead_code)] // some are only used by Manage (Windows)
+pub mod icon {
+    pub const PC: &str = "🖥";
+    pub const HOME: &str = "🏠";
+    pub const SETTINGS: &str = "⚙";
+    pub const ADD: &str = "➕";
+    pub const DELETE: &str = "🗑";
+    pub const KEY: &str = "🔑";
+    pub const SHIELD: &str = "🛡";
+    pub const GLOBE: &str = "🌐";
+    pub const COPY: &str = "📋";
+    pub const DEVICES: &str = "📱";
+    pub const CHECK: &str = "✔";
+    pub const WARNING: &str = "⚠";
+    pub const INFO: &str = "ℹ";
+    pub const PLAY: &str = "▶";
+    pub const DOWNLOAD: &str = "⬇";
 }
 
 fn semibold() -> FontFamily {

@@ -8,7 +8,17 @@ authors.workspace = true
 rider-core.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 windows.workspace = true
+
+# Portable software decoder for the macOS viewer, built from source (BSD).
+[target.'cfg(not(windows))'.dependencies]
+openh264 = { version = "0.9", default-features = false, features = ["source"] }
+
+# On Windows only for the test that checks it against the Media Foundation encoder.
+[dev-dependencies]
+openh264 = { version = "0.9", default-features = false, features = ["source"] }
 
 [lints]
 workspace = true

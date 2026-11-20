@@ -19,7 +19,6 @@ use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use windows::core::w;
 
 fn config_mtime() -> Option<std::time::SystemTime> {
     std::fs::metadata(ClientConfig::path().ok()?).ok()?.modified().ok()
@@ -27,6 +26,16 @@ fn config_mtime() -> Option<std::time::SystemTime> {
 
 /// How often the server is asked which computers are online.
 const POLL_EVERY: Duration = Duration::from_secs(15);
+/// Where new versions are published.
+const RELEASES: &str = "https://github.com/codewithelvin/remote-desktop-rider/releases/latest";
+
+/// This device can also be controlled (Windows: the This computer tab,
+/// Manage, startup, self-update). On macOS and Linux the app only controls
+/// other computers. `RIDER_PORTABLE_UI=1` shows that layout on Windows
+/// (screenshots, checks).
+fn host_side() -> bool {
+    cfg!(windows) && std::env::var_os("RIDER_PORTABLE_UI").is_none()
+}
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -197,6 +206,9 @@ pub struct ClientApp {
     /// Frames left before hiding a window started with `--tray`.
     hide_in: u8,
     updater: Updater,
+    /// Server address and fingerprint being edited (Settings, without Manage).
+    server_edit: Option<(String, String)>,
+    server_msg: Option<Result<String, String>>,
 }
 
 impl ClientApp {
@@ -249,6 +261,8 @@ impl ClientApp {
             autostart: sys::autostart(),
             hide_in: if hidden { 2 } else { 0 },
             updater: Updater::new(ctx),
+            server_edit: None,
+            server_msg: None,
         };
         app.refresh_saved_pins();
         app.preview();
@@ -759,6 +773,9 @@ impl ClientApp {
             (Tab::ThisComputer, icon::HOME, tr("This computer", "Bu kompüter")),
             (Tab::Settings, icon::SETTINGS, tr("Settings", "Parametrlər")),
         ] {
+            if tab == Tab::ThisComputer && !host_side() {
+                continue;
+            }
             if widgets::nav_item(ui, ic, text, self.tab == tab) && self.tab != tab {
                 self.tab = tab;
                 self.page_since = ui.input(|i| i.time);
@@ -1130,16 +1147,26 @@ impl ClientApp {
                 });
                 widgets::hint(
                     ui,
-                    tr(
-                        "English or Azerbaijani. Applies right away, also to session windows and Manage this computer.",
-                        "İngilis və ya Azərbaycan dili. Dərhal tətbiq olunur: seans pəncərələri və «Bu kompüteri idarə et» də bu dildə açılır.",
-                    ),
+                    if host_side() {
+                        tr(
+                            "English or Azerbaijani. Applies right away, also to session windows and Manage this computer.",
+                            "İngilis və ya Azərbaycan dili. Dərhal tətbiq olunur: seans pəncərələri və «Bu kompüteri idarə et» də bu dildə açılır.",
+                        )
+                    } else {
+                        tr(
+                            "English or Azerbaijani. Applies right away, also to session windows.",
+                            "İngilis və ya Azərbaycan dili. Dərhal tətbiq olunur: seans pəncərələri də bu dildə açılır.",
+                        )
+                    },
                 );
             });
             ui.add_space(10.0);
             self.server_card(ui);
             ui.add_space(10.0);
             self.updates_card(ui);
+            if !host_side() {
+                return; // no tray to start into (yet)
+            }
             ui.add_space(10.0);
             widgets::card(ui, |ui| {
                 widgets::section(ui, icon::PLAY, tr("Startup", "Avtomatik başlatma"));
@@ -1239,6 +1266,16 @@ impl ClientApp {
                 widgets::hint(ui, tr("Version", "Versiya"));
                 ui.label(updates::current().to_string());
             });
+            if !host_side() {
+                ui.hyperlink_to(
+                    tr(
+                        "Get new versions from the releases page",
+                        "Yeni versiyaları buraxılışlar səhifəsindən yükləyin",
+                    ),
+                    RELEASES,
+                );
+                return;
+            }
             if !self.updater.installed {
                 widgets::hint(
                     ui,
@@ -1294,6 +1331,9 @@ impl ClientApp {
     /// The server is set in one place, Manage, for both directions; this
     /// only shows it.
     fn server_card(&mut self, ui: &mut Ui) {
+        if !host_side() {
+            return self.server_editor(ui);
+        }
         widgets::card(ui, |ui| {
             widgets::section(ui, icon::GLOBE, tr("Server", "Server"));
             match &self.cfg.server {
@@ -1331,6 +1371,76 @@ impl ClientApp {
             if let Some(e) = &self.manage_error {
                 widgets::error(ui, e);
             }
+        });
+    }
+
+    /// Without Manage (macOS, Linux) the server is set here.
+    fn server_editor(&mut self, ui: &mut Ui) {
+        let saved = self.cfg.server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default();
+        let edit = self.server_edit.get_or_insert_with(|| saved.clone());
+        let (mut save, mut clear) = (false, false);
+        widgets::card(ui, |ui| {
+            widgets::section(ui, icon::GLOBE, tr("Server", "Server"));
+            egui::Grid::new("server_edit").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+                widgets::hint(ui, tr("Address", "Ünvan"));
+                ui.add(TextEdit::singleline(&mut edit.0).hint_text("rider.example.com").desired_width(f32::INFINITY));
+                ui.end_row();
+                widgets::hint(ui, tr("Fingerprint", "Barmaq izi"));
+                ui.add(
+                    TextEdit::singleline(&mut edit.1)
+                        .hint_text("SHA-256")
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                let changed = (edit.0.trim(), edit.1.trim()) != (saved.0.as_str(), saved.1.as_str());
+                let filled = !edit.0.trim().is_empty() && !edit.1.trim().is_empty();
+                save = widgets::primary(ui, changed && filled, tr("Save", "Yadda saxla")).clicked();
+                if self.cfg.server.is_some() {
+                    clear = ui.button(tr("Remove", "Sil")).clicked();
+                }
+            });
+            widgets::hint(
+                ui,
+                tr(
+                    "Both are shown at the end of the server install (or by rider-server info). Without a server, only computers on this network can be reached.",
+                    "Hər ikisi server quraşdırmasının sonunda (və ya rider-server info əmri ilə) göstərilir. Server olmadan yalnız bu şəbəkədəki kompüterlərə qoşulmaq mümkündür.",
+                ),
+            );
+            match &self.server_msg {
+                Some(Ok(m)) => widgets::success(ui, m),
+                Some(Err(e)) => widgets::error(ui, e),
+                None => {}
+            }
+        });
+        if !(save || clear) {
+            return;
+        }
+        let new = if clear {
+            Ok(None)
+        } else {
+            rider_core::rendezvous::ServerRef::new(edit.0.trim(), edit.1.trim()).map(Some)
+        };
+        let result = new.and_then(|server| {
+            let mut cfg = ClientConfig::load()?;
+            cfg.server = server.clone();
+            cfg.save()?;
+            Ok(server)
+        });
+        self.server_msg = Some(match result {
+            Ok(server) => {
+                self.server_edit =
+                    Some(server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default());
+                self.cfg.server = server;
+                self.cfg_mtime = config_mtime();
+                self.server_error = None;
+                self.polled = None;
+                Ok(if clear { tr("Server removed.", "Server silindi.") } else { tr("Saved.", "Yadda saxlanıldı.") }
+                    .into())
+            }
+            Err(e) => Err(format!("{e:#}")),
         });
     }
 
@@ -1505,10 +1615,17 @@ impl ClientApp {
                     if !has_server {
                         widgets::error(
                             ui,
-                            tr(
-                                "Quick connect needs a server: set it in This computer → Manage this computer → Server.",
-                                "Sürətli qoşulma üçün server lazımdır: onu «Bu kompüter» → «Bu kompüteri idarə et» → «Server» bölməsində təyin edin.",
-                            ),
+                            if host_side() {
+                                tr(
+                                    "Quick connect needs a server: set it in This computer → Manage this computer → Server.",
+                                    "Sürətli qoşulma üçün server lazımdır: onu «Bu kompüter» → «Bu kompüteri idarə et» → «Server» bölməsində təyin edin.",
+                                )
+                            } else {
+                                tr(
+                                    "Quick connect needs a server: set it in Settings → Server.",
+                                    "Sürətli qoşulma üçün server lazımdır: onu «Parametrlər» → «Server» bölməsində təyin edin.",
+                                )
+                            },
                         );
                     }
                     ui.label(tr(
@@ -1766,7 +1883,7 @@ impl ClientApp {
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         tray::hide_main();
-        let hint = w!("TrayHintShown");
+        let hint = "TrayHintShown";
         if !sys::flag(hint) {
             sys::set_flag(hint);
             tray.notify(

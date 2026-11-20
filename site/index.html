@@ -29,6 +29,7 @@
           <li><a href="#features" data-i18n="nav.features">Features</a></li>
           <li><a href="#how" data-i18n="nav.how">How it works</a></li>
           <li><a href="#security" data-i18n="nav.security">Security</a></li>
+          <li><a href="#download" data-i18n="nav.download">Download</a></li>
           <li><a href="#self-host" data-i18n="nav.selfhost">Self-host</a></li>
           <li><a href="#faq" data-i18n="nav.faq">FAQ</a></li>
         </ul>
@@ -67,21 +68,22 @@
     <!-- Hero -->
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="wrap hero-inner">
-        <p class="eyebrow" data-i18n="hero.eyebrow">Open source · Windows 10/11 · Written in Rust</p>
+        <p class="eyebrow" data-i18n="hero.eyebrow">Open source · Windows, macOS &amp; Linux · Written in Rust</p>
         <h1 id="hero-title">Remote Desktop Rider</h1>
         <p class="tagline" data-i18n="hero.tagline">Fast, private 1:1 remote desktop for Windows that stays usable on bad connections.</p>
         <p class="lede" data-i18n="hero.lede">Help a family member, reach your office PC from home, or support a customer: over mobile data, hotel Wi-Fi, a strict company firewall or a slow VPN.</p>
         <div class="cta">
-          <a class="btn btn-primary" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+          <a class="btn btn-primary js-dl-primary" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
-            <span data-i18n="cta.download">Download for Windows</span>
+            <span data-dl-label>Download for Windows</span>
           </a>
           <a class="btn btn-ghost" href="https://github.com/codewithelvin/remote-desktop-rider">
             <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             <span data-i18n="cta.github">View on GitHub</span>
           </a>
         </div>
-        <p class="fine" data-i18n="hero.fine">One ~8&nbsp;MB installer for Windows 10/11 (64-bit). Free and open source. No accounts, no cloud.</p>
+        <p class="cta-alt"><a href="#download" data-i18n="cta.other">Other systems</a></p>
+        <p class="fine" data-i18n="hero.fine">Free and open source. Control from Windows, macOS or Linux; the computer you control runs Windows 10/11. No accounts, no cloud.</p>
       </div>
 
       <div class="wrap">
@@ -141,7 +143,7 @@
           <li class="card">
             <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>
             <h3 data-i18n="f9.h">Small and native</h3>
-            <p data-i18n="f9.p">One ~8&nbsp;MB installer. Rust end to end.</p>
+            <p data-i18n="f9.p">Native apps for each system; the Windows installer is about 8&nbsp;MB. Rust end to end.</p>
           </li>
           <li class="card">
             <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>
@@ -157,7 +159,7 @@
       <div class="wrap">
         <p class="kicker" data-i18n="nav.how">How it works</p>
         <h2 id="how-title" data-i18n="how.title">Pair once, then connect with a PIN</h2>
-        <p class="section-lede" data-i18n="how.lede">Install <a href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">the latest release</a> on both computers. Pairing happens once per device; after that, every session needs the computer's PIN.</p>
+        <p class="section-lede" data-i18n="how.lede">Install Remote Desktop Rider on both computers (see <a href="#download">Download</a>). The computer you control needs Windows; you can control it from Windows, macOS or Linux. Pairing happens once per device; after that, every session needs the computer's PIN.</p>
 
         <ol class="steps">
           <li class="step">
@@ -184,7 +186,7 @@
             <span class="step-n" aria-hidden="true">3</span>
             <div class="step-body">
               <h3 data-i18n="s3.h">Connect</h3>
-              <p data-i18n="s3.p">Once the computer is online, click <b>Connect</b> and enter the PIN. Tick <b>Remember PIN on this device</b> and later connections open straight away, like unattended access in other tools (the PIN is encrypted for your Windows account). The remote computer shows a red banner while someone is connected; clicking it ends the session.</p>
+              <p data-i18n="s3.p">Once the computer is online, click <b>Connect</b> and enter the PIN. Tick <b>Remember PIN on this device</b> and later connections open straight away, like unattended access in other tools (on Windows, the PIN is encrypted for your Windows account). The remote computer shows a red banner while someone is connected; clicking it ends the session.</p>
               <figure class="shot shot-sm">
                 <img src="screenshots/connect.png" width="500" height="240" loading="lazy" data-i18n-attr="alt:s3.alt" alt="The Connect dialog asking for the computer's PIN, with a Remember PIN on this device checkbox.">
               </figure>
@@ -192,7 +194,7 @@
           </li>
         </ol>
 
-        <p class="note" data-i18n="how.note">To pair and connect across networks, set your <code>rider-server</code> address and fingerprint once per computer in <b>This computer → Manage → Server</b> (see <a href="#self-host">Self-host your server</a>). Without a server, devices on the same network can still pair by address.</p>
+        <p class="note" data-i18n="how.note">To pair and connect across networks, set your <code>rider-server</code> address and fingerprint once per computer: on Windows in <b>This computer → Manage this computer → Server</b>, on macOS and Linux in <b>Settings → Server</b> (see <a href="#self-host">Self-host your server</a>). Without a server, devices on the same network can still pair by address.</p>
 
         <!-- Quick connect -->
         <section class="quick" id="quick-connect" aria-labelledby="quick-title">
@@ -217,7 +219,7 @@
           </ol>
           <ul class="quick-facts">
             <li><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg><span data-i18n="q.x1">The code looks like SF6-CK6 (6 letters and digits, issued by your server). It works once and is valid for 10 minutes.</span></li>
-            <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg><span data-i18n="q.x4">Quick connect needs the server to be set (<b>This computer → Manage → Server</b>).</span></li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg><span data-i18n="q.x4">Quick connect needs the server to be set (Windows: <b>This computer → Manage this computer → Server</b>; macOS and Linux: <b>Settings → Server</b>).</span></li>
             <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg><span data-i18n="q.x2">Nothing is remembered after the session.</span></li>
             <li><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 8h18"/></svg><span data-i18n="q.x3">The helper's view ends when either side closes it; the red banner on the remote screen ends it too.</span></li>
           </ul>
@@ -296,6 +298,83 @@
       </div>
     </section>
 
+    <!-- Download -->
+    <section class="section" id="download" aria-labelledby="download-title">
+      <div class="wrap">
+        <p class="kicker" data-i18n="nav.download">Download</p>
+        <h2 id="download-title" data-i18n="dl.title">Download for your system</h2>
+        <p class="section-lede" data-i18n="dl.lede">Control other computers from Windows, macOS or Linux. The computer being controlled must run Windows for now.</p>
+
+        <ul class="grid downloads">
+          <li class="dl-card" data-os="windows">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
+            <h3>Windows</h3>
+            <p class="dl-req" data-i18n="dl.win.req">Windows 10/11, 64-bit</p>
+            <p class="dl-does" data-i18n="dl.win.does">The full app: control other computers and be controlled (Manage, one-time codes, unattended access).</p>
+            <p class="dl-hint" data-i18n="dl.win.hint">Not code-signed yet: if SmartScreen warns, click <b>More info → Run anyway</b>.</p>
+            <div class="dl-action">
+              <a class="btn btn-primary dl-btn" data-asset="windows" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+                <span data-i18n="dl.win.btn">Download .exe</span>
+              </a>
+              <p class="dl-meta" data-meta="windows"></p>
+            </div>
+          </li>
+          <li class="dl-card" data-os="mac">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>
+            <h3>macOS</h3>
+            <p class="dl-req" data-i18n="dl.mac.req">macOS 11 or later · Apple Silicon and Intel</p>
+            <p class="dl-does" data-i18n="dl.mac.does">Controls other computers for now; being controlled is planned.</p>
+            <p class="dl-hint" data-i18n="dl.mac.hint">Open the .dmg and drag the app to Applications. It isn't signed with an Apple Developer ID yet, so the first launch is blocked: open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b> (or right-click the app → <b>Open</b>).</p>
+            <div class="dl-action">
+              <a class="btn btn-primary dl-btn" data-asset="mac" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+                <span data-i18n="dl.mac.btn">Download .dmg</span>
+              </a>
+              <p class="dl-meta" data-meta="mac"></p>
+            </div>
+          </li>
+          <li class="dl-card" data-os="linux">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7v10l8 4 8-4V7z"/><path d="m4 7 8 4 8-4M12 11v10"/></svg>
+            <h3>Debian / Ubuntu</h3>
+            <p class="dl-req" data-i18n="dl.deb.req">Debian 12+ / Ubuntu 22.04+ · x86_64</p>
+            <p class="dl-does" data-i18n="dl.deb.does">Controls other computers (for now).</p>
+            <p class="dl-hint" data-i18n="dl.deb.hint">Install from a terminal:</p>
+            <div class="code compact" role="group" aria-label="Install command for Debian and Ubuntu" data-i18n-attr="aria-label:dl.deb.cmd.label">
+              <pre><code id="apt-cmd">sudo apt install ./remote-desktop-rider_*_amd64.deb</code></pre>
+              <button class="copy" type="button" data-copy="apt-cmd">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+                <span data-i18n="copy">Copy</span>
+              </button>
+            </div>
+            <div class="dl-action">
+              <a class="btn btn-primary dl-btn" data-asset="linux" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+                <span data-i18n="dl.deb.btn">Download .deb</span>
+              </a>
+              <p class="dl-meta" data-meta="linux"></p>
+            </div>
+          </li>
+          <li class="dl-card" data-os="server">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/></svg>
+            <h3 data-i18n="dl.srv.h">Server</h3>
+            <p class="dl-req" data-i18n="dl.srv.req">Linux x86_64 · systemd</p>
+            <p class="dl-does" data-i18n="dl.srv.does">Optional. Introduces your devices and relays their encrypted traffic, so they can connect from anywhere.</p>
+            <p class="dl-hint" data-i18n="dl.srv.hint">The one-line installer downloads the right file, verifies its SHA-256 and sets up the systemd service.</p>
+            <div class="dl-action">
+              <a class="btn btn-ghost dl-btn" href="#self-host">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9-4 3 4 3M16 9l4 3-4 3M13.5 6l-3 12"/></svg>
+                <span data-i18n="dl.srv.btn">Install with one command</span>
+              </a>
+            </div>
+          </li>
+        </ul>
+
+        <p class="note"><span data-i18n="dl.note">Being controlled works on Windows only for now; a <a href="https://github.com/codewithelvin/remote-desktop-rider/blob/main/docs/MACOS.md">macOS host is planned</a>. On a new release, the macOS and Linux files appear a few minutes after the Windows installer.</span>
+          <a class="sums-link" data-asset="sums" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest" data-i18n="dl.sums">Checksums for every file (SHA256SUMS)</a></p>
+      </div>
+    </section>
+
     <!-- Self-host -->
     <section class="section" id="self-host" aria-labelledby="selfhost-title">
       <div class="wrap narrow">
@@ -310,7 +389,7 @@
             <span data-i18n="copy">Copy</span>
           </button>
         </div>
-        <p class="copy-status" role="status" aria-live="polite"></p>
+        <p class="copy-status sr-only" role="status" aria-live="polite"></p>
 
         <ul class="checks">
           <li data-i18n="sh.c1">Installs or upgrades <code>rider-server</code> (Linux x86_64, systemd) from the latest GitHub release.</li>
@@ -332,7 +411,7 @@
         </div>
 
         <h3 class="h-sub" data-i18n="sh.then.h">Then, on every computer</h3>
-        <p data-i18n="sh.then.p">Open <b>This computer → Manage → Server</b> and enter the server address and fingerprint. It applies in both directions: being reached and reaching others.</p>
+        <p data-i18n="sh.then.p">Enter the server address and fingerprint: on Windows in <b>This computer → Manage this computer → Server</b>, on macOS and Linux in <b>Settings → Server</b>. It applies in both directions: being reached and reaching others.</p>
       </div>
     </section>
 
@@ -343,8 +422,12 @@
         <h2 id="faq-title" data-i18n="faq.title">Troubleshooting</h2>
         <div class="faq">
           <details>
-            <summary data-i18n="faq1.q">SmartScreen warns about the installer</summary>
-            <p data-i18n="faq1.a">The installer isn't code-signed yet. Click <b>More info → Run anyway</b>. Updates are checked against the SHA-256 published with each release.</p>
+            <summary data-i18n="faq1.q">Windows says “Unknown publisher”</summary>
+            <p data-i18n="faq1.a">The installer isn't code-signed yet, so SmartScreen may warn. Click <b>More info → Run anyway</b>. To verify the download, compare its SHA-256 with the line for that file in <code>SHA256SUMS</code> on the release page (in PowerShell: <code>Get-FileHash rdr-setup-x.y.z.exe</code>).</p>
+          </details>
+          <details>
+            <summary data-i18n="faq7.q">macOS says the app can't be opened</summary>
+            <p data-i18n="faq7.a">The app isn't signed with an Apple Developer ID yet, so macOS blocks the first launch. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b> next to the message about Remote Desktop Rider, then confirm. Or right-click the app in Applications and choose <b>Open</b>. You only need to do this once.</p>
           </details>
           <details>
             <summary data-i18n="faq2.q">No code appears when I click "Add a device"</summary>
@@ -375,11 +458,12 @@
         <h2 id="final-title" data-i18n="final.title">Ready to ride?</h2>
         <p data-i18n="final.p">Install it on both computers and pair in under a minute.</p>
         <div class="cta">
-          <a class="btn btn-primary" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
+          <a class="btn btn-primary js-dl-primary" href="https://github.com/codewithelvin/remote-desktop-rider/releases/latest">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
-            <span data-i18n="cta.download">Download for Windows</span>
+            <span data-dl-label>Download for Windows</span>
           </a>
         </div>
+        <p class="cta-alt"><a href="#download" data-i18n="cta.other">Other systems</a></p>
       </div>
     </section>
   </main>

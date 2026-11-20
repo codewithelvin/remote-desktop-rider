@@ -12,13 +12,12 @@ use rider_core::update::{self, Release, Version};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use windows::core::w;
 
 /// First check shortly after start, then this often.
 const FIRST_CHECK: Duration = Duration::from_secs(20);
 const EVERY: Duration = Duration::from_secs(3600);
 /// Registry flag (HKCU) set when automatic checks are turned off.
-const NO_AUTO_CHECK: windows::core::PCWSTR = w!("NoUpdateCheck");
+const NO_AUTO_CHECK: &str = "NoUpdateCheck";
 
 #[derive(Clone)]
 pub enum State {

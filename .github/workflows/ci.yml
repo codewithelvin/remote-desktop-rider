@@ -62,18 +62,104 @@ jobs:
           path: dist/
           retention-days: 7
 
-  # macOS groundwork (docs/MACOS.md): the portable crates must keep building
-  # and passing their tests on macOS. Does not gate releases.
+  # macOS app (control other computers from a Mac; docs/MACOS.md): checked on
+  # every push; on main the .dmg is added to the release the Windows job made.
+  # Does not hold back the Windows release.
   macos:
+    needs: [version, build]
     runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # upload to the release
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set version
+        if: env.RELEASE == 'true'
+        run: sed -i '' "1,/^version = \"[^\"]*\"/s//version = \"$VERSION\"/" Cargo.toml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p rider-core -p rider-server -p rider-media -p rider-client -p rider-app --all-targets -- -D warnings
+      - run: cargo test -p rider-core -p rider-server -p rider-media -p rider-client -p rider-app
+      # Packaged on every push (so a branch proves it builds); uploaded from main.
+      - name: Package
+        id: pkg
+        run: |
+          dmg=$(packaging/macos/build.sh "$VERSION" | tail -1)
+          echo "file=$dmg" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: ${{ steps.pkg.outputs.file }}
+          retention-days: 7
+      - name: Upload to the release
+        if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$VERSION" "${{ steps.pkg.outputs.file }}" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Debian/Ubuntu app (x86_64), built on the oldest supported Ubuntu. Same
+  # arrangement as macOS.
+  linux:
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set version
+        if: env.RELEASE == 'true'
+        run: sed -i "0,/^version = \"[^\"]*\"/s//version = \"$VERSION\"/" Cargo.toml
+      - run: sudo apt-get update -q && sudo apt-get install -y -q nasm libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p rider-core -p rider-server --all-targets -- -D warnings
-      - run: cargo test -p rider-core -p rider-server
+      - run: cargo clippy -p rider-media -p rider-client -p rider-app --all-targets -- -D warnings
+      - run: cargo test -p rider-media -p rider-client -p rider-app
+      - name: Package
+        id: pkg
+        run: |
+          deb=$(packaging/linux/build-deb.sh "$VERSION" | tail -1)
+          dpkg-deb --info "$deb"
+          echo "file=$deb" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: ${{ steps.pkg.outputs.file }}
+          retention-days: 7
+      - name: Upload to the release
+        if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$VERSION" "${{ steps.pkg.outputs.file }}" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # SHA256SUMS over every file of the release (the Windows job wrote it
+  # before the macOS and Linux packages existed).
+  checksums:
+    needs: [version, build, macos, linux]
+    if: always() && needs.build.result == 'success' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          mkdir assets && cd assets
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern '*' --skip-existing
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "v$VERSION" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
 
   build:
     needs: [version, server]
@@ -126,5 +212,9 @@ jobs:
           $shash = (Get-FileHash $server -Algorithm SHA256).Hash.ToLower()
           # sha256sum format, checked by deploy/get.sh (the one-line server install).
           "$hash  rdr-setup-$env:VERSION.exe`n$shash  rider-server-$env:VERSION-linux-x86_64`n" | Set-Content -NoNewline -Encoding ascii dist/SHA256SUMS
-          $notes = "Download **rdr-setup-$env:VERSION.exe** below and run it (Windows 10/11, 64-bit).`n`nSHA-256: ``$hash```n`nServer (Linux x86_64): **rider-server-$env:VERSION-linux-x86_64**, SHA-256: ``$shash``"
+          $notes = "**Windows 10/11 (64-bit):** download **rdr-setup-$env:VERSION.exe** below and run it. SHA-256: ``$hash```n`n" +
+            "**macOS 11+ (Apple Silicon and Intel):** **RemoteDesktopRider-$env:VERSION-macos.dmg**: open it and drag the app to Applications. It is not signed with an Apple Developer ID: the first time, open it from System Settings > Privacy & Security > Open Anyway.`n`n" +
+            "**Debian 12+ / Ubuntu 22.04+ (x86_64):** **remote-desktop-rider_$($env:VERSION)_amd64.deb**: ``sudo apt install ./remote-desktop-rider_$($env:VERSION)_amd64.deb```n`n" +
+            "macOS and Linux control other computers; being controlled is Windows-only for now. The macOS and Linux files are added a few minutes after this release appears.`n`n" +
+            "**Server (Linux x86_64):** **rider-server-$env:VERSION-linux-x86_64**, SHA-256: ``$shash``. Checksums of every file: **SHA256SUMS**."
           gh release create "v$env:VERSION" $setup $server dist/SHA256SUMS --target $env:GITHUB_SHA --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest

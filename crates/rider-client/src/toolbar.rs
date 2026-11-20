@@ -7,20 +7,12 @@
 //! title bars are, and a bar sliding in under the pointer would take the click
 //! meant for them (e.g. turn "close tab" into Disconnect).
 //!
-//! The bar is rendered once per state (labels via GDI with Segoe UI and the
-//! Segoe MDL2 icon font, grayscale anti-aliasing) into a premultiplied ARGB
+//! The bar is rendered once per state (labels: see `text`; on Windows GDI with
+//! Segoe UI and the Segoe MDL2 icon font) into a premultiplied ARGB
 //! sprite, then alpha-blended over each frame: a few thousand pixels per draw.
 
 use rider_core::i18n::tr;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::SIZE;
-use windows::Win32::Graphics::Gdi::{
-    ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateCompatibleDC,
-    CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DIB_RGB_COLORS, DeleteDC, DeleteObject, FF_DONTCARE, FW_NORMAL,
-    GdiFlush, GetTextExtentPoint32W, HDC, HFONT, OUT_TT_PRECIS, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
-    TextOutW,
-};
-use windows::core::PCWSTR;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -141,6 +133,7 @@ impl Toolbar {
 
     /// A button's horizontal extent and the bar's height (window px), to
     /// open a menu under it.
+    #[cfg_attr(not(windows), allow(dead_code))] // the quality menu is a Windows popup
     pub fn button_rect(&self, action: Action) -> Option<(usize, usize, usize)> {
         let s = self.sprite.as_ref()?;
         let &(_, a, b) = s.buttons.iter().find(|b| b.0 == action)?;
@@ -328,89 +321,244 @@ fn inside_round(x: usize, y: usize, w: usize, h: usize, scale: f64) -> bool {
     (x - cx).powi(2) + (y - cy).powi(2) <= r * r
 }
 
-fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Action, char, String)> {
+/// Buttons: action, icon (Windows icon font; none elsewhere) and label.
+fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Action, Option<char>, String)> {
+    let icon = |c: char| cfg!(windows).then_some(c);
     let mut v = Vec::new();
     if !extras.elapsed.is_empty() {
-        v.push((Action::Elapsed, '\u{E916}', extras.elapsed.clone()));
+        v.push((Action::Elapsed, icon('\u{E916}'), extras.elapsed.clone()));
     }
     v.push(if fullscreen {
-        (Action::Fullscreen, '\u{E73F}', tr("Exit full screen", "Tam ekrandan çıx").into())
+        (Action::Fullscreen, icon('\u{E73F}'), tr("Exit full screen", "Tam ekrandan çıx").into())
     } else {
-        (Action::Fullscreen, '\u{E740}', tr("Full screen", "Tam ekran").into())
+        (Action::Fullscreen, icon('\u{E740}'), tr("Full screen", "Tam ekran").into())
     });
-    v.push((Action::CtrlAltDel, '\u{E765}', "Ctrl+Alt+Del".into()));
+    v.push((Action::CtrlAltDel, icon('\u{E765}'), "Ctrl+Alt+Del".into()));
     if count > 1 {
-        v.extend((0..count).map(|i| (Action::Monitor(i), '\u{E7F4}', (i + 1).to_string())));
+        v.extend((0..count).map(|i| (Action::Monitor(i), icon('\u{E7F4}'), (i + 1).to_string())));
     }
     if let Some(q) = &extras.quality {
         // Label plus a down chevron: it opens a menu.
-        v.push((Action::Quality, '\u{E7B3}', format!("{q}  \u{25BE}")));
+        v.push((Action::Quality, icon('\u{E7B3}'), format!("{q}  \u{25BE}")));
     }
-    v.push((Action::Pin, if extras.pinned { '\u{E77A}' } else { '\u{E718}' }, String::new()));
-    v.push((Action::Disconnect, '\u{E711}', tr("Disconnect", "Bağlantını kəs").into()));
+    // Without the icon font the pin needs a word (the pill shows it is on).
+    let pin = if cfg!(windows) { String::new() } else { tr("Pin", "Sabitlə").into() };
+    v.push((Action::Pin, icon(if extras.pinned { '\u{E77A}' } else { '\u{E718}' }), pin));
+    v.push((Action::Disconnect, icon('\u{E711}'), tr("Disconnect", "Bağlantını kəs").into()));
     v
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().collect()
+/// One label to paint: left edge, icon and its width (Windows only), text.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct Label<'a> {
+    x: i32,
+    icon: Option<char>,
+    icon_w: i32,
+    text: &'a str,
 }
 
-struct Gdi {
-    dc: HDC,
-    text: HFONT,
-    icons: HFONT,
-}
+#[cfg(windows)]
+mod text {
+    //! GDI: Segoe UI and the Segoe MDL2 icon font, grayscale anti-aliasing.
+    use super::Label;
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::{
+        ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateCompatibleDC,
+        CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DIB_RGB_COLORS, DeleteDC, DeleteObject, FF_DONTCARE, FW_NORMAL,
+        GdiFlush, GetTextExtentPoint32W, HDC, HFONT, OUT_TT_PRECIS, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+        TextOutW,
+    };
+    use windows::core::PCWSTR;
 
-impl Gdi {
-    fn new(scale: f64) -> Option<Self> {
-        let font = |px: f64, face: &str| {
-            let face: Vec<u16> = face.encode_utf16().chain(std::iter::once(0)).collect();
-            // SAFETY: face is NUL-terminated and outlives the call.
-            unsafe {
-                CreateFontW(
-                    -(px * scale).round() as i32,
-                    0,
-                    0,
-                    0,
-                    FW_NORMAL.0 as i32,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET,
-                    OUT_TT_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    ANTIALIASED_QUALITY,
-                    FF_DONTCARE.0 as u32,
-                    PCWSTR(face.as_ptr()),
-                )
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    pub struct Fonts {
+        dc: HDC,
+        text: HFONT,
+        icons: HFONT,
+        scale: f64,
+    }
+
+    impl Fonts {
+        pub fn new(scale: f64) -> Option<Self> {
+            let font = |px: f64, face: &str| {
+                let face: Vec<u16> = face.encode_utf16().chain(std::iter::once(0)).collect();
+                // SAFETY: face is NUL-terminated and outlives the call.
+                unsafe {
+                    CreateFontW(
+                        -(px * scale).round() as i32,
+                        0,
+                        0,
+                        0,
+                        FW_NORMAL.0 as i32,
+                        0,
+                        0,
+                        0,
+                        DEFAULT_CHARSET,
+                        OUT_TT_PRECIS,
+                        CLIP_DEFAULT_PRECIS,
+                        ANTIALIASED_QUALITY,
+                        FF_DONTCARE.0 as u32,
+                        PCWSTR(face.as_ptr()),
+                    )
+                }
+            };
+            // SAFETY: a memory DC with no window; released in Drop.
+            let dc = unsafe { CreateCompatibleDC(None) };
+            if dc.is_invalid() {
+                return None;
             }
-        };
-        // SAFETY: a memory DC with no window; released in Drop.
-        let dc = unsafe { CreateCompatibleDC(None) };
-        if dc.is_invalid() {
-            return None;
+            Some(Self { dc, text: font(13.0, "Segoe UI"), icons: font(14.0, "Segoe MDL2 Assets"), scale })
         }
-        Some(Self { dc, text: font(13.0, "Segoe UI"), icons: font(14.0, "Segoe MDL2 Assets") })
+
+        fn extent(&self, font: HFONT, s: &[u16]) -> (i32, i32) {
+            let mut size = SIZE::default();
+            // SAFETY: valid DC and font; `size` is a local out-param.
+            unsafe {
+                SelectObject(self.dc, font.into());
+                let _ = GetTextExtentPoint32W(self.dc, s, &mut size);
+            }
+            (size.cx, size.cy)
+        }
+
+        pub fn icon_width(&self, c: char) -> i32 {
+            self.extent(self.icons, &wide(&c.to_string())).0
+        }
+
+        pub fn text_width(&self, s: &str) -> i32 {
+            self.extent(self.text, &wide(s)).0
+        }
+
+        /// White-on-black coverage (0-255) of all labels, `w` x `h`.
+        pub fn paint(&self, w: usize, h: usize, labels: &[Label], gap: i32) -> Option<Vec<u8>> {
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w as i32,
+                    biHeight: -(h as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let hi = h as i32;
+            let one = self.scale.round() as i32;
+            let mut bits = std::ptr::null_mut();
+            // SAFETY: `bits` receives the DIB's memory, valid until the bitmap is deleted.
+            let bmp = unsafe { CreateDIBSection(Some(self.dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
+            let mut coverage = vec![0u8; w * h];
+            // SAFETY: drawing into our own DIB; it is read back after GdiFlush and
+            // deleted before `bits` goes out of use.
+            unsafe {
+                let old = SelectObject(self.dc, bmp.into());
+                SetBkMode(self.dc, TRANSPARENT);
+                SetTextColor(self.dc, windows::Win32::Foundation::COLORREF(0x00FF_FFFF));
+                for l in labels {
+                    let mut x = l.x;
+                    if let Some(c) = l.icon {
+                        let icon = wide(&c.to_string());
+                        let (_, ih) = self.extent(self.icons, &icon);
+                        let _ = TextOutW(self.dc, x, (hi - ih) / 2 + one, &icon);
+                        x += l.icon_w + gap;
+                    }
+                    let text = wide(l.text);
+                    let (_, th) = self.extent(self.text, &text);
+                    let _ = TextOutW(self.dc, x, (hi - th) / 2, &text);
+                }
+                let _ = GdiFlush();
+                let src = std::slice::from_raw_parts(bits as *const u32, w * h);
+                for (c, p) in coverage.iter_mut().zip(src) {
+                    let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+                    *c = r.max(g).max(b) as u8;
+                }
+                SelectObject(self.dc, old);
+                let _ = DeleteObject(bmp.into());
+            }
+            Some(coverage)
+        }
     }
 
-    fn extent(&self, font: HFONT, s: &[u16]) -> (i32, i32) {
-        let mut size = SIZE::default();
-        // SAFETY: valid DC and font; `size` is a local out-param.
-        unsafe {
-            SelectObject(self.dc, font.into());
-            let _ = GetTextExtentPoint32W(self.dc, s, &mut size);
+    impl Drop for Fonts {
+        fn drop(&mut self) {
+            // SAFETY: objects created in `new`, no longer selected after DeleteDC.
+            unsafe {
+                let _ = DeleteDC(self.dc);
+                let _ = DeleteObject(self.text.into());
+                let _ = DeleteObject(self.icons.into());
+            }
         }
-        (size.cx, size.cy)
     }
 }
 
-impl Drop for Gdi {
-    fn drop(&mut self) {
-        // SAFETY: objects created in `new`, no longer selected after DeleteDC.
-        unsafe {
-            let _ = DeleteDC(self.dc);
-            let _ = DeleteObject(self.text.into());
-            let _ = DeleteObject(self.icons.into());
+#[cfg(not(windows))]
+mod text {
+    //! The app's own font (Ubuntu Light, bundled with egui), rasterized with
+    //! ab_glyph: the same everywhere, and it has every Azerbaijani letter.
+    use super::Label;
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
+
+    pub struct Fonts {
+        font: FontRef<'static>,
+        px: PxScale,
+    }
+
+    impl Fonts {
+        pub fn new(scale: f64) -> Option<Self> {
+            let font = FontRef::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT).ok()?;
+            Some(Self { font, px: PxScale::from((16.0 * scale) as f32) })
+        }
+
+        pub fn icon_width(&self, _c: char) -> i32 {
+            0
+        }
+
+        pub fn text_width(&self, s: &str) -> i32 {
+            let f = self.font.as_scaled(self.px);
+            let mut w = 0.0;
+            let mut prev = None;
+            for c in s.chars() {
+                let id = f.glyph_id(c);
+                if let Some(p) = prev {
+                    w += f.kern(p, id);
+                }
+                w += f.h_advance(id);
+                prev = Some(id);
+            }
+            w.ceil() as i32
+        }
+
+        /// White-on-black coverage (0-255) of all labels, `w` x `h`.
+        pub fn paint(&self, w: usize, h: usize, labels: &[Label], _gap: i32) -> Option<Vec<u8>> {
+            let f = self.font.as_scaled(self.px);
+            let mut coverage = vec![0u8; w * h];
+            let baseline = ((h as f32 - (f.ascent() - f.descent())) / 2.0 + f.ascent()).round();
+            for l in labels {
+                let mut x = l.x as f32;
+                let mut prev = None;
+                for c in l.text.chars() {
+                    let id = f.glyph_id(c);
+                    if let Some(p) = prev {
+                        x += f.kern(p, id);
+                    }
+                    let glyph = id.with_scale_and_position(self.px, point(x, baseline));
+                    x += f.h_advance(id);
+                    prev = Some(id);
+                    let Some(outline) = self.font.outline_glyph(glyph) else { continue };
+                    let b = outline.px_bounds();
+                    outline.draw(|gx, gy, v| {
+                        let (px, py) = (b.min.x as i64 + gx as i64, b.min.y as i64 + gy as i64);
+                        if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                            let d = &mut coverage[py as usize * w + px as usize];
+                            *d = (*d).max((v.clamp(0.0, 1.0) * 255.0) as u8);
+                        }
+                    });
+                }
+            }
+            Some(coverage)
         }
     }
 }
@@ -422,15 +570,14 @@ fn render(
     extras: &Extras,
     hover: Option<Action>,
 ) -> Option<Sprite> {
-    let gdi = Gdi::new(scale)?;
+    let fonts = text::Fonts::new(scale)?;
     let s = |v: f64| (v * scale).round() as i32;
     let (pad, gap, h) = (s(14.0), s(8.0), s(36.0));
     let items: Vec<_> = labels(fullscreen, monitors, extras)
         .into_iter()
         .map(|(act, icon, text)| {
-            let (icon, text) = (wide(&icon.to_string()), wide(&text));
-            let iw = gdi.extent(gdi.icons, &icon).0;
-            let tw = gdi.extent(gdi.text, &text).0;
+            let iw = icon.map_or(0, |c| fonts.icon_width(c));
+            let tw = fonts.text_width(&text);
             (act, icon, text, iw, tw)
         })
         .collect();
@@ -438,52 +585,20 @@ fn render(
     let mut buttons = Vec::new();
     let mut x = edge;
     for (act, _, _, iw, tw) in &items {
-        let bw = if *tw > 0 { pad + iw + gap + tw + pad } else { pad + iw + pad };
+        let inner = if *iw > 0 && *tw > 0 { iw + gap + tw } else { iw + tw };
+        let bw = pad + inner + pad;
         buttons.push((*act, x as usize, (x + bw) as usize));
         x += bw;
     }
     let w = (x + edge) as usize;
     let hu = h as usize;
 
-    // Labels: white on black into a top-down 32-bit DIB; coverage = brightness.
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w as i32,
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits = std::ptr::null_mut();
-    // SAFETY: `bits` receives the DIB's memory, valid until the bitmap is deleted.
-    let bmp = unsafe { CreateDIBSection(Some(gdi.dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
-    let mut coverage = vec![0u8; w * hu];
-    // SAFETY: drawing into our own DIB; it is read back after GdiFlush and
-    // deleted before `bits` goes out of use.
-    unsafe {
-        let old = SelectObject(gdi.dc, bmp.into());
-        SetBkMode(gdi.dc, TRANSPARENT);
-        SetTextColor(gdi.dc, windows::Win32::Foundation::COLORREF(0x00FF_FFFF));
-        for ((_, icon, text, iw, _), (_, x0, _)) in items.iter().zip(&buttons) {
-            let x = *x0 as i32 + pad;
-            let (_, ih) = gdi.extent(gdi.icons, icon);
-            let _ = TextOutW(gdi.dc, x, (h - ih) / 2 + s(1.0), icon);
-            let (_, th) = gdi.extent(gdi.text, text);
-            let _ = TextOutW(gdi.dc, x + iw + gap, (h - th) / 2, text);
-        }
-        let _ = GdiFlush();
-        let src = std::slice::from_raw_parts(bits as *const u32, w * hu);
-        for (c, p) in coverage.iter_mut().zip(src) {
-            let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
-            *c = r.max(g).max(b) as u8;
-        }
-        SelectObject(gdi.dc, old);
-        let _ = DeleteObject(bmp.into());
-    }
+    let painted: Vec<Label> = items
+        .iter()
+        .zip(&buttons)
+        .map(|((_, icon, text, iw, _), (_, x0, _))| Label { x: *x0 as i32 + pad, icon: *icon, icon_w: *iw, text })
+        .collect();
+    let coverage = fonts.paint(w, hu, &painted, gap)?;
 
     // Background: rounded at the bottom, flat against the top edge.
     let r = 10.0 * scale;

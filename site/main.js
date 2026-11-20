@@ -1,4 +1,4 @@
-// Remote Desktop Rider site: language switch (English / Azərbaycan dili) and copy buttons.
+// Remote Desktop Rider site: language switch (English / Azərbaycan dili), download links and copy buttons.
 // English lives in the HTML; Azerbaijani strings are below, keyed by data-i18n / data-i18n-attr.
 (function () {
   "use strict";
@@ -15,13 +15,18 @@
     "nav.security": "Təhlükəsizlik",
     "nav.selfhost": "Öz serveriniz",
     "nav.faq": "Suallar",
+    "nav.download": "Yükləmə",
 
-    "hero.eyebrow": "Açıq mənbə · Windows 10/11 · Rust dilində yazılıb",
+    "hero.eyebrow": "Açıq mənbə · Windows, macOS və Linux · Rust dilində yazılıb",
     "hero.tagline": "Windows üçün sürətli və məxfi 1:1 uzaq masaüstü. Zəif bağlantıda belə rahat işləyir.",
     "hero.lede": "Ailə üzvünüzə kömək edin, evdən ofis kompüterinizə qoşulun və ya müştərinizə dəstək göstərin: mobil internet, otel Wi-Fi şəbəkəsi, ciddi məhdudiyyətləri olan korporativ şəbəkə və ya yavaş VPN üzərindən.",
-    "cta.download": "Windows üçün yükləyin",
+    "cta.download.windows": "Windows üçün yükləyin",
+    "cta.download.mac": "macOS üçün yükləyin",
+    "cta.download.linux": "Linux üçün yükləyin",
+    "cta.download.any": "Yükləyin",
+    "cta.other": "Digər sistemlər",
     "cta.github": "GitHub-da baxın",
-    "hero.fine": "Windows 10/11 (64-bit) üçün cəmi ~8&nbsp;MB-lıq quraşdırıcı. Pulsuz və açıq mənbəli. Hesab və bulud xidməti tələb olunmur.",
+    "hero.fine": "Pulsuz və açıq mənbəli. Windows, macOS və ya Linux-dan idarə edin; idarə olunan kompüterdə Windows 10/11 olmalıdır. Hesab və bulud xidməti tələb olunmur.",
     "hero.alt": "Remote Desktop Rider-də uzaq seans: uzaq Windows masaüstü baxış pəncərəsini tam tutur, yuxarıda ortada seans alətlər panelinin nişanı görünür.",
 
     "features.title": "Bağlantı zəif olsa belə, işləyir",
@@ -42,12 +47,12 @@
     "f8.h": "Özünü yeniləyir",
     "f8.p": "Hər saat yeniləmə yoxlanışı, SHA-256 ilə yoxlanılan quraşdırıcılar, yalnız uzaqdan qoşulduğunuz kompüterlər üçün istifadəçi müdaxiləsi olmadan yeniləmə.",
     "f9.h": "Yığcam və yerli",
-    "f9.p": "Cəmi ~8&nbsp;MB-lıq bir quraşdırıcı. Tamamilə Rust dilində yazılıb.",
+    "f9.p": "Hər sistem üçün yerli tətbiq; Windows quraşdırıcısının həcmi təxminən 8&nbsp;MB-dır. Tamamilə Rust dilində yazılıb.",
     "f10.h": "İngilis və Azərbaycan dillərində",
     "f10.p": "Tətbiq, seans pəncərəsi və idarəetmə pəncərəsi ingilis və Azərbaycan dillərində mövcuddur. Dili tətbiqin yan panelindəki və ya «Parametrlər» bölməsindəki bayraq düymələri ilə dəyişə bilərsiniz.",
 
     "how.title": "Bir dəfə cütləşdirin, sonra PIN kodla qoşulun",
-    "how.lede": "<a href=\"https://github.com/codewithelvin/remote-desktop-rider/releases/latest\">Son buraxılışı</a> hər iki kompüterə quraşdırın. Cütləşdirmə hər cihaz üçün yalnız bir dəfə aparılır; bundan sonra hər seans kompüterin PIN kodunu tələb edir.",
+    "how.lede": "Remote Desktop Rider-i hər iki kompüterə quraşdırın (bax: <a href=\"#download\">Yükləmə</a>). İdarə olunan kompüterdə Windows olmalıdır; onu Windows, macOS və ya Linux-dan idarə edə bilərsiniz. Cütləşdirmə hər cihaz üçün yalnız bir dəfə aparılır; bundan sonra hər seans kompüterin PIN kodunu tələb edir.",
     "s1.h": "İdarə ediləcək kompüterdə",
     "s1.p": "«Bu kompüter» səhifəsində «Bu kompüteri idarə et» pəncərəsini açın, PIN kod təyin edin, «Uzaqdan giriş» funksiyasını aktivləşdirin və «Cihaz əlavə et» düyməsini klikləyin. Ekranda qısa kod görünəcək.",
     "s1.alt": "«Bu kompüter» ekranı: uzaqdan giriş açarı, PIN kod ayarı və cütləşdirilmiş cihazların siyahısı.",
@@ -55,9 +60,9 @@
     "s2.p": "«Kompüter əlavə et» düyməsini klikləyin, həmin kodu daxil edin və hər iki ekranda eyni təsdiq kodunun göründüyünə əmin olun.",
     "s2.alt": "«Kompüterlər» ekranı: bu cihazın idarə edə bildiyi kompüterlərin siyahısı və onların onlayn olub-olmaması.",
     "s3.h": "Qoşulun",
-    "s3.p": "Kompüter onlayn olduqda «Qoşul» düyməsini klikləyin və PIN kodu daxil edin. «PIN kodu bu cihazda yadda saxla» seçimini işarələsəniz, növbəti qoşulmalar dərhal açılacaq, digər proqramlardakı daimi (unattended) giriş kimi. PIN kod Windows hesabınız üçün şifrələnir. Kimsə qoşulu olduğu müddətdə uzaq kompüterdə qırmızı banner görünür; ona klikləmək seansı bitirir.",
+    "s3.p": "Kompüter onlayn olduqda «Qoşul» düyməsini klikləyin və PIN kodu daxil edin. «PIN kodu bu cihazda yadda saxla» seçimini işarələsəniz, növbəti qoşulmalar dərhal açılacaq, digər proqramlardakı daimi (unattended) giriş kimi. Windows-da PIN kod Windows hesabınız üçün şifrələnir. Kimsə qoşulu olduğu müddətdə uzaq kompüterdə qırmızı banner görünür; ona klikləmək seansı bitirir.",
     "s3.alt": "Kompüterin PIN kodunu soruşan qoşulma pəncərəsi və «PIN kodu bu cihazda yadda saxla» seçimi.",
-    "how.note": "Fərqli şəbəkələr arasında cütləşdirmə və qoşulma üçün hər kompüterdə bir dəfə «Bu kompüter» → «Bu kompüteri idarə et» → «Server» bölməsində <code>rider-server</code> serverinin ünvanını və barmaq izini daxil edin (bax: <a href=\"#self-host\">Öz serverinizi qurun</a>). Server olmadan da eyni şəbəkədəki cihazlar ünvan vasitəsilə cütləşə bilər.",
+    "how.note": "Fərqli şəbəkələr arasında cütləşdirmə və qoşulma üçün hər kompüterdə bir dəfə <code>rider-server</code> serverinin ünvanını və barmaq izini daxil edin: Windows-da «Bu kompüter» → «Bu kompüteri idarə et» → «Server», macOS və Linux-da isə «Parametrlər» → «Server» bölməsində (bax: <a href=\"#self-host\">Öz serverinizi qurun</a>). Server olmadan da eyni şəbəkədəki cihazlar ünvan vasitəsilə cütləşə bilər.",
 
     "q.badge": "Yeni",
     "q.title": "Birdəfəlik kodla sürətli qoşulma",
@@ -68,7 +73,7 @@
     "q.f2": "«Sürətli qoşulma» düyməsini klikləyir və həmin kodu daxil edir.",
     "q.f3": "Kimin qoşulmaq istədiyini və təsdiq kodunu görür, sonra «İcazə ver» (və ya «İmtina et») düyməsini klikləyir.",
     "q.x1": "SF6-CK6 kimi 6 simvollu kodu (hərf və rəqəmlər) server verir. Kod yalnız bir dəfə işləyir və 10 dəqiqə ərzində etibarlıdır.",
-    "q.x4": "Sürətli qoşulma üçün server təyin olunmalıdır («Bu kompüter» → «Bu kompüteri idarə et» → «Server»).",
+    "q.x4": "Sürətli qoşulma üçün server təyin olunmalıdır (Windows-da: «Bu kompüter» → «Bu kompüteri idarə et» → «Server»; macOS və Linux-da: «Parametrlər» → «Server»).",
     "q.x2": "Seansdan sonra heç nə yadda saxlanılmır.",
     "q.x3": "Tərəflərdən biri seansı bağladıqda kömək edən şəxsin görüntüsü kəsilir; uzaq ekrandakı qırmızı banner da seansı bitirir.",
     "q.limit": "<b>Məhdudiyyət:</b> sürətli seans administrator hüquqları olmadan işlədiyi üçün administrator kimi işləyən pəncərələri və UAC sorğularını idarə etmək mümkün deyil. Bunun üçün adi, cütləşdirilmiş girişdən istifadə edin.",
@@ -124,11 +129,38 @@
     "sh.https.h": "İstəyə bağlı: UDP-ni bloklayan şəbəkələr üçün HTTPS ehtiyat yolu",
     "sh.https.p": "nginx və Let's Encrypt sertifikatını da quraşdırmaq üçün əmrə <code>--domain rider.example.com --email you@example.com</code> əlavə edin. Bunun üçün TCP 80 və 443 portları açıq olmalı, DNS adı isə serverə yönəldilməlidir.",
     "sh.then.h": "Sonra hər kompüterdə",
-    "sh.then.p": "«Bu kompüter» → «Bu kompüteri idarə et» → «Server» bölməsini açın və «Ünvan» ilə «Barmaq izi» sahələrini doldurun. Bu ayar hər iki istiqamətdə keçərlidir: həm başqalarının sizə, həm də sizin başqalarına qoşulmanız üçün.",
+    "sh.then.p": "Serverin ünvanını və barmaq izini daxil edin: Windows-da «Bu kompüter» → «Bu kompüteri idarə et» → «Server», macOS və Linux-da isə «Parametrlər» → «Server» bölməsində «Ünvan» və «Barmaq izi» sahələrini doldurun. Bu ayar hər iki istiqamətdə keçərlidir: həm başqalarının sizə, həm də sizin başqalarına qoşulmanız üçün.",
+
+    "dl.title": "Sisteminiz üçün yükləyin",
+    "dl.lede": "Başqa kompüterləri Windows, macOS və ya Linux-dan idarə edin. İdarə olunan kompüter hələlik yalnız Windows ola bilər.",
+    "dl.win.req": "Windows 10/11, 64 bit",
+    "dl.win.does": "Tam funksional tətbiq: həm başqa kompüterləri idarə edə, həm də bu kompüterə uzaqdan giriş verə bilərsiniz (idarəetmə pəncərəsi, birdəfəlik kodlar, daimi giriş).",
+    "dl.win.hint": "Quraşdırıcı hələ rəqəmsal imza ilə imzalanmayıb: SmartScreen xəbərdarlıq etsə, <b>More info → Run anyway</b> seçin.",
+    "dl.win.btn": ".exe faylını yükləyin",
+    "dl.mac.req": "macOS 11 və daha yeni · Apple Silicon və Intel",
+    "dl.mac.does": "Hələlik yalnız başqa kompüterləri idarə edir; bu kompüterə uzaqdan giriş imkanı planlaşdırılır.",
+    "dl.mac.hint": ".dmg faylını açın və tətbiqi «Applications» qovluğuna sürüşdürün. Tətbiq hələ Apple Developer ID ilə imzalanmadığı üçün ilk açılış bloklanır: <b>System Settings → Privacy &amp; Security</b> bölməsini açıb <b>Open Anyway</b> düyməsini klikləyin (və ya tətbiqin üzərində sağ klikləyib <b>Open</b> seçin).",
+    "dl.mac.btn": ".dmg faylını yükləyin",
+    "dl.deb.req": "Debian 12+ / Ubuntu 22.04+ · x86_64",
+    "dl.deb.does": "Hələlik yalnız başqa kompüterləri idarə edir.",
+    "dl.deb.hint": "Terminalda quraşdırın:",
+    "dl.deb.cmd.label": "Debian və Ubuntu üçün quraşdırma əmri",
+    "dl.deb.btn": ".deb faylını yükləyin",
+    "dl.srv.h": "Server",
+    "dl.srv.req": "Linux x86_64 · systemd",
+    "dl.srv.does": "İstəyə bağlıdır. Cihazlarınızı bir-biri ilə tanış edir və onların şifrələnmiş trafikini ötürür ki, istənilən yerdən qoşula biləsiniz.",
+    "dl.srv.hint": "Bir sətirlik quraşdırma skripti lazımi faylı yükləyir, SHA-256 cəmini yoxlayır və systemd xidmətini qurur.",
+    "dl.srv.btn": "Bir əmrlə quraşdırın",
+    "dl.note": "Hələlik uzaqdan idarə olunan kompüter yalnız Windows ola bilər; <a href=\"https://github.com/codewithelvin/remote-desktop-rider/blob/main/docs/MACOS.md\">macOS dəstəyi planlaşdırılır</a>. Yeni buraxılışda macOS və Linux faylları Windows quraşdırıcısından bir neçə dəqiqə sonra görünür.",
+    "dl.sums": "Bütün faylların yoxlama cəmləri (SHA256SUMS)",
+    "dl.meta.missing": "Bu buraxılışda hələ yoxdur: düymə bütün faylların olduğu buraxılış səhifəsini açır.",
+    "dl.meta.offline": "Bütün faylların olduğu buraxılış səhifəsini açır.",
 
     "faq.title": "Problemlərin həlli",
-    "faq1.q": "SmartScreen quraşdırıcı barədə xəbərdarlıq edir",
-    "faq1.a": "Quraşdırıcı hələ rəqəmsal imza ilə imzalanmayıb. <b>More info → Run anyway</b> düyməsini klikləyin. Yeniləmələr hər buraxılışla dərc olunan SHA-256 cəmi ilə yoxlanılır.",
+    "faq1.q": "Windows “Unknown publisher” (naməlum naşir) xəbərdarlığı göstərir",
+    "faq1.a": "Quraşdırıcı hələ rəqəmsal imza ilə imzalanmayıb, buna görə SmartScreen xəbərdarlıq edə bilər. <b>More info → Run anyway</b> seçin. Yüklənmiş faylı yoxlamaq üçün onun SHA-256 cəmini buraxılış səhifəsindəki <code>SHA256SUMS</code> faylında həmin fayla aid sətirlə müqayisə edin (PowerShell-də: <code>Get-FileHash rdr-setup-x.y.z.exe</code>).",
+    "faq7.q": "macOS tətbiqin açıla bilmədiyini bildirir",
+    "faq7.a": "Tətbiq hələ Apple Developer ID ilə imzalanmadığı üçün macOS ilk açılışı bloklayır. <b>System Settings → Privacy &amp; Security</b> bölməsini açın, Remote Desktop Rider barədə bildirişin yanındakı <b>Open Anyway</b> düyməsini klikləyin və təsdiqləyin. Və ya «Applications» qovluğunda tətbiqin üzərində sağ klikləyib <b>Open</b> seçin. Bunu yalnız bir dəfə etmək lazımdır.",
     "faq2.q": "«Cihaz əlavə et» düyməsini kliklədikdə kod görünmür",
     "faq2.a": "Kod serverinizdən gəlir. «Bu kompüter» → «Bu kompüteri idarə et» pəncərəsində «Server» ayarını (ünvan və barmaq izi) təyin edin və yenidən cəhd edin. Server olmadan bu kompüteri yalnız eyni şəbəkədəki cihazlar, pəncərədə göstərilən ünvanlardan biri ilə əlavə edə bilər.",
     "faq3.q": "Korporativ şəbəkədən qoşulmaq alınmır",
@@ -150,7 +182,13 @@
     "copy": "Copy",
     "copy.done": "Copied",
     "copy.fail": "Press Ctrl+C",
-    "copy.status": "Command copied to clipboard."
+    "copy.status": "Command copied to clipboard.",
+    "cta.download.windows": "Download for Windows",
+    "cta.download.mac": "Download for macOS",
+    "cta.download.linux": "Download for Linux",
+    "cta.download.any": "Download",
+    "dl.meta.missing": "Not on this release yet: the button opens the release page with all files.",
+    "dl.meta.offline": "Opens the release page with all files."
   };
 
   var STORAGE_KEY = "rdr-lang";
@@ -198,6 +236,97 @@
     document.querySelectorAll(".lang-btn").forEach(function (btn) {
       btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === current ? "true" : "false");
     });
+
+    renderDownloads();
+  }
+
+  // ---- Downloads: latest release assets + visitor's OS ----
+  var RELEASES_URL = "https://github.com/codewithelvin/remote-desktop-rider/releases/latest";
+  var API_URL = "https://api.github.com/repos/codewithelvin/remote-desktop-rider/releases/latest";
+  var PATTERNS = {
+    windows: /^rdr-setup-.*\.exe$/,
+    mac: /-macos\.dmg$/,
+    linux: /_amd64\.deb$/,
+    sums: /^SHA256SUMS$/
+  };
+  var release = { state: "loading", version: "", assets: {} }; // state: loading | ok | failed
+
+  function detectOS() {
+    var uad = navigator.userAgentData;
+    var ua = navigator.userAgent || "";
+    var platform = (uad && uad.platform) || navigator.platform || "";
+    if ((uad && uad.mobile) || /android|iphone|ipad|ipod/i.test(ua)) return "any";
+    if (/mac/i.test(platform) && navigator.maxTouchPoints > 1) return "any"; // iPadOS
+    if (/win/i.test(platform) || /windows/i.test(ua)) return "windows";
+    if (/mac/i.test(platform) || /mac os x/i.test(ua)) return "mac";
+    if (/cros/i.test(ua)) return "any";
+    if (/linux|x11/i.test(platform) || /linux|x11/i.test(ua)) return "linux";
+    return "any";
+  }
+  var visitorOS = detectOS();
+
+  function formatSize(bytes) {
+    var mb = bytes / 1048576;
+    try {
+      return mb.toLocaleString(current === "az" ? "az" : "en", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " MB";
+    } catch (e) {
+      return mb.toFixed(1) + " MB";
+    }
+  }
+
+  function assetHref(key) {
+    var a = release.assets[key];
+    return a ? a.url : RELEASES_URL;
+  }
+
+  function renderDownloads() {
+    document.querySelectorAll("[data-asset]").forEach(function (el) {
+      el.setAttribute("href", assetHref(el.getAttribute("data-asset")));
+    });
+
+    document.querySelectorAll("[data-meta]").forEach(function (el) {
+      var a = release.assets[el.getAttribute("data-meta")];
+      if (a) el.textContent = release.version + " · " + formatSize(a.size);
+      else if (release.state === "ok") el.textContent = t("dl.meta.missing");
+      else if (release.state === "failed") el.textContent = t("dl.meta.offline");
+      else el.textContent = "";
+    });
+
+    var apt = document.getElementById("apt-cmd");
+    if (apt && release.assets.linux) apt.textContent = "sudo apt install ./" + release.assets.linux.name;
+
+    document.querySelectorAll(".js-dl-primary").forEach(function (btn) {
+      btn.setAttribute("href", visitorOS === "any" ? "#download" : assetHref(visitorOS));
+      var label = btn.querySelector("[data-dl-label]");
+      if (label) label.textContent = t("cta.download." + visitorOS);
+    });
+
+    document.querySelectorAll(".dl-card").forEach(function (card) {
+      card.classList.toggle("is-yours", card.getAttribute("data-os") === visitorOS);
+    });
+  }
+
+  if (window.fetch) {
+    fetch(API_URL, { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (rel) {
+        release.version = rel.tag_name || "";
+        (rel.assets || []).forEach(function (asset) {
+          Object.keys(PATTERNS).forEach(function (key) {
+            if (!release.assets[key] && PATTERNS[key].test(asset.name) && asset.browser_download_url) {
+              release.assets[key] = { url: asset.browser_download_url, size: asset.size || 0, name: asset.name };
+            }
+          });
+        });
+        release.state = "ok";
+        renderDownloads();
+      })
+      .catch(function () {
+        release.state = "failed";
+        renderDownloads();
+      });
+  } else {
+    release.state = "failed";
   }
 
   function saved() {
@@ -213,7 +342,7 @@
     var nav = (navigator.languages && navigator.languages[0]) || navigator.language || "";
     initial = /^az\b/i.test(nav) ? "az" : "en";
   }
-  if (initial !== "en") apply(initial);
+  apply(initial);
 
   document.querySelectorAll(".lang-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {

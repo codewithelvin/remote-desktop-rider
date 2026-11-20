@@ -1,6 +1,6 @@
 //! Low-latency H.264 decoder (Microsoft H.264 decoder MFT) producing NV12.
 
-use crate::*;
+use crate::mf::*;
 use anyhow::{Context, Result};
 use rider_core::pixels::Nv12Frame;
 use windows::Win32::Media::MediaFoundation::*;

@@ -14,6 +14,7 @@
 //!   Drag and drop a file onto the window to send it to the host.
 
 use crate::diag::{self, Diag};
+#[cfg(windows)]
 use crate::keyhook::KeyHook;
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
 use crate::toolbar::{Action, Extras, Toolbar};
@@ -32,7 +33,9 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+#[cfg(windows)]
 use winit::platform::scancode::PhysicalKeyExtScancode;
+#[cfg(windows)]
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Fullscreen, Icon, Window, WindowId};
 
@@ -72,6 +75,7 @@ pub fn run(
         last_frames: 0,
         toolbar: Toolbar::new(),
         toolbar_shown: true,
+        #[cfg(windows)]
         keyhook: None,
         diag,
         started: Instant::now(),
@@ -93,6 +97,7 @@ pub fn run(
 
 type Surface = softbuffer::Surface<Rc<Window>, Rc<Window>>;
 
+#[cfg(windows)]
 fn hwnd(window: &Window) -> Option<windows::Win32::Foundation::HWND> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match window.window_handle().ok()?.as_raw() {
@@ -126,6 +131,7 @@ struct App {
     /// Whether the last drawn frame showed the full toolbar.
     toolbar_shown: bool,
     /// Win key, Alt+Tab... to the host while this window is in front.
+    #[cfg(windows)]
     keyhook: Option<KeyHook>,
     diag: Option<Diag>,
     started: Instant,
@@ -273,6 +279,7 @@ impl App {
     }
 
     /// The quality dropdown, under its toolbar button.
+    #[cfg(windows)]
     fn quality_menu(&mut self) {
         use windows::Win32::Foundation::POINT;
         use windows::Win32::Graphics::Gdi::ClientToScreen;
@@ -307,6 +314,17 @@ impl App {
             cmd.0 as usize
         };
         let Some(&(lines, _)) = cmd.checked_sub(1).and_then(|i| QUALITIES.get(i)) else { return };
+        self.set_quality(lines);
+    }
+
+    /// Without a native popup menu: each click picks the next quality.
+    #[cfg(not(windows))]
+    fn quality_menu(&mut self) {
+        let i = QUALITIES.iter().position(|q| q.0 == self.quality).map_or(0, |i| (i + 1) % QUALITIES.len());
+        self.set_quality(QUALITIES[i].0);
+    }
+
+    fn set_quality(&mut self, lines: u32) {
         if lines != self.quality {
             self.quality = lines;
             self.net.send(ClientMsg::SetQuality { max_height: lines });
@@ -349,8 +367,9 @@ impl ApplicationHandler<UiEvent> for App {
         let attrs = Window::default_attributes()
             .with_title(format!("{} — {}", self.host_name, tr("connecting…", "qoşulur…")))
             .with_inner_size(LogicalSize::new(1280.0, 760.0))
-            .with_window_icon(app_icon(32))
-            .with_taskbar_icon(app_icon(64));
+            .with_window_icon(app_icon(32));
+        #[cfg(windows)]
+        let attrs = attrs.with_taskbar_icon(app_icon(64));
         let window = match el.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => {
@@ -371,12 +390,15 @@ impl ApplicationHandler<UiEvent> for App {
         }
         // Unused, and raw keyboard input would stop the keyboard hook (keyhook.rs).
         el.listen_device_events(winit::event_loop::DeviceEvents::Never);
-        if let Some(h) = hwnd(&window) {
-            rider_core::dpi::follow_windows(h); // no shaking when dragged across monitors
-        }
-        self.keyhook = hwnd(&window).and_then(|h| KeyHook::install(h, self.net.ctrl.clone()));
-        if self.keyhook.is_none() {
-            tracing::warn!("Win key and Alt+Tab will act on this computer (keyboard hook unavailable)");
+        #[cfg(windows)]
+        {
+            if let Some(h) = hwnd(&window) {
+                rider_core::dpi::follow_windows(h); // no shaking when dragged across monitors
+            }
+            self.keyhook = hwnd(&window).and_then(|h| KeyHook::install(h, self.net.ctrl.clone()));
+            if self.keyhook.is_none() {
+                tracing::warn!("Win key and Alt+Tab will act on this computer (keyboard hook unavailable)");
+            }
         }
         self.window = Some(window);
     }
@@ -425,6 +447,7 @@ impl ApplicationHandler<UiEvent> for App {
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::Focused(false) => {
                 self.release_keys();
+                #[cfg(windows)]
                 if let Some(h) = &self.keyhook {
                     h.release();
                 }
@@ -481,9 +504,7 @@ impl ApplicationHandler<UiEvent> for App {
                 if down && self.shortcut(el, &event) {
                     return;
                 }
-                let Some(sc) = event.physical_key.to_scancode() else { return };
-                let scancode = (sc & 0xFF) as u16;
-                let extended = (sc & 0xFF00) == 0xE000;
+                let Some((scancode, extended)) = host_scancode(event.physical_key) else { return };
                 if down {
                     self.held_keys.insert((scancode, extended));
                 } else {
@@ -518,6 +539,21 @@ impl ApplicationHandler<UiEvent> for App {
         }
         let wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
         el.set_control_flow(ControlFlow::WaitUntil(wake));
+    }
+}
+
+/// The Windows scancode (and extended flag) the host expects for a key.
+#[cfg(windows)]
+fn host_scancode(key: PhysicalKey) -> Option<(u16, bool)> {
+    let sc = key.to_scancode()?;
+    Some(((sc & 0xFF) as u16, (sc & 0xFF00) == 0xE000))
+}
+
+#[cfg(not(windows))]
+fn host_scancode(key: PhysicalKey) -> Option<(u16, bool)> {
+    match key {
+        PhysicalKey::Code(code) => crate::keymap::scancode(code),
+        PhysicalKey::Unidentified(_) => None,
     }
 }
 

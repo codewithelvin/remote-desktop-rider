@@ -17,7 +17,8 @@ with Windows peers from day one.
 | LAN candidates for hole punching | `getifaddrs` on macOS and Linux |
 | Clipboard | `arboard` (already cross-platform) |
 | Interface language (EN/AZ) | `rider_core::i18n`, system language from `LANG`/`LC_ALL` |
-| Not yet portable | HTTPS tunnel (WinHTTP + system proxy) and update download (WinHTTP); see below |
+| **Viewer and app (step 1, done)** | `rider-app` + `rider-client` build for macOS (universal, Metal) and Linux (`.deb`, OpenGL): OpenH264 software decoder (`rider-media/soft.rs`), toolbar labels with ab_glyph and egui's font, keys mapped to Windows scancodes (`rider-client/keymap.rs`), PINs in the Keychain (Linux: 0600 files), server set in Settings. Packaged by `packaging/macos/build.sh` (ad-hoc signed `.dmg`) and `packaging/linux/build-deb.sh` |
+| Not yet portable | HTTPS tunnel (WinHTTP + system proxy), self-update (WinHTTP), tray / menu-bar icon, quality popup menu (cycles on click instead); see below |
 
 ## What needs a macOS implementation
 
@@ -71,9 +72,10 @@ needs the same permissions; without them it must say so before showing a code.
 
 ## Order of work
 
-1. **Viewer on macOS** (control Windows PCs from a Mac): VideoToolbox decoder,
-   portable toolbar, Keychain PINs, Metal app window, `.dmg`. Smallest step
-   that users notice.
+1. **Viewer on macOS** (control Windows PCs from a Mac): portable toolbar,
+   Keychain PINs, Metal app window, `.dmg`. **Done**, with the OpenH264
+   software decoder; a VideoToolbox (hardware) decoder is a later speed-up.
+   The same code ships for Debian/Ubuntu.
 2. **Quick-connect host on macOS** (get help on a Mac): ScreenCaptureKit,
    VideoToolbox encoder, CGEvent input, banner, permission onboarding. No
    service needed: like on Windows it runs as the signed-in user.

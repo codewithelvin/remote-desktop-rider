@@ -19,7 +19,14 @@ tracing-subscriber.workspace = true
 bytes.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 windows.workspace = true
+
+# Toolbar labels without GDI: the app's font, rasterized in Rust.
+[target.'cfg(not(windows))'.dependencies]
+ab_glyph = "0.2"
+epaint_default_fonts = "0.37"
 
 [lints]
 workspace = true
