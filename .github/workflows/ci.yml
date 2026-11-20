@@ -77,7 +77,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set version
         if: env.RELEASE == 'true'
-        run: sed -i '' "1,/^version = \"[^\"]*\"/s//version = \"$VERSION\"/" Cargo.toml
+        # The first `version = ` line (BSD sed has no GNU `0,/re/` ranges).
+        run: perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{VERSION}"/m' Cargo.toml
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
