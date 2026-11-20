@@ -218,4 +218,8 @@ jobs:
             "**Debian 12+ / Ubuntu 22.04+ (x86_64):** **remote-desktop-rider_$($env:VERSION)_amd64.deb**: ``sudo apt install ./remote-desktop-rider_$($env:VERSION)_amd64.deb```n`n" +
             "macOS and Linux control other computers; being controlled is Windows-only for now. The macOS and Linux files are added a few minutes after this release appears.`n`n" +
             "**Server (Linux x86_64):** **rider-server-$env:VERSION-linux-x86_64**, SHA-256: ``$shash``. Checksums of every file: **SHA256SUMS**."
-          gh release create "v$env:VERSION" $setup $server dist/SHA256SUMS --target $env:GITHUB_SHA --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest
+          # Tag first: a refused tag push says why (a bare API 403 does not).
+          git tag "v$env:VERSION" $env:GITHUB_SHA
+          git push origin "v$env:VERSION" 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "cannot push tag v$env:VERSION" }
+          gh release create "v$env:VERSION" $setup $server dist/SHA256SUMS --verify-tag --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest
