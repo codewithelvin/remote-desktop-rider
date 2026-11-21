@@ -20,7 +20,8 @@
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#security"><b>Security</b></a> ·
   <a href="#self-hosting-the-server"><b>Self-hosting</b></a> ·
-  <a href="#troubleshooting"><b>Troubleshooting</b></a>
+  <a href="#troubleshooting"><b>Troubleshooting</b></a> ·
+  <a href="#code-signing-policy"><b>Code signing policy</b></a>
 </p>
 
 <p align="center">
@@ -510,6 +511,50 @@ code signing, then performance on poor links (GPU conversion and decoding, FEC,
 intra-refresh) and host→client files, audio and an audit log. Macs and Linux PCs
 can control others today; letting them be controlled is next
 ([docs/MACOS.md](docs/MACOS.md)).
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/),
+certificate by [SignPath Foundation](https://signpath.org/).
+
+> [!NOTE]
+> Signing is being set up: releases up to now are unsigned (Windows shows
+> "Unknown publisher"). Once it is active, the Windows installer and programs
+> are signed, and Windows shows **SignPath Foundation** as the publisher.
+
+- **Committers and reviewers:** [Elvin Huseynov](https://github.com/codewithelvin).
+  Changes from anyone else (pull requests) are reviewed by a committer before
+  they are merged.
+- **Approvers:** [Elvin Huseynov](https://github.com/codewithelvin). Every
+  signing request is approved by hand.
+- **What is signed:** only files built by this repository's GitHub Actions
+  workflow ([`ci.yml`](.github/workflows/ci.yml)) from the source in this
+  repository: the Windows installer `rdr-setup-<version>.exe` and the programs
+  it installs. Every release lists the SHA-256 of each file in `SHA256SUMS`.
+- Team members use multi-factor authentication for GitHub and SignPath.
+
+## Privacy
+
+Remote Desktop Rider has no accounts and collects nothing for its authors.
+It only connects to:
+
+- **The other computer** in a session, end-to-end encrypted.
+- **The rendezvous server you set** (`rider-server`, normally your own), to
+  pair, show which computers are online, relay traffic when no direct path
+  exists, and receive a connection-quality report per session (route, frame
+  rate, latency, bandwidth, version; no screen content, keystrokes or files).
+  Without a server set, it talks to nothing but the other computer.
+- **GitHub** (Windows app), to check for and download updates from this
+  repository's releases. Automatic checks can be turned off in Settings.
+
+The website's download buttons ask GitHub's public API for the latest release
+files; see [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
+
+## License
+
+[MIT](LICENSE). Bundled third-party components keep their own licenses:
+OpenH264 (BSD-2-Clause, macOS and Linux viewer), the Ubuntu, Hack and Noto
+fonts shipped with egui, and the Rust crates listed in `Cargo.lock`.
 
 ## Publisher
 

@@ -8,6 +8,8 @@ members = [
 version = "0.3.0"
 edition = "2024"
 authors = ["Elvin Huseynov"]
+license = "MIT"
+repository = "https://github.com/codewithelvin/remote-desktop-rider"
 
 [workspace.dependencies]
 rider-core = { path = "crates/rider-core" }

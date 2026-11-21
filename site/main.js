@@ -175,6 +175,10 @@
     "final.title": "Başlamağa hazırsınız?",
     "final.p": "Proqramı hər iki kompüterə quraşdırın və bir dəqiqədən az müddətdə cütləşdirin.",
     "ft.releases": "Buraxılışlar",
+    "sign.link": "Kod imzalama siyasəti",
+    "sign.text": "Pulsuz kod imzalama SignPath.io tərəfindən təmin edilir, sertifikat SignPath Foundation tərəfindən verilir.",
+    "ft.privacy": "Məxfilik",
+    "ft.license": "MIT lisenziyası",
     "ft.roadmap": "Yol xəritəsi"
   };
 
