@@ -21,7 +21,7 @@
   <a href="#security"><b>Security</b></a> ·
   <a href="#self-hosting-the-server"><b>Self-hosting</b></a> ·
   <a href="#troubleshooting"><b>Troubleshooting</b></a> ·
-  <a href="#code-signing-policy"><b>Code signing policy</b></a>
+  <a href="#code-signing"><b>Code signing</b></a>
 </p>
 
 <p align="center">
@@ -61,12 +61,14 @@ From the [latest release](https://github.com/codewithelvin/remote-desktop-rider/
 The computer you want to control needs Windows. Every push to `main` is built
 and published automatically; `SHA256SUMS` in each release covers every file.
 
-> [!NOTE]
-> Nothing is code-signed yet (that needs a paid certificate). **Windows:**
-> SmartScreen may warn about an unknown publisher: click **More info → Run
-> anyway**. **macOS:** the first launch is blocked: open **System Settings →
-> Privacy & Security** and click **Open Anyway** (or right-click the app →
-> **Open**).
+> [!WARNING]
+> Nothing is code-signed: the certificates that show a publisher name cost
+> money every year, and this open-source project has no budget for one
+> ([why, and how to check a download](#code-signing)). So for a while the
+> publisher shows as **Unknown** and your system may warn that the app is
+> unsafe to install. **Windows:** click **More info → Run anyway**.
+> **macOS:** open **System Settings → Privacy & Security** and click **Open
+> Anyway** (or right-click the app → **Open**).
 
 ### 2. Pair (once per device)
 
@@ -512,26 +514,29 @@ intra-refresh) and host→client files, audio and an audit log. Macs and Linux P
 can control others today; letting them be controlled is next
 ([docs/MACOS.md](docs/MACOS.md)).
 
-## Code signing policy
+## Code signing
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/),
-certificate by [SignPath Foundation](https://signpath.org/).
+> [!WARNING]
+> **Why your system may warn you.** Showing a verified publisher name needs a
+> code signing certificate, and those cost money every year. Remote Desktop
+> Rider is made by open-source enthusiasts with no budget for one, so for a
+> while Windows will show the publisher as **Unknown**, and Windows or macOS
+> may warn that the app could be unsafe to install.
 
-> [!NOTE]
-> Signing is being set up: releases up to now are unsigned (Windows shows
-> "Unknown publisher"). Once it is active, the Windows installer and programs
-> are signed, and Windows shows **SignPath Foundation** as the publisher.
+What you can rely on instead:
 
-- **Committers and reviewers:** [Elvin Huseynov](https://github.com/codewithelvin).
-  Changes from anyone else (pull requests) are reviewed by a committer before
-  they are merged.
-- **Approvers:** [Elvin Huseynov](https://github.com/codewithelvin). Every
-  signing request is approved by hand.
-- **What is signed:** only files built by this repository's GitHub Actions
-  workflow ([`ci.yml`](.github/workflows/ci.yml)) from the source in this
-  repository: the Windows installer `rdr-setup-<version>.exe` and the programs
-  it installs. Every release lists the SHA-256 of each file in `SHA256SUMS`.
-- Team members use multi-factor authentication for GitHub and SignPath.
+- **Open source:** every line of the app is in this repository.
+- **Built in public:** every release is built from this source by the GitHub
+  Actions workflow ([`ci.yml`](.github/workflows/ci.yml)); nothing is built on
+  a personal computer.
+- **Checksums:** each release lists the SHA-256 of every file in
+  `SHA256SUMS`. Compare it with your download (PowerShell:
+  `Get-FileHash rdr-setup-x.y.z.exe`; macOS/Linux: `shasum -a 256 <file>`).
+- **Updates** downloaded by the app are checked against the same SHA-256
+  before they run.
+
+To get past the warning: on Windows click **More info → Run anyway**; on macOS
+open **System Settings → Privacy & Security** and click **Open Anyway**.
 
 ## Privacy
 

@@ -175,8 +175,9 @@
     "final.title": "Başlamağa hazırsınız?",
     "final.p": "Proqramı hər iki kompüterə quraşdırın və bir dəqiqədən az müddətdə cütləşdirin.",
     "ft.releases": "Buraxılışlar",
-    "sign.link": "Kod imzalama siyasəti",
-    "sign.text": "Pulsuz kod imzalama SignPath.io tərəfindən təmin edilir, sertifikat SignPath Foundation tərəfindən verilir.",
+    "sign.link": "Kod imzalama",
+    "sign.text": "<b>Sisteminiz niyə xəbərdarlıq edə bilər.</b> Təsdiqlənmiş naşir adının göstərilməsi üçün kod imzalama sertifikatı lazımdır və onun haqqı hər il ödənilir. Remote Desktop Rider açıq mənbə həvəskarları tərəfindən hazırlanır və belə sertifikat almaq üçün büdcəmiz yoxdur. Buna görə hələlik Windows naşiri <b>Unknown</b> (naməlum) kimi göstərəcək, Windows və ya macOS isə tətbiqin quraşdırılmasının təhlükəli ola biləcəyi barədə xəbərdarlıq edə bilər. Hər buraxılış açıq mənbə koddan GitHub Actions vasitəsilə hamının gözü qarşısında yığılır; yüklənmiş faylı yoxlamaq üçün onu <code>SHA256SUMS</code> ilə müqayisə edin.",
+    "sign.more": "Ətraflı",
     "ft.privacy": "Məxfilik",
     "ft.license": "MIT lisenziyası",
     "ft.roadmap": "Yol xəritəsi"
