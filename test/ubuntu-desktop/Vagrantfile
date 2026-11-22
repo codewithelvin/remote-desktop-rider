@@ -1,0 +1,58 @@
+# Ubuntu 24.04 desktop for testing the Debian/Ubuntu package (the controlling
+# side): fonts, the session toolbar, and installing through App Center.
+#
+#   cd test/ubuntu-desktop && vagrant up     # Rust, then builds the .deb
+#   vagrant provision --provision-with deb   # rebuild after changing the code
+#
+# The VM shows a GUI; log in as vagrant/vagrant. The package is built in
+# /home/vagrant/src and copied to ~/Desktop for installing by double-click
+# (App Center) or `sudo apt install ./remote-desktop-rider_*.deb`.
+
+Vagrant.configure("2") do |config|
+  # Ubuntu Desktop 24.04 with GNOME, as people install it.
+  config.vm.box = "gusztavvargadr/ubuntu-desktop-2404-lts"
+  config.vm.box_version = "2607.0.0"
+  config.vm.box_architecture = "amd64"
+  config.vm.hostname = "rider-ubuntu"
+  config.vm.boot_timeout = 900
+
+  # The repository, read-only in spirit: the build copies the sources out.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "../..", "/repo"
+
+  # 3D acceleration stays off: with Hyper-V on the host (Docker, WSL) the guest
+  # hangs at boot with it.
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "rider-test-ubuntu"
+    vb.gui = true
+    vb.memory = 8192
+    # No more than the host's physical cores (VirtualBox flags more as invalid, and it is slower).
+    vb.cpus = 4
+    vb.customize ["modifyvm", :id, "--graphicscontroller", "vmsvga", "--vram", "128",
+                  "--accelerate3d", "off", "--clipboard-mode", "bidirectional"]
+  end
+
+  # Build tools and Rust (once); the desktop comes with the box.
+  config.vm.provision "tools", type: "shell", inline: <<~SH
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -q
+    apt-get install -y -q --no-install-recommends build-essential pkg-config nasm libxkbcommon-dev curl
+    sudo -u vagrant sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --component clippy'
+    # Straight to the desktop (the login screen can hang handing over on VirtualBox).
+    printf '[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=vagrant\n' > /etc/gdm3/custom.conf
+  SH
+
+  # Build the package from a copy of the sources (the shared folder is slow).
+  config.vm.provision "deb", type: "shell", privileged: false, inline: <<~SH
+    set -eu
+    . "$HOME/.cargo/env"
+    mkdir -p ~/src ~/Desktop
+    tar -C /repo --exclude=./target --exclude=./.git --exclude='./test/*/.vagrant' -cf - . | tar -C ~/src -xf -
+    cd ~/src
+    version=$(sed -n 's/^version = "\\(.*\\)"/\\1/p' Cargo.toml | head -1)
+    deb=$(packaging/linux/build-deb.sh "$version" | tail -1)
+    cp "$deb" ~/Desktop/
+    echo "built $(basename "$deb")"
+  SH
+end

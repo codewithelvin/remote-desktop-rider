@@ -1,9 +1,9 @@
 //! Capture → NV12 → H.264 pipeline, running on its own OS thread.
 //!
 //! Latency rules:
-//! * Never queue frames. If the network still has `MAX_INFLIGHT` frames
-//!   unacknowledged, skip capturing; the next capture is always the
-//!   *current* screen, not a backlog.
+//! * Never queue frames. If the network still has a round trip's worth of
+//!   frames unacknowledged (see [`inflight_window`]), skip capturing; the
+//!   next capture is always the *current* screen, not a backlog.
 //! * Static screen = no traffic. After motion stops, re-encode the last frame
 //!   a few times so a low-bitrate image sharpens up ("refinement").
 //! * Keyframes only on demand (loss recovery or a monitor switch).
@@ -17,7 +17,9 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const MAX_INFLIGHT: usize = 3;
+/// Fewest and most frames that may wait for the client's acknowledgement.
+const MIN_INFLIGHT: usize = 3;
+const MAX_INFLIGHT: usize = 16;
 const REFINE_FRAMES: u32 = 6;
 const REFINE_INTERVAL: Duration = Duration::from_millis(120);
 const MIN_KEYFRAME_GAP: Duration = Duration::from_millis(250);
@@ -62,8 +64,20 @@ pub struct Pipeline {
     pub cmds: Receiver<VideoCmd>,
     /// Frames handed to the network but not yet acknowledged by the client.
     pub inflight: Arc<AtomicUsize>,
+    /// How many may be (see [`inflight_window`]), kept current by the session.
+    pub window: Arc<AtomicUsize>,
     pub stats: Arc<VideoStats>,
     pub stop: Arc<AtomicBool>,
+}
+
+/// Frames that may be unacknowledged at once: one round trip's worth at the
+/// frame rate, plus room for the client's delayed acknowledgement. A fixed
+/// small number would cap the frame rate on long paths (3 frames over a
+/// 150 ms relay = 7-10 fps) and be mistaken for congestion.
+pub fn inflight_window(rtt: Duration, max_fps: u32) -> usize {
+    let interval = Duration::from_secs(1) / max_fps.max(1);
+    let frames = (rtt + Duration::from_millis(40)).as_nanos().div_ceil(interval.as_nanos().max(1));
+    (frames as usize + 1).clamp(MIN_INFLIGHT, MAX_INFLIGHT)
 }
 
 pub fn spawn(p: Pipeline) -> std::thread::JoinHandle<()> {
@@ -80,7 +94,7 @@ pub fn spawn(p: Pipeline) -> std::thread::JoinHandle<()> {
 }
 
 fn run(p: Pipeline) -> anyhow::Result<()> {
-    let Pipeline { monitors, start_monitor, cfg, tx, cmds, inflight, stats, stop } = p;
+    let Pipeline { monitors, start_monitor, cfg, tx, cmds, inflight, window, stats, stop } = p;
     rider_media::init_thread()?;
     let interval = Duration::from_secs(1) / cfg.max_fps.max(1);
     let epoch = Instant::now();
@@ -134,7 +148,7 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
         }
 
         // Back-pressure: never build a queue.
-        if inflight.load(Ordering::Acquire) >= MAX_INFLIGHT {
+        if inflight.load(Ordering::Acquire) >= window.load(Ordering::Relaxed) {
             if !congested {
                 stats.congestion_skips.fetch_add(1, Ordering::Relaxed);
                 congested = true;
@@ -219,4 +233,20 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_covers_a_round_trip() {
+        let ms = Duration::from_millis;
+        assert_eq!(inflight_window(ms(2), 60), 4, "LAN: delayed ack + 1");
+        assert_eq!(inflight_window(ms(2), 15), MIN_INFLIGHT);
+        // 150 ms relay at 60 fps: (150 + 40) / 16.7 = 12 frames, + 1.
+        assert_eq!(inflight_window(ms(150), 60), 13);
+        assert_eq!(inflight_window(ms(150), 30), 7);
+        assert_eq!(inflight_window(ms(900), 60), MAX_INFLIGHT, "capped");
+    }
 }

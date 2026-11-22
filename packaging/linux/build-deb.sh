@@ -47,6 +47,78 @@ Categories=Network;RemoteAccess;
 StartupWMClass=remote-desktop-rider
 EOF
 
+# Software centres (Ubuntu App Center, GNOME Software, Discover) show the
+# name, summary, description, icon and screenshots from AppStream metadata.
+# The remote icon is for the "install this file" page, before the package's
+# own icons are on disk.
+mkdir -p "$DIR/usr/share/metainfo"
+RAW="https://raw.githubusercontent.com/codewithelvin/remote-desktop-rider/main"
+cat > "$DIR/usr/share/metainfo/$PKG.metainfo.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.codewithelvin.RemoteDesktopRider</id>
+  <name>Remote Desktop Rider</name>
+  <summary>Control your own computers remotely, end-to-end encrypted</summary>
+  <summary xml:lang="az">Kompüterlərinizi uzaqdan idarə edin, uçdan-uca şifrələnmiş</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.codewithelvin">
+    <name>Elvin Huseynov</name>
+  </developer>
+  <description>
+    <p>
+      Remote Desktop Rider connects this computer to your Windows computers, at
+      home or in the office, and shows their screen here with keyboard, mouse,
+      clipboard and file transfer.
+    </p>
+    <ul>
+      <li>Paired devices only: a PIN or a one-time code, checked on both sides</li>
+      <li>End-to-end encrypted; your own rendezvous server, nothing in between can read it</li>
+      <li>Works behind strict firewalls, falling back to HTTPS (port 443)</li>
+      <li>Adapts quality to the connection, or choose 1080p, 720p or 480p</li>
+      <li>English and Azerbaijani</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">$PKG.desktop</launchable>
+  <pkgname>$PKG</pkgname>
+  <icon type="stock">$PKG</icon>
+  <icon type="remote" width="256" height="256">$RAW/site/icon-256.png</icon>
+  <categories>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+  </categories>
+  <keywords>
+    <keyword>remote</keyword>
+    <keyword>desktop</keyword>
+    <keyword>RDP</keyword>
+    <keyword>support</keyword>
+  </keywords>
+  <url type="homepage">https://codewithelvin.github.io/remote-desktop-rider/</url>
+  <url type="bugtracker">https://github.com/codewithelvin/remote-desktop-rider/issues</url>
+  <url type="vcs-browser">https://github.com/codewithelvin/remote-desktop-rider</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A remote session</caption>
+      <image>$RAW/docs/screenshots/session.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>The computers this device controls</caption>
+      <image>$RAW/docs/screenshots/computers.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="$VERSION" date="$(date -u +%Y-%m-%d)">
+      <url>https://github.com/codewithelvin/remote-desktop-rider/releases/tag/v$VERSION</url>
+    </release>
+  </releases>
+</component>
+EOF
+
 # The window system, OpenGL and the keyboard are loaded at run time.
 cat > "$DIR/DEBIAN/control" <<EOF
 Package: $PKG
@@ -56,6 +128,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Elvin Huseynov <codewithelvin@users.noreply.github.com>
 Depends: libc6 (>= 2.35), libgcc-s1, libstdc++6, libgl1, libegl1, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libxcursor1, libxi6, libxrandr2, libwayland-client0, libwayland-egl1
+Recommends: fonts-ubuntu | fonts-noto-core | fonts-dejavu-core
 Homepage: https://codewithelvin.github.io/remote-desktop-rider/
 Description: Remote desktop for your own computers
  Control Windows computers from this one: paired devices with a PIN or a

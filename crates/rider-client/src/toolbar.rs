@@ -496,58 +496,98 @@ mod text {
 
 #[cfg(not(windows))]
 mod text {
-    //! The app's own font (Ubuntu Light, bundled with egui), rasterized with
-    //! ab_glyph: the same everywhere, and it has every Azerbaijani letter.
+    //! Labels rasterized with ab_glyph: a full system font first (egui's
+    //! bundled Ubuntu Light lacks letters such as "ə"), then the bundled
+    //! fonts, then symbol fonts for "▾". Each character comes from the first
+    //! font that has it.
     use super::Label;
-    use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
+    use ab_glyph::{Font, FontArc, FontVec, GlyphId, PxScale, ScaleFont, point};
+
+    /// The first of these that exists is used.
+    #[cfg(target_os = "macos")]
+    const SYSTEM: &[&str] = &["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"];
+    #[cfg(not(target_os = "macos"))]
+    /// Not the Ubuntu font: its "ə" is a capital-height IPA schwa.
+    const SYSTEM: &[&str] = &[
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ];
 
     pub struct Fonts {
-        font: FontRef<'static>,
+        /// In order of preference; never empty.
+        fonts: Vec<FontArc>,
         px: PxScale,
     }
 
     impl Fonts {
         pub fn new(scale: f64) -> Option<Self> {
-            let font = FontRef::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT).ok()?;
-            Some(Self { font, px: PxScale::from((16.0 * scale) as f32) })
+            let system = SYSTEM
+                .iter()
+                .find_map(|p| std::fs::read(p).ok())
+                .and_then(|b| FontVec::try_from_vec(b).ok())
+                .map(FontArc::new);
+            let bundled = [
+                epaint_default_fonts::UBUNTU_LIGHT,
+                epaint_default_fonts::HACK_REGULAR,
+                epaint_default_fonts::NOTO_EMOJI_REGULAR,
+                epaint_default_fonts::EMOJI_ICON,
+            ]
+            .into_iter()
+            .filter_map(|b| FontArc::try_from_slice(b).ok());
+            let fonts: Vec<FontArc> = system.into_iter().chain(bundled).collect();
+            (!fonts.is_empty()).then(|| Self { fonts, px: PxScale::from((16.0 * scale) as f32) })
         }
 
         pub fn icon_width(&self, _c: char) -> i32 {
             0
         }
 
-        pub fn text_width(&self, s: &str) -> i32 {
-            let f = self.font.as_scaled(self.px);
-            let mut w = 0.0;
-            let mut prev = None;
+        /// The font that has `c` (the first one if none does) and its glyph.
+        fn glyph(&self, c: char) -> (usize, GlyphId) {
+            self.fonts
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (i, f.glyph_id(c)))
+                .find(|(_, id)| id.0 != 0)
+                .unwrap_or((0, self.fonts[0].glyph_id(c)))
+        }
+
+        /// Pen positions: (font, glyph, x) per character, and the end x.
+        fn layout(&self, s: &str, x0: f32) -> (Vec<(usize, GlyphId, f32)>, f32) {
+            let mut x = x0;
+            let mut prev: Option<(usize, GlyphId)> = None;
+            let mut out = Vec::with_capacity(s.len());
             for c in s.chars() {
-                let id = f.glyph_id(c);
-                if let Some(p) = prev {
-                    w += f.kern(p, id);
+                let (i, id) = self.glyph(c);
+                let f = self.fonts[i].as_scaled(self.px);
+                if let Some((pi, p)) = prev
+                    && pi == i
+                {
+                    x += f.kern(p, id);
                 }
-                w += f.h_advance(id);
-                prev = Some(id);
+                out.push((i, id, x));
+                x += f.h_advance(id);
+                prev = Some((i, id));
             }
-            w.ceil() as i32
+            (out, x)
+        }
+
+        pub fn text_width(&self, s: &str) -> i32 {
+            self.layout(s, 0.0).1.ceil() as i32
         }
 
         /// White-on-black coverage (0-255) of all labels, `w` x `h`.
         pub fn paint(&self, w: usize, h: usize, labels: &[Label], _gap: i32) -> Option<Vec<u8>> {
-            let f = self.font.as_scaled(self.px);
+            let main = self.fonts[0].as_scaled(self.px);
             let mut coverage = vec![0u8; w * h];
-            let baseline = ((h as f32 - (f.ascent() - f.descent())) / 2.0 + f.ascent()).round();
+            let baseline = ((h as f32 - (main.ascent() - main.descent())) / 2.0 + main.ascent()).round();
             for l in labels {
-                let mut x = l.x as f32;
-                let mut prev = None;
-                for c in l.text.chars() {
-                    let id = f.glyph_id(c);
-                    if let Some(p) = prev {
-                        x += f.kern(p, id);
-                    }
+                for (i, id, x) in self.layout(l.text, l.x as f32).0 {
                     let glyph = id.with_scale_and_position(self.px, point(x, baseline));
-                    x += f.h_advance(id);
-                    prev = Some(id);
-                    let Some(outline) = self.font.outline_glyph(glyph) else { continue };
+                    let Some(outline) = self.fonts[i].outline_glyph(glyph) else { continue };
                     let b = outline.px_bounds();
                     outline.draw(|gx, gy, v| {
                         let (px, py) = (b.min.x as i64 + gx as i64, b.min.y as i64 + gy as i64);
@@ -559,6 +599,20 @@ mod text {
                 }
             }
             Some(coverage)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_label_character_has_a_glyph() {
+            let f = Fonts::new(1.0).unwrap();
+            for c in "Kompüterlər Sürətli ə Ə ğ ş ç ö ı İ 1080p \u{25BE}".chars().filter(|c| !c.is_whitespace())
+            {
+                assert_ne!(f.glyph(c).1.0, 0, "{c:?}");
+            }
         }
     }
 }

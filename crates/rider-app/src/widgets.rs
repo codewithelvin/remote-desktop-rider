@@ -103,19 +103,85 @@ fn semibold() -> FontFamily {
 
 // --------------------------------------------------------------------- theme
 
-/// Windows fonts (Segoe UI, Semibold, Fluent icons) and the app's colours for
-/// both light and dark mode (egui follows the Windows setting).
+/// System fonts: (regular, semibold, icons), first file found of each.
+/// egui's bundled font lacks letters such as Azerbaijani "ə", so a full
+/// system font goes first everywhere.
+#[cfg(windows)]
+fn font_files() -> [Vec<std::path::PathBuf>; 3] {
+    let dir = std::env::var_os("WINDIR").map_or_else(|| r"C:\Windows".into(), std::path::PathBuf::from).join("Fonts");
+    let f = |names: &[&str]| names.iter().map(|n| dir.join(n)).collect();
+    [f(&["segoeui.ttf"]), f(&["seguisb.ttf"]), f(&["SegoeIcons.ttf", "segmdl2.ttf"])]
+}
+
+#[cfg(target_os = "macos")]
+fn font_files() -> [Vec<std::path::PathBuf>; 3] {
+    let f = |names: &[&str]| names.iter().map(Into::into).collect();
+    [
+        f(&["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"]),
+        f(&["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"]),
+        Vec::new(),
+    ]
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn font_files() -> [Vec<std::path::PathBuf>; 3] {
+    // Noto Sans (Ubuntu, Debian, Fedora), then DejaVu (nearly everywhere). Not
+    // the Ubuntu font: its "ə" is a capital-height IPA schwa.
+    let f = |names: &[&str]| names.iter().map(|n| std::path::Path::new("/usr/share/fonts").join(n)).collect();
+    [
+        f(&[
+            "truetype/noto/NotoSans-Regular.ttf",
+            "noto/NotoSans-Regular.ttf",
+            "truetype/dejavu/DejaVuSans.ttf",
+            "dejavu-sans-fonts/DejaVuSans.ttf",
+            "TTF/DejaVuSans.ttf",
+        ]),
+        f(&[
+            "truetype/noto/NotoSans-SemiBold.ttf",
+            "noto/NotoSans-SemiBold.ttf",
+            "truetype/noto/NotoSans-Medium.ttf",
+            "truetype/noto/NotoSans-Bold.ttf",
+            "noto/NotoSans-Bold.ttf",
+            "truetype/dejavu/DejaVuSans-Bold.ttf",
+            "dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+            "TTF/DejaVuSans-Bold.ttf",
+        ]),
+        Vec::new(),
+    ]
+}
+
+/// A font with arrows, box drawing and triangles, if the system has one.
+fn symbol_files() -> Vec<std::path::PathBuf> {
+    if cfg!(windows) {
+        return Vec::new(); // Segoe UI has them.
+    }
+    [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ]
+    .iter()
+    .map(Into::into)
+    .collect()
+}
+
+/// System fonts (Segoe UI on Windows) and the app's colours for both light
+/// and dark mode (egui follows the system setting).
 pub fn setup(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    let dir = std::env::var_os("WINDIR").map_or_else(|| r"C:\Windows".into(), std::path::PathBuf::from).join("Fonts");
-    let mut load = |key: &str, files: &[&str]| -> bool {
-        let Some(bytes) = files.iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return false };
+    let [regular, semibold_files, icon_files] = font_files();
+    let mut load = |key: &str, files: &[std::path::PathBuf]| -> bool {
+        let Some(bytes) = files.iter().find_map(|f| std::fs::read(f).ok()) else { return false };
         fonts.font_data.insert(key.into(), Arc::new(FontData::from_owned(bytes)));
         true
     };
-    let text = load("segoe", &["segoeui.ttf"]);
-    let bold = load("segoe-semibold", &["seguisb.ttf"]);
-    let icons = load("icons", &["SegoeIcons.ttf", "segmdl2.ttf"]);
+    let text = load("segoe", &regular);
+    let bold = load("segoe-semibold", &semibold_files);
+    let icons = load("icons", &icon_files);
+    // Last resort for symbols the text fonts lack (Noto Sans has no "→", "─"
+    // or "▾"): DejaVu Sans where installed, else the bundled Hack.
+    let symbols = load("symbols", &symbol_files());
 
     let mut proportional = fonts.families[&FontFamily::Proportional].clone();
     if text {
@@ -124,6 +190,10 @@ pub fn setup(ctx: &egui::Context) {
     if icons {
         proportional.push("icons".into());
     }
+    if symbols {
+        proportional.push("symbols".into());
+    }
+    proportional.push("Hack".into());
     let mut strong = proportional.clone();
     if bold {
         strong.insert(0, "segoe-semibold".into());

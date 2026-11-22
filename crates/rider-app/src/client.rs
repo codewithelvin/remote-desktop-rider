@@ -795,7 +795,8 @@ impl ClientApp {
                     (Some(_), None) => (Some(GREEN), tr("Server connected", "Serverə qoşulub")),
                 };
                 widgets::dot(ui, color);
-                widgets::hint(ui, text);
+                // Wraps: the Azerbaijani texts are longer than the sidebar.
+                ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
             });
             ui.horizontal(|ui| {
                 ui.add_space(4.0);

@@ -428,6 +428,7 @@ async fn stream(
     // Video pipeline.
     let stop = Arc::new(AtomicBool::new(false));
     let inflight = Arc::new(AtomicUsize::new(0));
+    let window = Arc::new(AtomicUsize::new(video::inflight_window(conn.rtt(), cfg.max_fps)));
     let stats = Arc::new(VideoStats::default());
     let expired = Arc::new(AtomicU32::new(0));
     let (vtx, mut vrx) = mpsc::channel::<VideoPacket>(4);
@@ -446,6 +447,7 @@ async fn stream(
         tx: vtx,
         cmds: cmd_rx,
         inflight: inflight.clone(),
+        window: window.clone(),
         stats: stats.clone(),
         stop: stop.clone(),
     });
@@ -519,6 +521,7 @@ async fn stream(
         let out_tx = out_tx.clone();
         let expired = expired.clone();
         let (state, recorder, quality) = (state.clone(), recorder.clone(), quality.clone());
+        let max_fps = cfg.max_fps;
         tokio::spawn(async move {
             let mut bitrate = START_BITRATE.min(max_bitrate);
             // Diagnostics totals over one sample interval.
@@ -550,6 +553,8 @@ async fn stream(
                 d_lost += lost;
                 d.dropped = d.dropped.saturating_add(u16_of(skips + exp));
                 let queueing = path.rtt > path.min_rtt + (path.min_rtt / 2).max(Duration::from_millis(25));
+                // Sized from the path's base delay, so queueing does not widen it.
+                window.store(video::inflight_window(path.min_rtt, max_fps), Ordering::Relaxed);
 
                 let new = if exp > 0 || skips > 2 || queueing || loss > 0.08 {
                     (bitrate as f64 * 0.75) as u32
