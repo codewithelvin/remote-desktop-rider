@@ -54,7 +54,7 @@ pub fn get(host: &str, path: &str, max: usize) -> Result<Vec<u8>> {
     );
     tls.write_all(request.as_bytes())?;
     let mut reply = Vec::new();
-    match tls.by_ref().take((max + 16 * 1024) as u64).read_to_end(&mut reply) {
+    match Read::take(&mut tls, (max + 16 * 1024) as u64).read_to_end(&mut reply) {
         Ok(_) => {}
         // Servers often close without TLS close_notify after the body.
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !reply.is_empty() => {}
