@@ -181,8 +181,8 @@ struct App {
     rt: tokio::runtime::Handle,
     proxy: EventLoopProxy<UiEvent>,
     reconnect: Option<Arc<Reconnect>>,
-    /// Since when new connections are being tried.
-    reconnecting: Option<Instant>,
+    /// Why the last connection was lost, while new ones are being tried.
+    reconnecting: Option<String>,
     overlay: Overlay,
 }
 
@@ -416,7 +416,7 @@ impl App {
     fn start_reconnect(&mut self, reason: String) -> bool {
         let Some(reconnect) = self.reconnect.clone() else { return false };
         tracing::info!("{reason}; reconnecting");
-        self.reconnecting = Some(Instant::now());
+        self.reconnecting = Some(reason.clone());
         self.held_keys.clear();
         let proxy = self.proxy.clone();
         self.rt.spawn(async move {
@@ -447,8 +447,9 @@ impl App {
 
     /// A new session after a lost one: same window, same settings.
     fn resume(&mut self, session: Session) {
+        let lost = self.reconnecting.take().unwrap_or_default();
         if let Some(d) = &mut self.diag {
-            d.restart(&session.conn, session.relayed, "connection lost; reconnected");
+            d.restart(&session.conn, session.relayed, &format!("{lost}; reconnected"));
         }
         self.v2 = rider_core::tls::speaks_v2(&session.conn);
         self.v3 = rider_core::tls::speaks_v3(&session.conn);
