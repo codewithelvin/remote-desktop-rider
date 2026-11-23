@@ -769,7 +769,8 @@ impl ClientApp {
             if let Some(logo) = &self.logo {
                 ui.add(egui::Image::new((logo.id(), vec2(28.0, 28.0))));
             }
-            ui.label(widgets::title("Remote Desktop Rider", 15.0));
+            let room = ui.available_width() - 2.0;
+            ui.label(widgets::title_fit(ui, "Remote Desktop Rider", 15.0, room));
         });
         ui.add_space(18.0);
         for (tab, ic, text) in [
@@ -791,15 +792,15 @@ impl ClientApp {
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 let (color, text) = match (&self.cfg.server, &self.server_error) {
-                    (None, _) => (None, tr("No server: this network only", "Server yoxdur: yalnız bu şəbəkə")),
-                    (Some(_), Some(_)) => (Some(AMBER), tr("Server unreachable", "Server əlçatan deyil")),
+                    (None, _) => (None, tr("Local network only", "Yalnız yerli şəbəkə")),
+                    (Some(_), Some(_)) => (Some(AMBER), tr("Server offline", "Server əlçatmazdır")),
                     (Some(_), None) if self.polled.is_none() && !self.cfg.hosts.is_empty() => {
                         (Some(GREY), tr("Server…", "Server…"))
                     }
-                    (Some(_), None) => (Some(GREEN), tr("Server connected", "Serverə qoşulub")),
+                    (Some(_), None) => (Some(GREEN), tr("Server online", "Server aktivdir")),
                 };
                 widgets::dot(ui, color);
-                // Wraps: the Azerbaijani texts are longer than the sidebar.
+                // Wraps if a wide font still makes it too long.
                 ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
             });
             ui.horizontal(|ui| {

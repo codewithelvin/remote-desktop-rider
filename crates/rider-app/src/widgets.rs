@@ -335,6 +335,15 @@ pub fn title(text: impl Into<String>, size: f32) -> RichText {
     RichText::new(text).family(semibold()).size(size).strong()
 }
 
+/// A title at `size`, or smaller if it would be wider than `width` (wide
+/// fonts such as DejaVu on Linux), but never below 80 %.
+pub fn title_fit(ui: &Ui, text: &str, size: f32, width: f32) -> RichText {
+    let font = FontId::new(size, semibold());
+    let w = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x);
+    let size = if w > width { (size * width / w).max(size * 0.8).floor() } else { size };
+    title(text, size)
+}
+
 /// The main action of a view: accent-filled.
 pub fn primary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
     ui.add_enabled(enabled, Button::new(RichText::new(text).family(semibold()).color(Color32::WHITE)).fill(ACCENT))

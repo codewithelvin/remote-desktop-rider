@@ -1,0 +1,36 @@
+# Lubuntu 24.04 (Ubuntu with the light LXQt desktop) for Linux tests of the
+# app and the .deb: same packages as Ubuntu at a fraction of the weight.
+# Only GNOME-specific things (App Center listing, Wayland) need ../ubuntu-desktop.
+#
+#   cd test/lubuntu && vagrant up      # first time: installs the desktop (~10 min)
+#   Install a release inside:  sudo apt-get install ./remote-desktop-rider_<v>_amd64.deb
+#
+# One CPU on purpose: on this PC (VirtualBox on Hyper-V) Linux guests with
+# more than one CPU freeze at "Loading essential drivers" during boot.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.hostname = "rider-lubuntu"
+  config.vm.boot_timeout = 900
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "rider-test-lubuntu"
+    vb.gui = true
+    vb.memory = 3072
+    vb.cpus = 1
+    vb.customize ["modifyvm", :id, "--graphicscontroller", "vmsvga", "--vram", "64"]
+    vb.customize ["modifyvm", :id, "--clipboard-mode", "bidirectional"]
+  end
+
+  config.vm.provision "desktop", type: "shell", inline: <<~'SH'
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -q
+    apt-get install -y -q --no-install-recommends lubuntu-desktop sddm xorg curl
+    # Sign in straight away (test VM: user vagrant, password vagrant).
+    mkdir -p /etc/sddm.conf.d
+    printf '[Autologin]\nUser=vagrant\nSession=lxqt\n' > /etc/sddm.conf.d/autologin.conf
+    systemctl set-default graphical.target
+  SH
+end
