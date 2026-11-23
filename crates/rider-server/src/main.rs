@@ -16,7 +16,7 @@ use members::Members;
 use relay::RelayPool;
 use rider_core::identity::{Fingerprint, Identity, fp_hex, fp_short};
 use rider_core::proto::{read_msg, write_msg};
-use rider_core::rendezvous::{CODE_ALPHABET, PeerMsg, Relay, ServerInfo, ServerMsg, Target, VERSION};
+use rider_core::rendezvous::{CODE_ALPHABET, PeerMsg, Relay, ServerInfo, ServerMsg, Target, VERSION, refusal};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -237,7 +237,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             check_version(version, &mut send).await?;
             hosts.truncate(256);
             let reply = if server.rate_limited(conn.remote_address()) {
-                ServerMsg::Error { message: "too many requests; try again in a minute".into() }
+                ServerMsg::Error { message: refusal::BUSY.into() }
             } else {
                 ServerMsg::Online { online: server.online(&fp, &hosts) }
             };
@@ -258,7 +258,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
         Some(PeerMsg::Join { version, code }) => {
             check_version(version, &mut send).await?;
             let reply = if server.rate_limited(conn.remote_address()) {
-                ServerMsg::Error { message: "too many requests; try again in a minute".into() }
+                ServerMsg::Error { message: refusal::BUSY.into() }
             } else {
                 match server.members.join(fp, &code) {
                     Ok(()) => {
@@ -278,7 +278,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             let reply = if !server.members.contains(&fp) {
                 ServerMsg::Error { message: "only member computers can invite others".into() }
             } else if server.rate_limited(conn.remote_address()) {
-                ServerMsg::Error { message: "too many requests; try again in a minute".into() }
+                ServerMsg::Error { message: refusal::BUSY.into() }
             } else {
                 match server.members.create_invite() {
                     Ok(code) => {
@@ -479,9 +479,9 @@ async fn connect(
 ) -> ServerMsg {
     // One generic answer for "offline", "unknown" and "not allowed", so the
     // server does not reveal which hosts exist to devices that are not paired.
-    let refuse = || ServerMsg::Error { message: "host is offline or this device is not allowed to reach it".into() };
+    let refuse = || ServerMsg::Error { message: refusal::UNREACHABLE.into() };
     if server.rate_limited(conn.remote_address()) {
-        return ServerMsg::Error { message: "too many requests; try again in a minute".into() };
+        return ServerMsg::Error { message: refusal::BUSY.into() };
     }
     let host_fp = match target {
         Target::Host(fp) => fp,
@@ -489,6 +489,10 @@ async fn connect(
             let Some(code) = rider_core::rendezvous::normalize_code(&code) else { return refuse() };
             match server.codes.lock().unwrap().get(&code) {
                 Some((fp, issued)) if issued.elapsed() < CODE_LIFETIME => *fp,
+                // The two kinds of code look alike: say which one this is.
+                _ if server.members.is_invite(&code) => {
+                    return ServerMsg::Error { message: refusal::INVITE_NOT_PAIRING.into() };
+                }
                 _ => return refuse(),
             }
         }

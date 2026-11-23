@@ -48,6 +48,8 @@ struct Device {
 enum Msg {
     Loaded(Result<(Info, Vec<Device>), String>),
     Done(Result<String, String>),
+    /// An invite code from the server and its lifetime in minutes.
+    Invite(Result<(String, u32), String>),
     Pair(PairEvent),
 }
 
@@ -98,9 +100,16 @@ pub struct HostApp {
     server_addr: String,
     server_fp: String,
     server_invite: String,
+    /// The invite code last asked for, and when it expires.
+    invite_code: Option<(String, std::time::Instant)>,
+    /// Scroll a newly shown invite code into view (it is low on the page).
+    invite_scroll: bool,
     pairing: Option<Pairing>,
     revoke: Option<String>,
 }
+
+/// How long the sample invite code of `RIDER_PREVIEW=invite` lasts.
+const INVITE_PREVIEW: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl HostApp {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -116,6 +125,8 @@ impl HostApp {
             server_addr: String::new(),
             server_fp: String::new(),
             server_invite: String::new(),
+            invite_code: None,
+            invite_scroll: false,
             pairing: None,
             revoke: None,
         };
@@ -150,6 +161,10 @@ impl HostApp {
         self.server_addr = "rider.example.com".into();
         self.server_fp = fp.into();
         self.pin_open = std::env::var("RIDER_PREVIEW").as_deref() == Ok("pin");
+        if std::env::var("RIDER_PREVIEW").as_deref() == Ok("invite") {
+            self.invite_code = Some(("K7P-2QX".into(), std::time::Instant::now() + INVITE_PREVIEW));
+            self.invite_scroll = true;
+        }
     }
 
     fn load(&self) {
@@ -278,6 +293,18 @@ impl HostApp {
                     self.result = Some(r);
                     self.busy = Some(tr("Loading…", "Yüklənir…"));
                     self.load();
+                }
+                Msg::Invite(r) => {
+                    self.busy = None;
+                    match r {
+                        Ok((code, minutes)) => {
+                            let until =
+                                std::time::Instant::now() + std::time::Duration::from_secs(u64::from(minutes) * 60);
+                            self.invite_code = Some((code, until));
+                            self.invite_scroll = true;
+                        }
+                        Err(e) => self.result = Some(Err(e)),
+                    }
                 }
                 Msg::Pair(ev) => self.pair_event(ev),
             }
@@ -664,6 +691,7 @@ impl HostApp {
                         .clicked()
                     {
                         let _ = sync_client_server(None);
+                        self.invite_code = None;
                         self.run(
                             tr("Saving…", "Yadda saxlanılır…"),
                             args(&["set-server", "--off"]),
@@ -673,13 +701,61 @@ impl HostApp {
                     }
                 }
             });
+            self.invite_block(ui, info);
         });
     }
 
-    /// A one-time invite code from the server, shown as the result.
+    /// The invite code last asked for: large, with a copy button, where to
+    /// enter it, and how long it still works.
+    fn invite_block(&mut self, ui: &mut Ui, info: &Info) {
+        let Some((_, until)) = &self.invite_code else { return };
+        let left = until.saturating_duration_since(std::time::Instant::now()).as_secs();
+        let Some(server) = info.server.as_ref().filter(|_| left > 0) else {
+            self.invite_code = None;
+            return;
+        };
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(widgets::title(tr("Invite code for a new computer", "Yeni kompüter üçün dəvət kodu"), 15.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button(tr("Hide", "Gizlət")).clicked() {
+                    self.invite_code = None;
+                }
+            });
+        });
+        let Some((code, _)) = &self.invite_code else { return };
+        ui.add_space(4.0);
+        widgets::big_code(ui, code);
+        ui.add_space(6.0);
+        ui.label(trf!(
+            "On the new computer, open This computer → Manage this computer → Server. Enter {} as the address \
+             and this code as the invite code, then click Save.",
+            "Yeni kompüterdə «Bu kompüter» → «Bu kompüteri idarə et» → «Server» bölməsini açın. Ünvana {}, \
+             «Dəvət kodu» xanasına bu kodu yazın və «Yadda saxla» düyməsini basın.",
+            server.addr
+        ));
+        widgets::hint(
+            ui,
+            &trf!(
+                "Works once. Expires in {}:{:02}.",
+                "Bir dəfə işləyir. {}:{:02} sonra etibarsız olur.",
+                left / 60,
+                left % 60
+            ),
+        );
+        if std::mem::take(&mut self.invite_scroll) {
+            ui.scroll_to_cursor(Some(egui::Align::Max));
+        }
+    }
+
+    /// A one-time invite code from the server.
     fn invite(&mut self) {
         self.busy = Some(tr("Asking the server…", "Serverdən soruşulur…"));
         self.result = None;
+        self.invite_code = None;
         let tx = self.bus.tx();
         std::thread::spawn(move || {
             #[derive(serde::Deserialize)]
@@ -689,16 +765,9 @@ impl HostApp {
             }
             let r = sys::run(HOST, &["--json", "invite"], None).and_then(|out| {
                 let i: Invite = serde_json::from_str(out.trim()).map_err(|e| e.to_string())?;
-                Ok(trf!(
-                    "Invite code for the new computer: {}  (valid {} minutes, once). Enter it there next to the \
-                     server address.",
-                    "Yeni kompüter üçün dəvət kodu: {}  ({} dəqiqə, bir dəfə). Onu orada server ünvanının yanında \
-                     daxil edin.",
-                    i.code,
-                    i.minutes
-                ))
+                Ok((i.code, i.minutes))
             });
-            tx.send(Msg::Done(r));
+            tx.send(Msg::Invite(r));
         });
     }
 

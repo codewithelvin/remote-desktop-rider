@@ -53,7 +53,7 @@ pub async fn via_server(
     rv.close(0u32.into(), b"done");
     let (host, mut candidates, relay) = match reply {
         Some(ServerMsg::Ready { host, candidates, relay }) => (host, candidates, relay),
-        Some(ServerMsg::Error { message }) => bail!("{message}"),
+        Some(ServerMsg::Error { message }) => bail!("{}", rendezvous::explain(&message)),
         _ => bail!("unexpected reply from the rendezvous server"),
     };
     if pinned.is_some_and(|p| p != host) {
@@ -129,13 +129,17 @@ pub async fn pair(
     alias: Option<String>,
     confirm: impl AsyncFnOnce(&PairPrompt) -> bool,
 ) -> Result<KnownHost> {
-    let hint = "On the other computer, open This computer → Manage → Add a device (or run `rider-host pair`) \
-                and enter the code it shows, e.g. SF6-CK6.";
+    let hint = rider_core::i18n::tr(
+        "On the other computer, open This computer → Manage this computer → Add a device and enter the code it \
+         shows, e.g. SF6-CK6. Codes expire after 10 minutes.",
+        "Digər kompüterdə «Bu kompüter» → «Bu kompüteri idarə et» → «Cihaz əlavə et» düyməsini basın və göstərilən \
+         kodu daxil edin, məs. SF6-CK6. Kodlar 10 dəqiqə etibarlıdır.",
+    );
     let (conn, addr) = match (rendezvous::normalize_code(target), &cfg.server) {
         (Some(code), Some(server)) => {
             let (conn, path) = via_server(identity, server, Target::Code(code), None, None, false)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e:#}\n{hint} Codes expire after 10 minutes."))?;
+                .map_err(|e| anyhow::anyhow!("{e:#}\n{hint}"))?;
             // Remember a direct address only; relay ports are per session.
             let addr = match path {
                 Path::Direct(a) => a.to_string(),
@@ -324,7 +328,7 @@ pub async fn online(identity: &Identity, server: &ServerRef, hosts: &[Fingerprin
     conn.close(0u32.into(), b"done");
     match reply {
         Some(ServerMsg::Online { online }) if online.len() == hosts.len() => Ok(online),
-        Some(ServerMsg::Error { message }) => bail!("{message}"),
+        Some(ServerMsg::Error { message }) => bail!("{}", rendezvous::explain(&message)),
         _ => bail!("unexpected reply from the rendezvous server"),
     }
 }

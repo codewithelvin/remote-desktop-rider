@@ -468,11 +468,25 @@ pub fn big_code(ui: &mut Ui, code: &str) {
             ui.set_width(ui.available_width());
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
-                    let w = 34.0 + code.len() as f32 * 21.0;
+                    // "Copied" for a moment after a click, so it is clear it worked.
+                    let id = egui::Id::unique(("copied", code));
+                    let now = ui.input(|i| i.time);
+                    let copied = ui.data(|d| d.get_temp::<f64>(id)).is_some_and(|t| now - t < 2.0);
+                    let label = if copied {
+                        format!("{}  {}", icon::CHECK, tr("Copied", "Kopyalandı"))
+                    } else {
+                        format!("{}  {}", icon::COPY, tr("Copy", "Kopyala"))
+                    };
+                    let w = 130.0 + code.len() as f32 * 21.0;
                     ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                     ui.label(RichText::new(code).monospace().size(34.0).strong());
-                    if icon_button(ui, icon::COPY, tr("Copy", "Kopyala")).clicked() {
+                    ui.add_space(12.0);
+                    if ui.add(Button::new(label).min_size(vec2(108.0, 32.0))).clicked() {
                         ui.ctx().copy_text(code.to_owned());
+                        ui.data_mut(|d| d.insert_temp(id, now));
+                    }
+                    if copied {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                     }
                 });
             });

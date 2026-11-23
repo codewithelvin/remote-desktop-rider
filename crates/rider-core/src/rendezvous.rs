@@ -174,6 +174,39 @@ pub enum ServerMsg {
 
 /// HTTPS path where a server publishes its fingerprint (the web front end
 /// passes `/rider-tunnel...` to the server's tunnel bridge).
+/// The server's refusals. The server sends them in English (as older
+/// versions did); `explain` shows them in the user's language.
+pub mod refusal {
+    pub const UNREACHABLE: &str = "host is offline or this device is not allowed to reach it";
+    pub const BUSY: &str = "too many requests; try again in a minute";
+    pub const INVITE_NOT_PAIRING: &str = "this is a server invite code, not a pairing code";
+    pub const BAD_INVITE: &str = "this invite code is not valid: it may have expired (10 minutes) or been used";
+}
+
+/// A message from the server in the user's language (unknown ones as sent).
+pub fn explain(message: &str) -> String {
+    use crate::i18n::tr;
+    match message {
+        refusal::UNREACHABLE => tr(
+            "The computer is offline, or this device may not reach it.",
+            "Kompüter oflayndır və ya bu cihazın ona qoşulmağa icazəsi yoxdur.",
+        ),
+        refusal::BUSY => {
+            tr("Too many attempts. Try again in a minute.", "Çox cəhd edildi. Bir dəqiqə sonra yenidən cəhd edin.")
+        }
+        refusal::INVITE_NOT_PAIRING => tr(
+            "This is a server invite code: it goes in the Server box of a new computer. To add a computer here,              use the code from its Add a device button.",
+            "Bu, server dəvət kodudur: o, yeni kompüterin «Server» bölməsinə yazılır. Kompüteri buraya əlavə              etmək üçün onun «Cihaz əlavə et» düyməsinin göstərdiyi kodu istifadə edin.",
+        ),
+        refusal::BAD_INVITE => tr(
+            "This invite code is not valid: it has expired (10 minutes) or was already used.",
+            "Bu dəvət kodu etibarsızdır: vaxtı bitib (10 dəqiqə) və ya artıq istifadə olunub.",
+        ),
+        other => return other.to_owned(),
+    }
+    .to_owned()
+}
+
 pub const INFO_PATH: &str = "/rider-tunnel/info";
 
 /// What a server publishes at [`INFO_PATH`]. Not secret: the same key is
@@ -234,7 +267,7 @@ async fn ask(identity: &Identity, server: &ServerRef, msg: &PeerMsg) -> Result<S
         .context("the server did not answer")??;
     conn.close(0u32.into(), b"done");
     match reply {
-        Some(ServerMsg::Error { message }) => bail!("{message}"),
+        Some(ServerMsg::Error { message }) => bail!("{}", explain(&message)),
         Some(r) => Ok(r),
         // An older server closes on messages it does not know.
         None => bail!("the server does not know invites yet: update rider-server"),

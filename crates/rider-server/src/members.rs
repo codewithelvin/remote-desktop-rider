@@ -147,6 +147,11 @@ impl Members {
         write_atomic(&self.invites_path(), &text)
     }
 
+    /// Is `code` a pending invite code?
+    pub fn is_invite(&self, code: &str) -> bool {
+        self.invites().contains_key(code)
+    }
+
     /// A new one-time invite code, valid for `INVITE_LIFETIME`.
     pub fn create_invite(&self) -> Result<String> {
         let _w = self.write.lock().unwrap();
@@ -168,7 +173,7 @@ impl Members {
             let _w = self.write.lock().unwrap();
             let mut invites = self.invites();
             if invites.remove(code).is_none() {
-                bail!("this invite code is not valid: it may have expired (10 minutes) or been used");
+                bail!(rider_core::rendezvous::refusal::BAD_INVITE);
             }
             self.save_invites(&invites)?;
         }
@@ -196,7 +201,9 @@ mod tests {
         let code = m.create_invite().unwrap();
         // Another process (the `invite` command) wrote it: the server sees it.
         let server = Members::new(&d, true);
+        assert!(server.is_invite(&code), "told apart from a pairing code");
         server.join(a, &code).unwrap();
+        assert!(!server.is_invite(&code));
         assert!(server.admitted(&a));
         assert!(server.join(b, &code).is_err(), "one use only");
         assert!(!server.admitted(&b));
