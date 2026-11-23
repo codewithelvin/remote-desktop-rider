@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Source of docs/social-preview.png (GitHub social preview, 1280x640).
+     Render: msedge --headless --screenshot=docs/social-preview.png --window-size=1280,640 docs/social-preview.html -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    color: #e8edf5;
+    background:
+      radial-gradient(900px 500px at 85% 20%, rgba(47, 111, 235, 0.35), transparent 60%),
+      radial-gradient(700px 400px at 0% 100%, rgba(47, 111, 235, 0.18), transparent 60%),
+      #0b0f17;
+    position: relative;
+  }
+  .left { position: absolute; left: 72px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; justify-content: center; }
+  .brand { display: flex; align-items: center; gap: 18px; margin-bottom: 30px; }
+  .brand img { width: 72px; height: 72px; }
+  .brand span { font-size: 22px; font-weight: 600; color: #a3afc2; letter-spacing: 0.02em; }
+  h1 { font-size: 60px; line-height: 1.02; font-weight: 700; letter-spacing: -0.02em; }
+  h1 em { font-style: normal; color: #7eaaff; }
+  p { margin-top: 22px; font-size: 25px; line-height: 1.4; color: #a3afc2; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 34px; }
+  .chip { font-size: 18px; font-weight: 600; padding: 8px 16px; border-radius: 999px;
+          background: rgba(80, 140, 255, 0.14); border: 1px solid rgba(126, 170, 255, 0.35); color: #cfe0ff; }
+  .shot { position: absolute; left: 680px; top: 92px; width: 720px; border-radius: 14px; overflow: hidden;
+          border: 1px solid #253043; box-shadow: 0 40px 90px -20px rgba(0, 0, 0, 0.7), 0 0 0 8px rgba(255,255,255,0.03); }
+  .shot img { display: block; width: 100%; }
+  .bar { height: 30px; background: #141b26; display: flex; align-items: center; gap: 8px; padding-left: 14px; }
+  .bar i { width: 11px; height: 11px; border-radius: 50%; background: #253043; display: block; }
+  .url { position: absolute; left: 72px; bottom: 34px; font-size: 18px; color: #6b7891;
+         font-family: "Cascadia Code", Consolas, monospace; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="brand"><img src="../site/icon-256.png" alt=""><span>Remote Desktop Rider</span></div>
+    <h1>Remote desktop that survives <em>bad networks</em></h1>
+    <p>Open source, self-hosted, end-to-end encrypted.<br>No accounts. No cloud.</p>
+    <div class="chips">
+      <span class="chip">QUIC</span><span class="chip">Hardware H.264</span>
+      <span class="chip">NAT traversal</span><span class="chip">Rust</span>
+    </div>
+  </div>
+  <div class="shot"><div class="bar"><i></i><i></i><i></i></div><img src="screenshots/session.jpg" alt=""></div>
+  <div class="url">github.com/codewithelvin/remote-desktop-rider</div>
+</body>
+</html>
