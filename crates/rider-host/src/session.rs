@@ -20,6 +20,10 @@ const FRAME_DEADLINE: Duration = Duration::from_millis(500);
 const MIN_BITRATE: u32 = 300_000;
 const START_BITRATE: u32 = 4_000_000;
 const PAIRING_WINDOW: Duration = Duration::from_secs(600);
+/// The client's first message must come at once; a PIN is typed by a person.
+/// Without limits a connection that never speaks would keep the host busy.
+const HELLO_WAIT: Duration = Duration::from_secs(10);
+const PIN_WAIT: Duration = Duration::from_secs(120);
 
 pub struct HostState {
     pub config: Mutex<HostConfig>,
@@ -178,7 +182,8 @@ async fn run(
     let client_fp = rider_core::tls::peer_fingerprint(conn)?;
     let _ = send.set_priority(1); // control beats video
 
-    let Some(ClientMsg::Hello { version, device_name, pairing }) = read_msg(&mut recv).await? else {
+    let hello = tokio::time::timeout(HELLO_WAIT, read_msg(&mut recv)).await.context("no Hello in time")??;
+    let Some(ClientMsg::Hello { version, device_name, pairing }) = hello else {
         bail!("expected Hello");
     };
     if version != PROTOCOL_VERSION {
@@ -366,7 +371,8 @@ async fn authenticate(
     name: &str,
 ) -> Result<()> {
     for _ in 0..3 {
-        let Some(ClientMsg::Auth { pin }) = read_msg(recv).await? else { bail!("expected Auth") };
+        let msg = tokio::time::timeout(PIN_WAIT, read_msg(recv)).await.context("no PIN in time")??;
+        let Some(ClientMsg::Auth { pin }) = msg else { bail!("expected Auth") };
         let locked = state.auth.lock().unwrap().locked_until.is_some_and(|t| Instant::now() < t);
         if locked {
             write_msg(send, &HostMsg::AuthResult { ok: false, message: "too many wrong PINs; try again later".into() })
@@ -840,35 +846,62 @@ async fn send_frame(conn: &quinn::Connection, p: VideoPacket) -> bool {
     }
 }
 
+/// A file name from the client that is safe to create in the incoming folder:
+/// no folders, no NTFS streams (`a.txt:x`), no device names (`CON`, `nul.txt`),
+/// no characters Windows refuses, and no trailing dots or spaces.
+fn safe_file_name(raw: &str) -> Option<String> {
+    // Either separator: the client may run on another system.
+    let base = raw.rsplit(['/', '\\']).next()?;
+    let name: String = base.chars().map(|c| if c.is_control() || "<>:\"|?*".contains(c) { '_' } else { c }).collect();
+    let name = name.trim_end_matches(['.', ' ']).trim_start();
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem[3..].chars().all(|c| c.is_ascii_digit()));
+    (!name.is_empty() && !device && name.chars().count() <= 200).then(|| name.to_owned())
+}
+
+/// Create a new file for `name` in `dir` ("name (2).ext" if taken). Runs as
+/// the signed-in user (see `system::as_console_user`).
+fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std::path::PathBuf, std::fs::File)> {
+    std::fs::create_dir_all(dir)?;
+    let p = std::path::Path::new(name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = p.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    for i in 1..1000 {
+        let path = if i == 1 { dir.join(name) } else { dir.join(format!("{stem} ({i}){ext}")) };
+        // create_new: never opens (or truncates) something already there.
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(f) => return Ok((path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        }
+    }
+    bail!("too many files named {name}")
+}
+
+async fn remove_incoming(path: std::path::PathBuf) {
+    let _ = tokio::task::spawn_blocking(move || crate::system::as_console_user(|| std::fs::remove_file(path))).await;
+}
+
 async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Result<()> {
     let header: FileHeader = read_msg(&mut recv).await?.context("missing file header")?;
-    let name = std::path::Path::new(&header.name)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .filter(|n| !n.is_empty() && *n != "." && *n != "..")
-        .context("invalid file name")?
-        .to_string();
+    let name = safe_file_name(&header.name).context("invalid file name")?;
     let dir = crate::system::incoming_files_dir()?;
-    tokio::fs::create_dir_all(&dir).await?;
-    let mut path = dir.join(&name);
-    let mut i = 1;
-    while path.exists() {
-        let p = std::path::Path::new(&name);
-        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = p.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
-        path = dir.join(format!("{stem} ({i}){ext}"));
-        i += 1;
-    }
+    let (path, file) =
+        tokio::task::spawn_blocking(move || crate::system::as_console_user(|| create_incoming(&dir, &name)))
+            .await???;
     tracing::info!("receiving {} ({} bytes)", path.display(), header.size);
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(&path).await?;
+    let mut file = tokio::fs::File::from_std(file);
     let mut buf = vec![0u8; 256 * 1024];
     let mut total = 0u64;
     while let Some(n) = recv.read(&mut buf).await? {
         total += n as u64;
         if total > header.size {
             drop(file);
-            let _ = tokio::fs::remove_file(&path).await;
+            remove_incoming(path).await;
             bail!("sender exceeded announced size");
         }
         file.write_all(&buf[..n]).await?;
@@ -877,7 +910,7 @@ async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) 
     let ok = total == header.size;
     if !ok {
         drop(file);
-        let _ = tokio::fs::remove_file(&path).await;
+        remove_incoming(path.clone()).await;
     }
     let message = if ok { path.display().to_string() } else { "transfer incomplete".into() };
     tracing::info!("file {}: {message}", if ok { "saved" } else { "failed" });
@@ -889,6 +922,20 @@ async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) 
 #[cfg(test)]
 mod auto_resolution_tests {
     use super::*;
+
+    #[test]
+    fn incoming_file_names_are_tamed() {
+        assert_eq!(safe_file_name("report.pdf").as_deref(), Some("report.pdf"));
+        assert_eq!(safe_file_name("../../Windows/evil.dll").as_deref(), Some("evil.dll"));
+        assert_eq!(safe_file_name("C:\\Users\\x\\a.txt").as_deref(), Some("a.txt"));
+        assert_eq!(safe_file_name("a.txt:hidden").as_deref(), Some("a.txt_hidden"));
+        assert_eq!(safe_file_name("notes.txt. . ").as_deref(), Some("notes.txt"));
+        for bad in ["", ".", "..", "CON", "nul.txt", "Com1.log", "LPT9", "aux .txt", "/", "x/"] {
+            assert_eq!(safe_file_name(bad), None, "{bad:?}");
+        }
+        assert_eq!(safe_file_name("COM10.txt").as_deref(), Some("COM10.txt"));
+        assert_eq!(safe_file_name("console.txt").as_deref(), Some("console.txt"));
+    }
 
     #[test]
     fn bitrate_recovers_at_low_frame_rates() {

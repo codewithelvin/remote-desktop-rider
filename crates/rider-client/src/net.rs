@@ -20,6 +20,9 @@ pub struct Session {
     pub relayed: bool,
 }
 
+/// Far above the host's in-flight window (at most 16 frames).
+const MAX_FRAMES_READING: usize = 64;
+
 #[derive(Debug)]
 pub enum UiEvent {
     NewFrame,
@@ -236,17 +239,22 @@ pub fn start(
         });
     }
 
-    // Frames: one uni stream each, read concurrently, decoded in order.
+    // Frames: one uni stream each, read concurrently, decoded in order. A
+    // bounded number at once: a misbehaving host could otherwise make this
+    // side buffer up to MAX_FRAME_BYTES for each of a thousand open streams.
     let (frame_tx, frame_rx) = std::sync::mpsc::channel::<IncomingFrame>();
     video::spawn_decoder(id, frame_rx, ctrl_tx.clone(), shared.clone(), proxy.clone());
     {
         let conn = conn.clone();
         let shared = shared.clone();
+        let reading = Arc::new(tokio::sync::Semaphore::new(MAX_FRAMES_READING));
         rt.spawn(async move {
             while let Ok(mut s) = conn.accept_uni().await {
                 shared.heard();
                 let tx = frame_tx.clone();
+                let Ok(permit) = reading.clone().acquire_owned().await else { break };
                 tokio::spawn(async move {
+                    let _permit = permit;
                     // A reset (stale frame abandoned by the host) just errors here;
                     // the decoder notices the gap and asks for a keyframe.
                     if let Ok(buf) = s.read_to_end(MAX_FRAME_BYTES).await

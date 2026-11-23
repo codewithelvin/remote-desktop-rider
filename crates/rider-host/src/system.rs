@@ -10,8 +10,9 @@ use windows::Win32::Security::Authorization::{
     SetNamedSecurityInfoW,
 };
 use windows::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, IsWellKnownSid, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, ImpersonateLoggedOnUser, IsWellKnownSid,
+    OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, RevertToSelf,
+    WinBuiltinAdministratorsSid, WinLocalSystemSid,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Registry::{
@@ -152,14 +153,50 @@ pub fn incoming_files_dir() -> Result<PathBuf> {
             PathBuf::from(String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]))
         } else {
             // Not SYSTEM (interactive host): our own profile is the user's.
-            let p = PathBuf::from(std::env::var_os("USERPROFILE").context("USERPROFILE not set")?);
-            if p.to_string_lossy().to_lowercase().contains("systemprofile") {
+            if is_system_profile() {
                 bail!("no user is logged in on the host");
             }
-            p
+            PathBuf::from(std::env::var_os("USERPROFILE").context("USERPROFILE not set")?)
         }
     };
     Ok(profile.join("Downloads").join("Rider"))
+}
+
+/// Run `f` on this thread as the signed-in console user when this process is
+/// SYSTEM (the service's agent); otherwise it already is that user.
+///
+/// For files in the user's own folders: the user can turn any of them into a
+/// junction to e.g. `C:\Windows`, so creating or deleting files there as
+/// SYSTEM would let a remote session (or local user) write anywhere. As the
+/// user, such a write gets only the user's rights.
+pub fn as_console_user<T>(f: impl FnOnce() -> T) -> Result<T> {
+    let mut token = HANDLE::default();
+    // SAFETY: plain query into a local; fails unless we hold SeTcbPrivilege (SYSTEM).
+    if unsafe { WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &mut token) }.is_err() {
+        if is_system_profile() {
+            bail!("no user is signed in on the host");
+        }
+        return Ok(f());
+    }
+    /// Reverts the thread and closes the token, also if `f` panics.
+    struct Guard(HANDLE);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: undoes the impersonation below on this thread; closes our token.
+            unsafe {
+                let _ = RevertToSelf();
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+    let guard = Guard(token);
+    // SAFETY: a valid primary token of the console user; reverted by `guard`.
+    unsafe { ImpersonateLoggedOnUser(guard.0) }.context("acting as the signed-in user")?;
+    Ok(f())
+}
+
+fn is_system_profile() -> bool {
+    std::env::var_os("USERPROFILE").is_some_and(|p| p.to_string_lossy().to_lowercase().contains("systemprofile"))
 }
 
 /// Named event the service waits on to generate Ctrl+Alt+Del for the agent.

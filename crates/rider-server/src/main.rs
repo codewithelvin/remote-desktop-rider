@@ -401,8 +401,11 @@ async fn connect(
     local.truncate(9);
     host_candidates.truncate(9);
 
-    let relay = server.relays.open(conn.local_ip()).await.map(|(addr, token)| Relay { addr, token });
-    if host_tx.send(ServerMsg::Offer { client, candidates: local, relay }).is_err() {
+    // Each peer gets its own token (see relay.rs).
+    let relays = server.relays.open(conn.local_ip()).await;
+    let host_relay = relays.map(|(addr, [token, _])| Relay { addr, token });
+    let relay = relays.map(|(addr, [_, token])| Relay { addr, token });
+    if host_tx.send(ServerMsg::Offer { client, candidates: local, relay: host_relay }).is_err() {
         return refuse();
     }
     tracing::info!(
