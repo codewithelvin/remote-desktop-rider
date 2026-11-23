@@ -10,6 +10,7 @@ mod keyhook;
 #[cfg(any(not(windows), test))]
 mod keymap;
 pub mod net;
+mod overlay;
 mod toolbar;
 mod video;
 

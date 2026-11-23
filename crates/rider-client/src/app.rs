@@ -12,18 +12,25 @@
 //!   Ctrl+Alt+End      Ctrl+Alt+Del on the host (login screen, lock screen)
 //!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc, Alt+F4 go to the host (keyhook)
 //!   Drag and drop a file onto the window to send it to the host.
+//!
+//! When the host goes silent the picture dims under "Connection lost,
+//! reconnecting" (see `overlay`). QUIC keeps retrying the same connection;
+//! if it dies, a new one is made with `Reconnect` until `RECONNECT_FOR` runs out.
 
 use crate::diag::{self, Diag};
 #[cfg(windows)]
 use crate::keyhook::KeyHook;
 use crate::net::{self, NetHandle, Session, Shared, UiEvent};
+use crate::overlay::Overlay;
 use crate::toolbar::{Action, Extras, Toolbar};
 use anyhow::Result;
 use rider_core::i18n::tr;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
 use rider_core::proto::{ClientMsg, MonitorInfo, MouseButton, QUALITIES};
 use std::collections::HashSet;
+use std::future::Future;
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -31,7 +38,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 #[cfg(windows)]
 use winit::platform::scancode::PhysicalKeyExtScancode;
@@ -39,20 +46,34 @@ use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Fullscreen, Icon, Window, WindowId};
 
+/// Silence from the host (it answers a ping every second) that counts as lost.
+const SILENT: Duration = Duration::from_secs(3);
+/// How long to keep making new connections after one died.
+const RECONNECT_FOR: Duration = Duration::from_secs(120);
+/// One reconnect attempt at most (finding the host, the relay, the PIN).
+const ATTEMPT: Duration = Duration::from_secs(30);
+
+/// Makes a new authenticated session with the same host.
+pub type Reconnect = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Session>> + Send>> + Send + Sync>;
+
 /// `report_to`: where to send this session's connection diagnostics.
+/// `reconnect`: how to get a new session if the connection dies (`None`:
+/// the session ends with it, e.g. quick connect, which needs a new "Allow").
 pub fn run(
     rt: tokio::runtime::Runtime,
     session: Session,
     host_name: String,
     report_to: Option<diag::Target>,
+    reconnect: Option<Reconnect>,
 ) -> Result<()> {
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
+    let proxy = event_loop.create_proxy();
     let shared = Arc::new(Shared::default());
     let diag = report_to.map(|t| Diag::new(t, &session.conn, session.relayed, rt.handle().clone()));
     // Hosts that speak protocol 2 take the quality setting (and lock).
     let v2 = rider_core::tls::speaks_v2(&session.conn);
     let prefs = crate::config::ClientConfig::load().map(|c| c.viewer).unwrap_or_default();
-    let net = net::start(&rt, session, event_loop.create_proxy(), shared.clone());
+    let net = net::start(rt.handle(), session, proxy.clone(), shared.clone());
     let quality = if v2 { prefs.quality } else { 0 };
     if quality != 0 {
         net.send(ClientMsg::SetQuality { max_height: quality });
@@ -82,6 +103,11 @@ pub fn run(
         v2,
         quality,
         pinned: prefs.pin_toolbar,
+        rt: rt.handle().clone(),
+        proxy,
+        reconnect: reconnect.map(Arc::new),
+        reconnecting: None,
+        overlay: Overlay::default(),
     };
     app.refresh_extras();
     event_loop.run_app(&mut app)?;
@@ -140,6 +166,12 @@ struct App {
     /// Max lines asked of the host, 0 = automatic.
     quality: u32,
     pinned: bool,
+    rt: tokio::runtime::Handle,
+    proxy: EventLoopProxy<UiEvent>,
+    reconnect: Option<Arc<Reconnect>>,
+    /// Since when new connections are being tried.
+    reconnecting: Option<Instant>,
+    overlay: Overlay,
 }
 
 impl App {
@@ -156,6 +188,7 @@ impl App {
             Some(f) => self.image_rect = nv12_to_xrgb_fit(f, &mut buf, w, h),
             None => buf.fill(0x0010_1014),
         }
+        self.overlay.draw(&mut buf, w, h, window.scale_factor());
         let monitors = (self.monitors.len() as u32, self.active_monitor);
         self.toolbar.set_state(window.scale_factor(), window.fullscreen().is_some(), monitors);
         self.toolbar.draw(&mut buf, w, h);
@@ -352,6 +385,76 @@ impl App {
         }
     }
 
+    /// Show or update "Connection lost" while the host is silent or a new
+    /// connection is being made; hide it once the host is heard again.
+    fn update_overlay(&mut self) {
+        let silent = self.shared.silent_for();
+        let lines = (self.reconnecting.is_some() || silent >= SILENT).then(|| {
+            (
+                tr("Connection lost", "Bağlantı kəsildi").to_owned(),
+                format!("{} {}", tr("Reconnecting…", "Yenidən qoşulur…"), elapsed(silent)),
+            )
+        });
+        if self.overlay.set(lines) {
+            self.redraw_soon();
+        }
+    }
+
+    /// The connection died: try new ones in the background.
+    fn start_reconnect(&mut self, reason: String) -> bool {
+        let Some(reconnect) = self.reconnect.clone() else { return false };
+        tracing::info!("{reason}; reconnecting");
+        self.reconnecting = Some(Instant::now());
+        self.held_keys.clear();
+        let proxy = self.proxy.clone();
+        self.rt.spawn(async move {
+            let deadline = tokio::time::Instant::now() + RECONNECT_FOR;
+            let mut wait = Duration::from_secs(1);
+            let last = loop {
+                let error = match tokio::time::timeout(ATTEMPT, reconnect()).await {
+                    Ok(Ok(session)) => {
+                        let _ = proxy.send_event(UiEvent::Reconnected(session));
+                        return;
+                    }
+                    Ok(Err(e)) => format!("{e:#}"),
+                    Err(_) => "timed out".to_owned(),
+                };
+                tracing::info!("reconnect: {error}");
+                // A refused PIN or device will not get better; retrying could lock it out.
+                let fatal = ["authentication failed", "host refused", "not paired"].iter().any(|m| error.contains(m));
+                if fatal || tokio::time::Instant::now() + wait >= deadline {
+                    break error;
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(5));
+            };
+            let _ = proxy.send_event(UiEvent::ReconnectFailed(format!("{reason}; could not reconnect: {last}")));
+        });
+        true
+    }
+
+    /// A new session after a lost one: same window, same settings.
+    fn resume(&mut self, session: Session) {
+        if let Some(d) = &mut self.diag {
+            d.restart(&session.conn, session.relayed, "connection lost; reconnected");
+        }
+        self.v2 = rider_core::tls::speaks_v2(&session.conn);
+        self.net = net::start(&self.rt, session, self.proxy.clone(), self.shared.clone());
+        #[cfg(windows)]
+        if let Some(h) = &self.keyhook {
+            h.retarget(self.net.ctrl.clone());
+        }
+        if self.v2 && self.quality != 0 {
+            self.net.send(ClientMsg::SetQuality { max_height: self.quality });
+        }
+        self.reconnecting = None;
+        self.notice = Some((tr("Reconnected", "Yenidən qoşuldu").into(), Instant::now()));
+        self.update_title();
+        self.update_overlay();
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
     fn redraw_soon(&self) {
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -423,7 +526,16 @@ impl ApplicationHandler<UiEvent> for App {
                 self.notice = Some((n, Instant::now()));
                 self.update_title();
             }
-            UiEvent::Closed(reason) => {
+            // A connection replaced by a reconnect has nothing more to say.
+            UiEvent::Closed { conn, .. } if conn != self.net.conn.stable_id() => {}
+            UiEvent::Closed { reason, lost, .. } => {
+                if !(lost && self.closed.is_none() && self.start_reconnect(reason.clone())) {
+                    self.closed.get_or_insert(reason);
+                    el.exit();
+                }
+            }
+            UiEvent::Reconnected(session) => self.resume(session),
+            UiEvent::ReconnectFailed(reason) => {
                 self.closed.get_or_insert(reason);
                 el.exit();
             }
@@ -532,6 +644,7 @@ impl ApplicationHandler<UiEvent> for App {
             if self.refresh_extras() {
                 self.redraw_soon();
             }
+            self.update_overlay();
         }
         // Hide (or show) the toolbar on time even when no frames arrive.
         if self.toolbar.visible() != self.toolbar_shown {

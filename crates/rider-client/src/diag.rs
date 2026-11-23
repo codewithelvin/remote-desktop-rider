@@ -74,6 +74,18 @@ impl Diag {
         }
     }
 
+    /// A new connection after a lost one: report the old session (in the
+    /// background) and record the new one from zero.
+    pub fn restart(&mut self, conn: &quinn::Connection, relayed: bool, ended: &str) {
+        let route = if relayed { Route::Relay } else { Route::Direct };
+        let fresh = Recorder::new(diag::session_id(conn), Role::Client, route, rendezvous::tunnel_recent());
+        let report = std::mem::replace(&mut self.recorder, fresh).finish(ended);
+        let target = self.target.clone();
+        self.rt.spawn(async move { send(&target, report).await });
+        self.next = Instant::now() + diag::SAMPLE_EVERY;
+        (self.sent, self.lost, self.rx_bytes) = (0, 0, 0);
+    }
+
     /// Send the last report; waits a few seconds at most.
     pub fn finish(self, rt: &tokio::runtime::Runtime, ended: &str) {
         let report = self.recorder.finish(ended);

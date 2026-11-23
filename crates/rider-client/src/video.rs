@@ -26,7 +26,9 @@ pub struct IncomingFrame {
     pub data: Vec<u8>,
 }
 
+/// `conn`: the connection's `stable_id`, named when the decoder fails.
 pub fn spawn_decoder(
+    conn: usize,
     rx: Receiver<IncomingFrame>,
     ctrl: UnboundedSender<ClientMsg>,
     shared: Arc<Shared>,
@@ -36,7 +38,8 @@ pub fn spawn_decoder(
         .name("rider-decode".into())
         .spawn(move || {
             if let Err(e) = run(rx, ctrl, shared, proxy.clone()) {
-                let _ = proxy.send_event(UiEvent::Closed(format!("decoder failed: {e:#}")));
+                let _ =
+                    proxy.send_event(UiEvent::Closed { conn, reason: format!("decoder failed: {e:#}"), lost: false });
             }
         })
         .expect("spawn decoder thread");

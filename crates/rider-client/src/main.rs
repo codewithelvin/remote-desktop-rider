@@ -142,7 +142,8 @@ fn main() -> Result<()> {
             println!("Connected to \"{host_name}\" ({route}).");
             let report_to =
                 cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
-            rider_client::app::run(rt, session, host_name, report_to)?;
+            // A new session would need the person there to allow it again.
+            rider_client::app::run(rt, session, host_name, report_to, None)?;
         }
         Cmd::Connect { host, pin_stdin } => {
             let known = cfg
@@ -151,6 +152,16 @@ fn main() -> Result<()> {
                 .with_context(|| format!("\"{host}\" is not paired. Run `rider-client pair <address>` first."))?;
             let rt = tokio::runtime::Runtime::new()?;
             let piped = if pin_stdin { Some(rider_core::secret_from_stdin()?) } else { None };
+            // Reconnecting reuses the PIN given for this session (kept in memory
+            // only); a PIN typed at the prompt is not kept.
+            let reconnect = piped.clone().map(|pin| {
+                let (cfg, identity, known) = (cfg.clone(), identity.clone(), known.clone());
+                Box::new(move || {
+                    let (cfg, identity, known, pin) = (cfg.clone(), identity.clone(), known.clone(), pin.clone());
+                    Box::pin(async move { Ok(rider_client::connect(&cfg, &identity, &known, Some(pin)).await?.0) })
+                        as std::pin::Pin<Box<dyn std::future::Future<Output = Result<_>> + Send>>
+                }) as rider_client::app::Reconnect
+            });
             let (session, route) = rt.block_on(rider_client::connect(&cfg, &identity, &known, piped))?;
             cfg.touch(&known.fingerprint);
             if let Err(e) = cfg.save() {
@@ -160,7 +171,7 @@ fn main() -> Result<()> {
             println!("Connected to \"{}\" ({route}).", known.name);
             let report_to =
                 cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
-            rider_client::app::run(rt, session, known.name, report_to)?;
+            rider_client::app::run(rt, session, known.name, report_to, reconnect)?;
         }
     }
     Ok(())

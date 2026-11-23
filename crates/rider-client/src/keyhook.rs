@@ -84,6 +84,16 @@ impl KeyHook {
         }
     }
 
+    /// Send keys to a new session (after a reconnect).
+    pub fn retarget(&self, out: UnboundedSender<ClientMsg>) {
+        if let Ok(mut s) = STATE.lock()
+            && let Some(st) = s.as_mut()
+        {
+            st.out = out;
+            st.down.clear();
+        }
+    }
+
     /// Focus left the session window: release what the remote side holds.
     pub fn release(&self) {
         if let Ok(mut s) = STATE.lock()

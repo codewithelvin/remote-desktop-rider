@@ -50,7 +50,7 @@ const OPEN_WAIT: Duration = Duration::from_secs(3);
 const TAB_W: f64 = 56.0;
 const TAB_H: f64 = 12.0;
 
-const BG: (u8, u8, u8, u8) = (30, 31, 36, 238);
+pub(crate) const BG: (u8, u8, u8, u8) = (30, 31, 36, 238);
 const HOVER: (u8, u8, u8) = (62, 64, 74);
 const ACCENT: (u8, u8, u8) = (47, 111, 235);
 const DANGER: (u8, u8, u8) = (196, 43, 28);
@@ -294,7 +294,7 @@ fn premul(r: u8, g: u8, b: u8, a: u8) -> u32 {
     (a as u32) << 24 | m(r) << 16 | m(g) << 8 | m(b)
 }
 
-fn blend(src: u32, dst: u32) -> u32 {
+pub(crate) fn blend(src: u32, dst: u32) -> u32 {
     let a = src >> 24;
     if a == 255 {
         return src & 0x00FF_FFFF;
@@ -350,15 +350,15 @@ fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Act
 
 /// One label to paint: left edge, icon and its width (Windows only), text.
 #[cfg_attr(not(windows), allow(dead_code))]
-struct Label<'a> {
-    x: i32,
-    icon: Option<char>,
-    icon_w: i32,
-    text: &'a str,
+pub(crate) struct Label<'a> {
+    pub x: i32,
+    pub icon: Option<char>,
+    pub icon_w: i32,
+    pub text: &'a str,
 }
 
 #[cfg(windows)]
-mod text {
+pub(crate) mod text {
     //! GDI: Segoe UI and the Segoe MDL2 icon font, grayscale anti-aliasing.
     use super::Label;
     use windows::Win32::Foundation::SIZE;
@@ -495,7 +495,7 @@ mod text {
 }
 
 #[cfg(not(windows))]
-mod text {
+pub(crate) mod text {
     //! Labels rasterized with ab_glyph: a full system font first (egui's
     //! bundled Ubuntu Light lacks letters such as "ə"), then the bundled
     //! fonts, then symbol fonts for "▾". Each character comes from the first
@@ -609,7 +609,8 @@ mod text {
         #[test]
         fn every_label_character_has_a_glyph() {
             let f = Fonts::new(1.0).unwrap();
-            for c in "Kompüterlər Sürətli ə Ə ğ ş ç ö ı İ 1080p \u{25BE}".chars().filter(|c| !c.is_whitespace())
+            for c in
+                "Kompüterlər Sürətli ə Ə ğ ş ç ö ı İ 1080p \u{25BE} \u{2026}".chars().filter(|c| !c.is_whitespace())
             {
                 assert_ne!(f.glyph(c).1.0, 0, "{c:?}");
             }

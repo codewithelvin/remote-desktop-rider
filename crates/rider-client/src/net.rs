@@ -11,6 +11,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use winit::event_loop::EventLoopProxy;
 
+#[derive(Debug)]
 pub struct Session {
     pub conn: quinn::Connection,
     pub send: quinn::SendStream,
@@ -24,7 +25,17 @@ pub enum UiEvent {
     NewFrame,
     Monitors(Vec<MonitorInfo>, u32),
     Notice(String),
-    Closed(String),
+    /// The session with connection `conn` (its `stable_id`) ended. `lost`:
+    /// the network failed (worth reconnecting), not a deliberate end.
+    Closed {
+        conn: usize,
+        reason: String,
+        lost: bool,
+    },
+    /// A new session after a lost connection.
+    Reconnected(Session),
+    /// Reconnecting failed for good.
+    ReconnectFailed(String),
 }
 
 /// State shared between the network, decoder and UI threads.
@@ -41,6 +52,19 @@ pub struct Shared {
     pub decode_us: AtomicU64,
     pub frames: AtomicU32,
     pub host_stats: Mutex<String>,
+    /// When the host was last heard from (`rider_core::now_us`).
+    pub last_rx_us: AtomicU64,
+}
+
+impl Shared {
+    /// How long the host has been silent.
+    pub fn silent_for(&self) -> Duration {
+        Duration::from_micros(rider_core::now_us().saturating_sub(self.last_rx_us.load(Ordering::Relaxed)))
+    }
+
+    fn heard(&self) {
+        self.last_rx_us.store(rider_core::now_us(), Ordering::Relaxed);
+    }
 }
 
 /// What the UI uses to talk to the host.
@@ -104,12 +128,16 @@ async fn upload(conn: &quinn::Connection, path: &std::path::Path) -> anyhow::Res
 }
 
 pub fn start(
-    rt: &tokio::runtime::Runtime,
+    rt: &tokio::runtime::Handle,
     s: Session,
     proxy: EventLoopProxy<UiEvent>,
     shared: Arc<Shared>,
 ) -> NetHandle {
     let Session { conn, send, recv, .. } = s;
+    let id = conn.stable_id();
+    // A new connection: fresh clock samples, and the host counts as heard.
+    shared.best_rtt_us.store(0, Ordering::Relaxed);
+    shared.heard();
     let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ClientMsg>();
 
     // Control writer.
@@ -144,8 +172,10 @@ pub fn start(
         let stop = stop.clone();
         rt.spawn(async move {
             let mut recv = recv;
-            let reason = loop {
-                match read_msg::<HostMsg>(&mut recv).await {
+            let (reason, lost) = loop {
+                let msg = read_msg::<HostMsg>(&mut recv).await;
+                shared.heard();
+                match msg {
                     Ok(Some(HostMsg::Monitors { list, active })) => {
                         let _ = proxy.send_event(UiEvent::Monitors(list, active));
                     }
@@ -173,15 +203,22 @@ pub fn start(
                             bitrate_kbps as f32 / 1000.0
                         );
                     }
-                    Ok(Some(HostMsg::Bye { reason })) => break reason,
+                    Ok(Some(HostMsg::Bye { reason })) => break (reason, false),
                     Ok(Some(_)) => {}
-                    Ok(None) => break "host closed the session".into(),
-                    Err(e) => break format!("connection lost: {e}"),
+                    Ok(None) => break ("host closed the session".into(), false),
+                    Err(e) => {
+                        // Timeouts and resets are the network; a close by either
+                        // program is deliberate.
+                        use quinn::ConnectionError as E;
+                        let lost =
+                            matches!(conn.close_reason(), None | Some(E::TimedOut | E::Reset | E::TransportError(_)));
+                        break (format!("connection lost: {e}"), lost);
+                    }
                 }
             };
             stop.store(true, Ordering::Relaxed);
             conn.close(0u32.into(), b"bye");
-            let _ = proxy.send_event(UiEvent::Closed(reason));
+            let _ = proxy.send_event(UiEvent::Closed { conn: id, reason, lost });
         });
     }
 
@@ -201,11 +238,13 @@ pub fn start(
 
     // Frames: one uni stream each, read concurrently, decoded in order.
     let (frame_tx, frame_rx) = std::sync::mpsc::channel::<IncomingFrame>();
-    video::spawn_decoder(frame_rx, ctrl_tx.clone(), shared.clone(), proxy.clone());
+    video::spawn_decoder(id, frame_rx, ctrl_tx.clone(), shared.clone(), proxy.clone());
     {
         let conn = conn.clone();
+        let shared = shared.clone();
         rt.spawn(async move {
             while let Ok(mut s) = conn.accept_uni().await {
+                shared.heard();
                 let tx = frame_tx.clone();
                 tokio::spawn(async move {
                     // A reset (stale frame abandoned by the host) just errors here;
@@ -220,5 +259,5 @@ pub fn start(
         });
     }
 
-    NetHandle { conn, ctrl: ctrl_tx, rt: rt.handle().clone(), proxy, mouse_seq: Arc::new(AtomicU32::new(0)) }
+    NetHandle { conn, ctrl: ctrl_tx, rt: rt.clone(), proxy, mouse_seq: Arc::new(AtomicU32::new(0)) }
 }

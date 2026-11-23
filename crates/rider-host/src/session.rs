@@ -524,6 +524,8 @@ async fn stream(
         let max_fps = cfg.max_fps;
         tokio::spawn(async move {
             let mut bitrate = START_BITRATE.min(max_bitrate);
+            // Highest recent send rate (bps), decaying: bounds the target.
+            let mut peak = 0u32;
             // Diagnostics totals over one sample interval.
             let mut d = Sample::default();
             let (mut d_bytes, mut d_frames, mut d_enc, mut d_sent, mut d_lost) = (0u64, 0u32, 0u64, 0u64, 0u64);
@@ -556,14 +558,9 @@ async fn stream(
                 // Sized from the path's base delay, so queueing does not widen it.
                 window.store(video::inflight_window(path.min_rtt, max_fps), Ordering::Relaxed);
 
-                let new = if exp > 0 || skips > 2 || queueing || loss > 0.08 {
-                    (bitrate as f64 * 0.75) as u32
-                } else if frames > 5 && loss < 0.02 {
-                    (bitrate as f64 * 1.08) as u32 + 50_000
-                } else {
-                    bitrate
-                }
-                .clamp(MIN_BITRATE, max_bitrate);
+                peak = ((peak as f64 * PEAK_DECAY) as u32).max(u32::try_from(bytes * 8 * 2).unwrap_or(u32::MAX));
+                let congested = exp > 0 || skips > 2 || queueing || loss > 0.08;
+                let new = next_bitrate(bitrate, max_bitrate, peak, congested, frames, loss);
                 if new.abs_diff(bitrate) > bitrate / 20 {
                     bitrate = new;
                     let _ = cmd_tx.send(VideoCmd::SetBitrate(bitrate));
@@ -706,6 +703,31 @@ async fn stream(
     drop(input); // the input thread releases held keys once the mouse task is gone too
     let _ = tokio::task::spawn_blocking(move || video_thread.join()).await;
     result
+}
+
+/// Per 500 ms tick: the recent send-rate peak halves in about 11 s.
+const PEAK_DECAY: f64 = 0.97;
+
+/// The adaptive bitrate's next target (bps), every 500 ms.
+///
+/// Down by a quarter on any congestion sign; otherwise up 8% whenever frames
+/// went out cleanly, even a few (a calm screen at 7 fps must recover too: a
+/// rule needing 10+ fps left a long session at the minimum for hours). It
+/// never runs far ahead of what the picture uses (`peak`, bps): at most 4x,
+/// at least `START_BITRATE`, so a burst after a calm stretch does not flood
+/// the path.
+fn next_bitrate(bitrate: u32, max: u32, peak: u32, congested: bool, frames: u32, loss: f64) -> u32 {
+    let ceiling = peak.saturating_mul(4).max(START_BITRATE);
+    let new = if congested {
+        (bitrate as f64 * 0.75) as u32
+    } else if frames > 0 && loss < 0.02 {
+        ((bitrate as f64 * 1.08) as u32 + 50_000).min(ceiling.max(bitrate))
+    } else {
+        bitrate
+    };
+    // A calm screen lowers the target only gently, towards the ceiling.
+    let new = if new > ceiling { new.min(((bitrate as f64 * 0.95) as u32).max(ceiling)) } else { new };
+    new.clamp(MIN_BITRATE, max.max(MIN_BITRATE))
 }
 
 /// "Auto" quality: lower the resolution when the adaptive bitrate stays low
@@ -867,6 +889,39 @@ async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) 
 #[cfg(test)]
 mod auto_resolution_tests {
     use super::*;
+
+    #[test]
+    fn bitrate_recovers_at_low_frame_rates() {
+        // 7 fps = 3 frames per tick: the old rule (frames > 5) never grew.
+        let mut b = MIN_BITRATE;
+        for _ in 0..40 {
+            b = next_bitrate(b, 20_000_000, 600_000, false, 3, 0.0);
+        }
+        assert!(b >= START_BITRATE, "back up within 20 s: {b}");
+    }
+
+    #[test]
+    fn bitrate_follows_use_and_backs_off() {
+        // Calm screen: no higher than START_BITRATE.
+        let mut b = START_BITRATE;
+        for _ in 0..100 {
+            b = next_bitrate(b, 20_000_000, 300_000, false, 2, 0.0);
+        }
+        assert_eq!(b, START_BITRATE);
+        // Motion that uses it: room to grow, up to 4x the peak.
+        for _ in 0..100 {
+            b = next_bitrate(b, 20_000_000, 3_500_000, false, 8, 0.0);
+        }
+        assert_eq!(b, 14_000_000);
+        // Calm again: lowered gently (5% a tick), not dropped at once.
+        let calm = next_bitrate(b, 20_000_000, 300_000, false, 2, 0.0);
+        assert_eq!(calm, 13_300_000);
+        // Congestion: a quarter down, never below the minimum.
+        assert_eq!(next_bitrate(b, 20_000_000, 3_500_000, true, 8, 0.0), 10_500_000);
+        assert_eq!(next_bitrate(MIN_BITRATE, 20_000_000, 0, true, 0, 0.5), MIN_BITRATE);
+        // The configured maximum wins.
+        assert_eq!(next_bitrate(9_000_000, 8_000_000, 5_000_000, false, 8, 0.0), 8_000_000);
+    }
 
     #[test]
     fn steps_down_quickly_up_slowly_and_respects_choice() {
