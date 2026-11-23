@@ -205,7 +205,9 @@ async fn session(
                     tokio::spawn(async move { socket.punch(&candidates, relay.as_ref()).await });
                 }
                 Some(ServerMsg::Error { message }) => bail!("{message}"),
-                Some(ServerMsg::Ready { .. } | ServerMsg::Online { .. }) => {}
+                Some(
+                    ServerMsg::Ready { .. } | ServerMsg::Online { .. } | ServerMsg::Joined | ServerMsg::InviteCode { .. },
+                ) => {}
                 None => bail!("server closed the connection"),
             },
             _ = tick.tick() => {

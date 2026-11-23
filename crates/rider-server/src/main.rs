@@ -6,15 +6,17 @@
 //! opens a relay port as a fallback. It never sees screen or keyboard data:
 //! sessions are end-to-end encrypted with keys pinned at pairing.
 
+mod members;
 mod relay;
 mod tunnel;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use members::Members;
 use relay::RelayPool;
 use rider_core::identity::{Fingerprint, Identity, fp_hex, fp_short};
 use rider_core::proto::{read_msg, write_msg};
-use rider_core::rendezvous::{CODE_ALPHABET, PeerMsg, Relay, ServerMsg, Target, VERSION};
+use rider_core::rendezvous::{CODE_ALPHABET, PeerMsg, Relay, ServerInfo, ServerMsg, Target, VERSION};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -54,9 +56,23 @@ enum Cmd {
         /// loopback TCP address, behind a TLS web server, e.g. 127.0.0.1:47900.
         #[arg(long)]
         tunnel_listen: Option<SocketAddr>,
+        /// Personal server: only member computers can be reached (and the
+        /// devices they trust can reach any computer). New computers join
+        /// with an invite code. Without it every computer that registers is
+        /// recorded as a member, so switching this on later keeps them.
+        #[arg(long)]
+        invite_only: bool,
     },
     /// Print the server fingerprint and the commands to configure hosts and clients.
     Info,
+    /// A one-time invite code for a new computer (valid 10 minutes).
+    Invite,
+    /// List member computers, or remove one.
+    Members {
+        /// Remove the member whose fingerprint starts with this (8+ characters).
+        #[arg(long)]
+        remove: Option<String>,
+    },
 }
 
 fn parse_range(s: &str) -> Result<std::ops::RangeInclusive<u16>, String> {
@@ -79,10 +95,37 @@ fn main() -> Result<()> {
     let identity = Identity::load_or_create(&cli.state_dir)?;
     match cli.cmd {
         Cmd::Info => print_setup(&identity, None),
-        Cmd::Run { listen, public_ip, relay_ports, tunnel_listen } => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(serve(identity, listen, public_ip, relay_ports, tunnel_listen))?,
+        Cmd::Invite => {
+            let code = Members::new(&cli.state_dir, true).create_invite()?;
+            println!("Invite code: {code}");
+            println!("Valid for 10 minutes, for one computer: enter it next to the server address.");
+        }
+        Cmd::Members { remove: Some(prefix) } => {
+            let n = Members::new(&cli.state_dir, true).remove(&prefix)?;
+            println!("Removed {n} member(s).");
+        }
+        Cmd::Members { remove: None } => {
+            let list = Members::new(&cli.state_dir, true).list();
+            if list.is_empty() {
+                println!("No member computers yet.");
+            }
+            let mut list: Vec<_> = list.into_iter().collect();
+            list.sort_by_key(|(_, t)| *t);
+            for (fp, since) in list {
+                println!("{}  member since {since} (unix time)", fp_hex(&fp));
+            }
+        }
+        Cmd::Run { listen, public_ip, relay_ports, tunnel_listen, invite_only } => {
+            let members = Members::new(&cli.state_dir, invite_only);
+            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(serve(
+                identity,
+                listen,
+                public_ip,
+                relay_ports,
+                tunnel_listen,
+                members,
+            ))?
+        }
     }
     Ok(())
 }
@@ -112,6 +155,7 @@ struct Server {
     reports: Mutex<HashMap<Fingerprint, (Instant, u32)>>,
     relays: Arc<RelayPool>,
     tunnels: Arc<tunnel::Peers>,
+    members: Members,
 }
 
 async fn serve(
@@ -120,6 +164,7 @@ async fn serve(
     public_ip: Option<IpAddr>,
     relay_ports: std::ops::RangeInclusive<u16>,
     tunnel_listen: Option<SocketAddr>,
+    members: Members,
 ) -> Result<()> {
     let cfg = rider_core::tls::server_config_alpn(
         &identity,
@@ -134,7 +179,11 @@ async fn serve(
         reports: Mutex::default(),
         relays: RelayPool::new(public_ip, relay_ports.clone()),
         tunnels: Arc::default(),
+        members,
     });
+    if server.members.invite_only {
+        tracing::info!("invite only: {} member computer(s)", server.members.list().len());
+    }
     tracing::info!(
         "rendezvous on UDP {listen}, relay ports {}-{}{}",
         relay_ports.start(),
@@ -146,7 +195,10 @@ async fn serve(
         if public_ip.is_none() {
             tracing::warn!("--tunnel-listen without --public-ip: tunneled peers may get unusable relay addresses");
         }
-        tokio::spawn(tunnel::serve(tunnel::bind(addr).await?, server.tunnels.clone()));
+        // Published over HTTPS, so devices only need the server's name.
+        let info = ServerInfo { fingerprint: fp_hex(&identity.fingerprint()), port: listen.port() };
+        let info = Arc::new(serde_json::to_string(&info)?);
+        tokio::spawn(tunnel::serve(tunnel::bind(addr).await?, server.tunnels.clone(), info));
     }
 
     loop {
@@ -203,6 +255,44 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
             Ok(())
         }
+        Some(PeerMsg::Join { version, code }) => {
+            check_version(version, &mut send).await?;
+            let reply = if server.rate_limited(conn.remote_address()) {
+                ServerMsg::Error { message: "too many requests; try again in a minute".into() }
+            } else {
+                match server.members.join(fp, &code) {
+                    Ok(()) => {
+                        tracing::info!("{} joined with an invite", fp_short(&fp));
+                        ServerMsg::Joined
+                    }
+                    Err(e) => ServerMsg::Error { message: format!("{e:#}") },
+                }
+            };
+            write_msg(&mut send, &reply).await?;
+            let _ = send.finish();
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+            Ok(())
+        }
+        Some(PeerMsg::Invite { version }) => {
+            check_version(version, &mut send).await?;
+            let reply = if !server.members.contains(&fp) {
+                ServerMsg::Error { message: "only member computers can invite others".into() }
+            } else if server.rate_limited(conn.remote_address()) {
+                ServerMsg::Error { message: "too many requests; try again in a minute".into() }
+            } else {
+                match server.members.create_invite() {
+                    Ok(code) => {
+                        tracing::info!("{} created an invite", fp_short(&fp));
+                        ServerMsg::InviteCode { code, minutes: (members::INVITE_LIFETIME.as_secs() / 60) as u32 }
+                    }
+                    Err(e) => ServerMsg::Error { message: format!("{e:#}") },
+                }
+            };
+            write_msg(&mut send, &reply).await?;
+            let _ = send.finish();
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+            Ok(())
+        }
         Some(PeerMsg::Report { version, report }) => {
             // Only devices this server knows (registered hosts and the clients
             // they allow), within a quota; reports are metrics only.
@@ -247,6 +337,12 @@ async fn serve_host(
     });
     let conn_id = conn.stable_id();
     let public = conn.remote_address();
+    // An open server remembers who uses it, for turning on --invite-only.
+    if !server.members.invite_only
+        && let Err(e) = server.members.add(fp)
+    {
+        tracing::warn!("cannot record member: {e:#}");
+    }
     server.hosts.lock().unwrap().insert(
         fp,
         HostEntry { conn_id, tx: tx.clone(), public, local, allowed: allowed.into_iter().collect(), pairing },
@@ -311,10 +407,21 @@ impl Server {
         hosts.iter().map(|fp| registered.get(fp).is_some_and(|h| h.allowed.contains(client))).collect()
     }
 
-    /// A registered host, or a client some registered host allows.
+    /// A registered member host, or a client some registered member allows.
     fn known(&self, fp: &Fingerprint) -> bool {
         let hosts = self.hosts.lock().unwrap();
-        hosts.contains_key(fp) || hosts.values().any(|h| h.allowed.contains(fp))
+        hosts.contains_key(fp) && self.members.admitted(fp) || self.trusted_by_member(&hosts, fp)
+    }
+
+    /// Invite only: sessions to a member computer, or from a device a member
+    /// trusts (the owner helping any computer by quick connect).
+    fn may_reach(&self, hosts: &HashMap<Fingerprint, HostEntry>, host: &Fingerprint, client: &Fingerprint) -> bool {
+        self.members.admitted(host) || self.trusted_by_member(hosts, client)
+    }
+
+    /// `client` is allowed by a registered member host (the owner's devices).
+    fn trusted_by_member(&self, hosts: &HashMap<Fingerprint, HostEntry>, client: &Fingerprint) -> bool {
+        hosts.iter().any(|(fp, h)| h.allowed.contains(client) && self.members.admitted(fp))
     }
 
     fn reports_limited(&self, fp: Fingerprint) -> bool {
@@ -392,6 +499,9 @@ async fn connect(
         if !(h.allowed.contains(&client) || h.pairing) {
             return refuse();
         }
+        if !server.may_reach(&hosts, &host_fp, &client) {
+            return refuse();
+        }
         let mut c = h.local.clone();
         // A tunneled peer's address is the bridge's loopback socket: not a candidate.
         c.extend(Some(h.public).filter(|a| !a.ip().is_loopback()));
@@ -438,6 +548,7 @@ mod tests {
             reports: Mutex::default(),
             relays: RelayPool::new(None, 1..=1),
             tunnels: Arc::default(),
+            members: Members::new(&std::env::temp_dir(), false),
         };
         let from: SocketAddr = "198.51.100.1:5000".parse().unwrap();
         assert!((0..CONNECTS_PER_MINUTE).all(|_| !s.rate_limited(from)));
@@ -451,6 +562,45 @@ mod tests {
     }
 
     #[test]
+    fn invite_only_serves_members_and_their_devices() {
+        let dir = std::env::temp_dir().join(format!("rider-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Server {
+            hosts: Mutex::default(),
+            codes: Mutex::default(),
+            rate: Mutex::default(),
+            reports: Mutex::default(),
+            relays: RelayPool::new(None, 1..=1),
+            tunnels: Arc::default(),
+            members: Members::new(&dir, true),
+        };
+        let (member, laptop, stranger_host, stranger_pc, support) =
+            ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32], [5u8; 32]);
+        s.members.add(member).unwrap();
+        let entry = |allowed: &[Fingerprint]| HostEntry {
+            conn_id: 0,
+            tx: mpsc::unbounded_channel().0,
+            public: "198.51.100.1:1".parse().unwrap(),
+            local: Vec::new(),
+            allowed: allowed.iter().copied().collect(),
+            pairing: false,
+        };
+        let mut hosts = s.hosts.lock().unwrap();
+        hosts.insert(member, entry(&[laptop]));
+        hosts.insert(stranger_host, entry(&[stranger_pc]));
+        hosts.insert(support, entry(&[]));
+        assert!(s.may_reach(&hosts, &member, &laptop), "own device to own computer");
+        assert!(s.may_reach(&hosts, &member, &stranger_pc), "pairing a new device with a member");
+        assert!(s.may_reach(&hosts, &support, &laptop), "quick-connect help from an own device");
+        assert!(!s.may_reach(&hosts, &stranger_host, &stranger_pc), "strangers cannot use the server");
+        assert!(!s.may_reach(&hosts, &support, &stranger_pc));
+        drop(hosts);
+        assert!(s.known(&member) && s.known(&laptop), "reports from the owner's devices");
+        assert!(!s.known(&stranger_pc) && !s.known(&stranger_host), "not from strangers");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn pairing_code_lifecycle() {
         let s = Server {
             hosts: Mutex::default(),
@@ -459,6 +609,7 @@ mod tests {
             reports: Mutex::default(),
             relays: RelayPool::new(None, 1..=1),
             tunnels: Arc::default(),
+            members: Members::new(&std::env::temp_dir(), false),
         };
         let fp = [1u8; 32];
         let code = s.update_code(fp, true).unwrap();

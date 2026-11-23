@@ -51,6 +51,36 @@ impl ServerRef {
         Ok(Self { addr: addr.trim().to_owned(), fingerprint: crate::identity::fp_hex(&fp) })
     }
 
+    /// The server called `addr` (a name, optionally `:port`), its
+    /// fingerprint fetched over HTTPS from the same name and checked like a
+    /// browser checks a site: users type only the name. Blocking.
+    pub fn discover(addr: &str) -> Result<Self> {
+        let addr = addr.trim();
+        let (host, port) = match addr.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() => (h, Some(p)),
+            _ => (addr, None),
+        };
+        if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
+            bail!(crate::i18n::tr(
+                "use the server's name (like rider.example.com): only a name can be checked over HTTPS. For an IP address, enter the fingerprint under Advanced.",
+                "serverin adını yazın (məsələn, rider.example.com): HTTPS ilə yalnız ad yoxlanıla bilər. IP ünvanı üçün barmaq izini «Əlavə» bölməsində daxil edin."
+            ));
+        }
+        let body = crate::https::get(host, INFO_PATH, 4096).map_err(|e| {
+            anyhow::anyhow!(crate::trf!(
+                "could not check {host} over HTTPS ({e:#}). Is the name right?",
+                "{host} HTTPS ilə yoxlanıla bilmədi ({e:#}). Ad düzgündür?"
+            ))
+        })?;
+        let info: ServerInfo = serde_json::from_slice(&body).context("unexpected answer from the server")?;
+        let addr = match port {
+            Some(_) => addr.to_owned(),
+            None if info.port != DEFAULT_SERVER_PORT => format!("{host}:{}", info.port),
+            None => host.to_owned(),
+        };
+        Self::new(&addr, &info.fingerprint)
+    }
+
     pub fn fingerprint(&self) -> Result<Fingerprint> {
         fp_from_hex(&self.fingerprint)
     }
@@ -91,6 +121,11 @@ pub enum PeerMsg {
     Status { version: u32, hosts: Vec<Fingerprint> },
     /// Host or client: connection diagnostics for one session (no reply).
     Report { version: u32, report: crate::diag::Report },
+    /// A new computer joins a server that only accepts invited computers,
+    /// with an invite code (`rider-server invite`, or Invite from a member).
+    Join { version: u32, code: String },
+    /// A member computer asks for an invite code for another one.
+    Invite { version: u32 },
 }
 
 /// Server → peer.
@@ -120,6 +155,26 @@ pub enum ServerMsg {
     Online {
         online: Vec<bool>,
     },
+    /// Answer to `Join`: this computer is now a member.
+    Joined,
+    /// Answer to `Invite`: a one-time code, valid for `minutes`.
+    InviteCode {
+        code: String,
+        minutes: u32,
+    },
+}
+
+/// HTTPS path where a server publishes its fingerprint (the web front end
+/// passes `/rider-tunnel...` to the server's tunnel bridge).
+pub const INFO_PATH: &str = "/rider-tunnel/info";
+
+/// What a server publishes at [`INFO_PATH`]. Not secret: the same key is
+/// shown to anyone who connects. HTTPS makes sure it is the real server's.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ServerInfo {
+    pub fingerprint: String,
+    /// The rendezvous UDP port.
+    pub port: u16,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +215,42 @@ pub fn tunnel_recent() -> bool {
 /// Note that UDP to the server does not get through from here.
 pub fn mark_tunnel() {
     *TUNNEL_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + TUNNEL_STICKY);
+}
+
+/// One request to the server and its answer.
+async fn ask(identity: &Identity, server: &ServerRef, msg: &PeerMsg) -> Result<ServerMsg> {
+    let (_socket, conn, mut send, mut recv) = reach_server(identity, server).await?;
+    crate::proto::write_msg(&mut send, msg).await?;
+    let reply = tokio::time::timeout(Duration::from_secs(10), crate::proto::read_msg::<ServerMsg>(&mut recv))
+        .await
+        .context("the server did not answer")??;
+    conn.close(0u32.into(), b"done");
+    match reply {
+        Some(ServerMsg::Error { message }) => bail!("{message}"),
+        Some(r) => Ok(r),
+        // An older server closes on messages it does not know.
+        None => bail!("the server does not know invites yet: update rider-server"),
+    }
+}
+
+/// Join a server that only accepts invited computers.
+pub async fn join(identity: &Identity, server: &ServerRef, code: &str) -> Result<()> {
+    let code = normalize_code(code).context(crate::i18n::tr(
+        "that is not an invite code: it has 6 letters and digits, like K7P-2QX",
+        "bu dəvət kodu deyil: o, 6 hərf və rəqəmdən ibarətdir, məsələn, K7P-2QX",
+    ))?;
+    match ask(identity, server, &PeerMsg::Join { version: VERSION, code }).await? {
+        ServerMsg::Joined => Ok(()),
+        _ => bail!("unexpected reply from the rendezvous server"),
+    }
+}
+
+/// An invite code for another computer: (code, minutes valid).
+pub async fn invite(identity: &Identity, server: &ServerRef) -> Result<(String, u32)> {
+    match ask(identity, server, &PeerMsg::Invite { version: VERSION }).await? {
+        ServerMsg::InviteCode { code, minutes } => Ok((code, minutes)),
+        _ => bail!("unexpected reply from the rendezvous server"),
+    }
 }
 
 /// A fresh socket connected to the rendezvous server: UDP, or the HTTPS

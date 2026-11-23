@@ -182,7 +182,7 @@ pub fn download(r: &Release, dest: &Path, progress: &mut dyn FnMut(u64, u64)) ->
 
 /// Minimal HTTPS GET over WinHTTP.
 #[cfg(windows)]
-mod http {
+pub(crate) mod http {
     use anyhow::{Context, Result, bail};
     use std::ffi::c_void;
     use windows::Win32::Networking::WinHttp::{

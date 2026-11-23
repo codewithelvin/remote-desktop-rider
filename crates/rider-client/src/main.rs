@@ -49,8 +49,8 @@ enum Cmd {
         /// Server address, e.g. rider.example.com or 203.0.113.7:47900.
         #[arg(required_unless_present = "off")]
         addr: Option<String>,
-        /// Server fingerprint, printed by `rider-server info`.
-        #[arg(required_unless_present = "off")]
+        /// Server fingerprint (`rider-server info`). Leave it out for a server
+        /// with a name: it is then fetched over HTTPS and checked.
         fingerprint: Option<String>,
         /// Stop using a server (direct addresses only).
         #[arg(long, conflicts_with_all = ["addr", "fingerprint"])]
@@ -97,7 +97,8 @@ fn main() -> Result<()> {
             cfg.server = match (off, addr, fingerprint) {
                 (true, ..) => None,
                 (false, Some(a), Some(f)) => Some(ServerRef::new(&a, &f)?),
-                _ => bail!("give the server address and fingerprint, or --off"),
+                (false, Some(a), None) => Some(ServerRef::discover(&a)?),
+                _ => bail!("give the server address, or --off"),
             };
             cfg.save()?;
             match &cfg.server {

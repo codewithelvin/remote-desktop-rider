@@ -19,12 +19,14 @@ tracing.workspace = true
 arboard.workspace = true
 rayon.workspace = true
 
+serde_json.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustls-native-certs = "0.8"

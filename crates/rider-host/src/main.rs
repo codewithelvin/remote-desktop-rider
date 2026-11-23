@@ -60,16 +60,21 @@ enum Cmd {
     Info,
     /// Use a rendezvous server (rider-server) so clients can connect from other networks.
     SetServer {
-        /// Server address, e.g. rider.example.com or 203.0.113.7:47900.
+        /// Server name, e.g. rider.example.com (or an address with a fingerprint).
         #[arg(required_unless_present = "off")]
         addr: Option<String>,
-        /// Server fingerprint, printed by `rider-server info`.
-        #[arg(required_unless_present = "off")]
+        /// Server fingerprint (`rider-server info`). Leave it out for a server
+        /// with a name: it is then fetched over HTTPS and checked.
         fingerprint: Option<String>,
+        /// Invite code, for a server that only accepts invited computers.
+        #[arg(long)]
+        invite: Option<String>,
         /// Stop using a server (LAN / direct connections only).
-        #[arg(long, conflicts_with_all = ["addr", "fingerprint"])]
+        #[arg(long, conflicts_with_all = ["addr", "fingerprint", "invite"])]
         off: bool,
     },
+    /// An invite code for another computer to join this computer's server.
+    Invite,
     /// One-time support session: get a short code from the server, wait for
     /// a helper to enter it, ask here before letting them in. No admin rights,
     /// PIN or pairing; nothing is kept afterwards.
@@ -207,16 +212,39 @@ fn main() -> Result<()> {
             cfg.save()?;
             println!("Removed {removed} device(s).");
         }
-        Cmd::SetServer { addr, fingerprint, off } => {
-            cfg.server = match (off, addr, fingerprint) {
-                (true, ..) => None,
-                (false, Some(a), Some(f)) => Some(rider_core::rendezvous::ServerRef::new(&a, &f)?),
-                _ => bail!("give the server address and fingerprint, or --off"),
+        Cmd::SetServer { addr, fingerprint, invite, off } => {
+            use rider_core::rendezvous::{self, ServerRef};
+            cfg.server = match (off, addr) {
+                (true, _) => None,
+                (false, Some(a)) => {
+                    let server = match fingerprint {
+                        Some(f) => ServerRef::new(&a, &f)?,
+                        None => ServerRef::discover(&a)?,
+                    };
+                    if let Some(code) = invite {
+                        let identity = Identity::load_or_create(&dir)?;
+                        tokio::runtime::Runtime::new()?.block_on(rendezvous::join(&identity, &server, &code))?;
+                        println!("Joined {} with the invite code.", server.addr);
+                    }
+                    Some(server)
+                }
+                _ => bail!("give the server address, or --off"),
             };
             cfg.save()?;
             match &cfg.server {
                 Some(s) => println!("Rendezvous server set to {} (a running host switches within seconds).", s.addr),
                 None => println!("Rendezvous server disabled."),
+            }
+        }
+        Cmd::Invite => {
+            let server = cfg.server.clone().context("no server is set")?;
+            let identity = Identity::load_or_create(&dir)?;
+            let (code, minutes) =
+                tokio::runtime::Runtime::new()?.block_on(rider_core::rendezvous::invite(&identity, &server))?;
+            if ui::json() {
+                println!("{}", serde_json::json!({ "code": code, "minutes": minutes }));
+            } else {
+                println!("Invite code: {code} (valid {minutes} minutes, for one computer)");
             }
         }
         Cmd::Support { .. } => unreachable!("handled above"),

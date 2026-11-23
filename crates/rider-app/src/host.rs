@@ -97,6 +97,7 @@ pub struct HostApp {
     pin_open: bool,
     server_addr: String,
     server_fp: String,
+    server_invite: String,
     pairing: Option<Pairing>,
     revoke: Option<String>,
 }
@@ -114,6 +115,7 @@ impl HostApp {
             pin_open: false,
             server_addr: String::new(),
             server_fp: String::new(),
+            server_invite: String::new(),
             pairing: None,
             revoke: None,
         };
@@ -271,6 +273,7 @@ impl HostApp {
                     if r.is_ok() {
                         self.pin_open = false;
                         self.pin = Default::default();
+                        self.server_invite.clear();
                     }
                     self.result = Some(r);
                     self.busy = Some(tr("Loading…", "Yüklənir…"));
@@ -574,57 +577,115 @@ impl HostApp {
                 ui,
                 tr(
                     "One setting for both directions: your devices reach this computer, and this computer reaches \
-                     yours, from any network. `rider-server info` prints both values.",
+                     yours, from any network. Type the server's name; it is checked over HTTPS.",
                     "Hər iki istiqamət üçün bir ayar: cihazlarınız bu kompüterə, bu kompüter də sizin cihazlarınıza \
-                     istənilən şəbəkədən qoşulur. Hər iki dəyəri `rider-server info` əmri göstərir.",
+                     istənilən şəbəkədən qoşulur. Serverin adını yazın; o, HTTPS ilə yoxlanılır.",
                 ),
             );
             egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
                 widgets::hint(ui, tr("Address", "Ünvan"));
                 ui.add(TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0));
                 ui.end_row();
-                widgets::hint(ui, tr("Fingerprint", "Barmaq izi"));
+                widgets::hint(ui, tr("Invite code", "Dəvət kodu"));
+                ui.add(
+                    TextEdit::singleline(&mut self.server_invite)
+                        .hint_text(tr(
+                            "only for a new computer, e.g. K7P-2QX",
+                            "yalnız yeni kompüter üçün, məs. K7P-2QX",
+                        ))
+                        .desired_width(360.0),
+                );
+                ui.end_row();
+            });
+            egui::CollapsingHeader::new(tr("Advanced", "Əlavə")).id_salt("server_advanced").show(ui, |ui| {
+                widgets::hint(
+                    ui,
+                    tr(
+                        "Fingerprint: only for a server without a name (an IP address). Otherwise it is checked over HTTPS by itself.",
+                        "Barmaq izi: yalnız adı olmayan server (IP ünvanı) üçün. Əks halda o, HTTPS ilə avtomatik yoxlanılır.",
+                    ),
+                );
                 ui.add(
                     TextEdit::singleline(&mut self.server_fp)
                         .hint_text(tr("64 hex characters", "64 onaltılıq simvol"))
                         .desired_width(360.0)
                         .font(egui::TextStyle::Monospace),
                 );
-                ui.end_row();
             });
             ui.horizontal(|ui| {
                 let idle = self.busy.is_none();
-                let changed = info.server.as_ref().map_or(!self.server_addr.trim().is_empty(), |s| {
-                    s.addr != self.server_addr.trim() || s.fingerprint != self.server_fp.trim()
-                });
-                if widgets::primary(ui, idle && changed, tr("Save", "Yadda saxla")).clicked() {
-                    match ServerRef::new(self.server_addr.trim(), self.server_fp.trim()) {
-                        Ok(s) => {
-                            let _ = sync_client_server(Some(&s));
-                            self.run(
-                                tr("Saving…", "Yadda saxlanılır…"),
-                                vec!["set-server".into(), s.addr, s.fingerprint],
-                                None,
-                                tr("Server saved.", "Server yadda saxlanıldı."),
-                            )
-                        }
-                        Err(e) => self.result = Some(Err(format!("{e:#}"))),
+                let (addr, fp, invite) =
+                    (self.server_addr.trim(), self.server_fp.trim(), self.server_invite.trim().to_owned());
+                let saved_fp = info.server.as_ref().map(|s| s.fingerprint.as_str()).unwrap_or("");
+                // A typed fingerprint is used as given; otherwise the name is checked over HTTPS.
+                let typed = !fp.is_empty() && fp != saved_fp;
+                let changed = info.server.as_ref().is_none_or(|s| s.addr != addr) || typed || !invite.is_empty();
+                if widgets::primary(ui, idle && changed && !addr.is_empty(), tr("Save", "Yadda saxla")).clicked() {
+                    let mut a = vec!["set-server".to_owned(), addr.to_owned()];
+                    if typed {
+                        a.push(fp.to_owned());
                     }
-                }
-                if info.server.is_some()
-                    && ui
-                        .add_enabled(idle, egui::Button::new(tr("Don't use a server", "Serverdən istifadə etmə")))
-                        .clicked()
-                {
-                    let _ = sync_client_server(None);
+                    if !invite.is_empty() {
+                        a.extend(["--invite".to_owned(), invite]);
+                    }
                     self.run(
-                        tr("Saving…", "Yadda saxlanılır…"),
-                        args(&["set-server", "--off"]),
+                        tr("Checking the server…", "Server yoxlanılır…"),
+                        a,
                         None,
-                        tr("Server removed.", "Server ayarı silindi."),
+                        tr("Server saved.", "Server yadda saxlanıldı."),
                     );
                 }
+                if info.server.is_some() {
+                    if ui
+                        .add_enabled(idle, egui::Button::new(tr("Invite another computer", "Başqa kompüteri dəvət et")))
+                        .on_hover_text(tr(
+                            "A one-time code for a new computer to use this server (valid 10 minutes).",
+                            "Yeni kompüterin bu serverdən istifadə etməsi üçün birdəfəlik kod (10 dəqiqə etibarlıdır).",
+                        ))
+                        .clicked()
+                    {
+                        self.invite();
+                    }
+                    if ui
+                        .add_enabled(idle, egui::Button::new(tr("Don't use a server", "Serverdən istifadə etmə")))
+                        .clicked()
+                    {
+                        let _ = sync_client_server(None);
+                        self.run(
+                            tr("Saving…", "Yadda saxlanılır…"),
+                            args(&["set-server", "--off"]),
+                            None,
+                            tr("Server removed.", "Server ayarı silindi."),
+                        );
+                    }
+                }
             });
+        });
+    }
+
+    /// A one-time invite code from the server, shown as the result.
+    fn invite(&mut self) {
+        self.busy = Some(tr("Asking the server…", "Serverdən soruşulur…"));
+        self.result = None;
+        let tx = self.bus.tx();
+        std::thread::spawn(move || {
+            #[derive(serde::Deserialize)]
+            struct Invite {
+                code: String,
+                minutes: u32,
+            }
+            let r = sys::run(HOST, &["--json", "invite"], None).and_then(|out| {
+                let i: Invite = serde_json::from_str(out.trim()).map_err(|e| e.to_string())?;
+                Ok(trf!(
+                    "Invite code for the new computer: {}  (valid {} minutes, once). Enter it there next to the \
+                     server address.",
+                    "Yeni kompüter üçün dəvət kodu: {}  ({} dəqiqə, bir dəfə). Onu orada server ünvanının yanında \
+                     daxil edin.",
+                    i.code,
+                    i.minutes
+                ))
+            });
+            tx.send(Msg::Done(r));
         });
     }
 

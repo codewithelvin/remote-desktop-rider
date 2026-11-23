@@ -209,6 +209,9 @@ pub struct ClientApp {
     /// Server address and fingerprint being edited (Settings, without Manage).
     server_edit: Option<(String, String)>,
     server_msg: Option<Result<String, String>>,
+    /// Checking a server in the background: the result, and whether its
+    /// name was verified over HTTPS (rather than a typed fingerprint).
+    server_check: Option<std::sync::mpsc::Receiver<(Result<rider_core::rendezvous::ServerRef, String>, bool)>>,
 }
 
 impl ClientApp {
@@ -263,6 +266,7 @@ impl ClientApp {
             updater: Updater::new(ctx),
             server_edit: None,
             server_msg: None,
+            server_check: None,
         };
         app.refresh_saved_pins();
         app.preview();
@@ -1375,9 +1379,20 @@ impl ClientApp {
         });
     }
 
-    /// Without Manage (macOS, Linux) the server is set here.
+    /// Without Manage (macOS, Linux) the server is set here. Only the name is
+    /// needed: the fingerprint is fetched over HTTPS (Advanced: type it).
     fn server_editor(&mut self, ui: &mut Ui) {
+        use rider_core::rendezvous::ServerRef;
         let saved = self.cfg.server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default();
+        // A finished check: save what it found.
+        let checked = self.server_check.as_ref().and_then(|rx| rx.try_recv().ok());
+        if checked.is_some() {
+            self.server_check = None;
+        }
+        let checking = self.server_check.is_some();
+        if checking {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let edit = self.server_edit.get_or_insert_with(|| saved.clone());
         let (mut save, mut clear) = (false, false);
         widgets::card(ui, |ui| {
@@ -1386,28 +1401,39 @@ impl ClientApp {
                 widgets::hint(ui, tr("Address", "Ünvan"));
                 ui.add(TextEdit::singleline(&mut edit.0).hint_text("rider.example.com").desired_width(f32::INFINITY));
                 ui.end_row();
-                widgets::hint(ui, tr("Fingerprint", "Barmaq izi"));
+            });
+            egui::CollapsingHeader::new(tr("Advanced", "Əlavə")).id_salt("server_advanced").show(ui, |ui| {
+                widgets::hint(
+                    ui,
+                    tr(
+                        "Fingerprint: only for a server without a name (an IP address). Otherwise it is checked over HTTPS by itself.",
+                        "Barmaq izi: yalnız adı olmayan server (IP ünvanı) üçün. Əks halda o, HTTPS ilə avtomatik yoxlanılır.",
+                    ),
+                );
                 ui.add(
                     TextEdit::singleline(&mut edit.1)
                         .hint_text("SHA-256")
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY),
                 );
-                ui.end_row();
             });
             ui.horizontal(|ui| {
                 let changed = (edit.0.trim(), edit.1.trim()) != (saved.0.as_str(), saved.1.as_str());
-                let filled = !edit.0.trim().is_empty() && !edit.1.trim().is_empty();
-                save = widgets::primary(ui, changed && filled, tr("Save", "Yadda saxla")).clicked();
+                let ok = changed && !edit.0.trim().is_empty() && !checking;
+                save = widgets::primary(ui, ok, tr("Save", "Yadda saxla")).clicked();
                 if self.cfg.server.is_some() {
-                    clear = ui.button(tr("Remove", "Sil")).clicked();
+                    clear = ui.add_enabled(!checking, egui::Button::new(tr("Remove", "Sil"))).clicked();
+                }
+                if checking {
+                    ui.spinner();
+                    widgets::hint(ui, tr("Checking the server…", "Server yoxlanılır…"));
                 }
             });
             widgets::hint(
                 ui,
                 tr(
-                    "Both are shown at the end of the server install (or by rider-server info). Without a server, only computers on this network can be reached.",
-                    "Hər ikisi server quraşdırmasının sonunda (və ya rider-server info əmri ilə) göstərilir. Server olmadan yalnız bu şəbəkədəki kompüterlərə qoşulmaq mümkündür.",
+                    "Type the server's name, e.g. rider.example.com. Without a server, only computers on this network can be reached.",
+                    "Serverin adını yazın, məsələn, rider.example.com. Server olmadan yalnız bu şəbəkədəki kompüterlərə qoşulmaq mümkündür.",
                 ),
             );
             match &self.server_msg {
@@ -1416,18 +1442,34 @@ impl ClientApp {
                 None => {}
             }
         });
-        if !(save || clear) {
+        if save {
+            // A typed fingerprint is used as given; otherwise the name is checked over HTTPS.
+            let (addr, fp) = (edit.0.trim().to_owned(), edit.1.trim().to_owned());
+            let typed = (!fp.is_empty() && fp != saved.1).then_some(fp);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let verified = typed.is_none();
+                let r = match typed {
+                    Some(fp) => ServerRef::new(&addr, &fp),
+                    None => ServerRef::discover(&addr),
+                };
+                let _ = tx.send((r.map_err(|e| format!("{e:#}")), verified));
+                ctx.request_repaint();
+            });
+            self.server_check = Some(rx);
+            self.server_msg = None;
             return;
         }
-        let new = if clear {
-            Ok(None)
-        } else {
-            rider_core::rendezvous::ServerRef::new(edit.0.trim(), edit.1.trim()).map(Some)
+        let (result, verified) = match (clear, checked) {
+            (true, _) => (Ok(None), false),
+            (false, Some((r, verified))) => (r.map(Some), verified),
+            (false, None) => return,
         };
-        let result = new.and_then(|server| {
-            let mut cfg = ClientConfig::load()?;
+        let result = result.and_then(|server| {
+            let mut cfg = ClientConfig::load().map_err(|e| format!("{e:#}"))?;
             cfg.server = server.clone();
-            cfg.save()?;
+            cfg.save().map_err(|e| format!("{e:#}"))?;
             Ok(server)
         });
         self.server_msg = Some(match result {
@@ -1438,10 +1480,19 @@ impl ClientApp {
                 self.cfg_mtime = config_mtime();
                 self.server_error = None;
                 self.polled = None;
-                Ok(if clear { tr("Server removed.", "Server silindi.") } else { tr("Saved.", "Yadda saxlanıldı.") }
-                    .into())
+                Ok(if clear {
+                    tr("Server removed.", "Server silindi.")
+                } else if verified {
+                    tr(
+                        "✓ Saved. The server was verified over HTTPS.",
+                        "✓ Yadda saxlanıldı. Server HTTPS ilə yoxlanıldı.",
+                    )
+                } else {
+                    tr("Saved.", "Yadda saxlanıldı.")
+                }
+                .into())
             }
-            Err(e) => Err(format!("{e:#}")),
+            Err(e) => Err(e),
         });
     }
 

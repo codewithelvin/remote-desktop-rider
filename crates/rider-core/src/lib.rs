@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod diag;
 #[cfg(windows)]
 pub mod dpi;
+pub mod https;
 pub mod i18n;
 pub mod icon;
 pub mod identity;
