@@ -128,7 +128,7 @@ impl HostApp {
     /// `RIDER_PREVIEW=1`: sample data instead of `rider-host`, to look at
     /// this window (both themes and languages) without administrator rights.
     fn preview(&mut self) {
-        let fp = "ca3dbb3efab7faacb4f4bb18f7db38c3d8eb0744eee4d7b992d41ed6083f1961";
+        let fp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         self.busy = None;
         self.info = Some(Info {
             name: "OFFICE-PC".into(),

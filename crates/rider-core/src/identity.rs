@@ -84,7 +84,7 @@ pub fn fp_short(fp: &Fingerprint) -> String {
 mod fp_tests {
     #[test]
     fn fingerprint_parsing_is_forgiving() {
-        let fp = "ca3dbb3efab7faacb4f4bb18f7db38c3d8eb0744eee4d7b992d41ed6083f1961";
+        let fp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let want = super::fp_from_hex(fp).unwrap();
         assert_eq!(super::fp_hex(&want), fp);
         assert_eq!(

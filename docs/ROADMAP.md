@@ -141,12 +141,12 @@ Merge `rider-host` and `rider-client` into one installer and one tray app
       prompt) and drives `rider-host --json`: remote access on/off, PIN, devices
       with Remove, Add a device (code + verification), server
 - [x] Host applies `set-server` live; `rider-client` is now a library + CLI
-- [x] Production server `rdm.codex.az` (51.210.43.4) deployed with `deploy/install.sh`;
+- [x] Production server deployed with `deploy/install.sh`;
       direct and relayed sessions verified from the internet (relay adds ~0 ms
       over the 2x path latency)
 - [x] Click-through test of every dialog, both sides (pairing by code, PIN,
       wrong PIN, Remove, Manage with UAC driven through a Rider session)
-- [x] `rdm.codex.az` DNS switched to DNS only (UDP works); devices use the name, not the IP
+- [x] Server DNS switched to DNS only (UDP works); devices use the name, not the IP
 
 **Part 2:**
 
