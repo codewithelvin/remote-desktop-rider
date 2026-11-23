@@ -1395,15 +1395,17 @@ impl ClientApp {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         let edit = self.server_edit.get_or_insert_with(|| saved.clone());
-        let (mut save, mut clear) = (false, false);
+        let (mut save, mut clear, mut typed) = (false, false, false);
         widgets::card(ui, |ui| {
             widgets::section(ui, icon::GLOBE, tr("Server", "Server"));
             egui::Grid::new("server_edit").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
                 widgets::hint(ui, tr("Address", "Ünvan"));
-                ui.add(TextEdit::singleline(&mut edit.0).hint_text("rider.example.com").desired_width(f32::INFINITY));
+                typed |= ui
+                    .add(TextEdit::singleline(&mut edit.0).hint_text("rider.example.com").desired_width(f32::INFINITY))
+                    .changed();
                 ui.end_row();
             });
-            egui::CollapsingHeader::new(tr("Advanced", "Əlavə")).id_salt("server_advanced").show(ui, |ui| {
+            egui::CollapsingHeader::new(tr("Advanced", "Ətraflı")).id_salt("server_advanced").show(ui, |ui| {
                 widgets::hint(
                     ui,
                     tr(
@@ -1411,13 +1413,19 @@ impl ClientApp {
                         "Barmaq izi: yalnız adı olmayan server (IP ünvanı) üçün. Əks halda o, HTTPS ilə avtomatik yoxlanılır.",
                     ),
                 );
-                ui.add(
-                    TextEdit::singleline(&mut edit.1)
-                        .hint_text("SHA-256")
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY),
-                );
+                typed |= ui
+                    .add(
+                        TextEdit::singleline(&mut edit.1)
+                            .hint_text("SHA-256")
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed();
             });
+            // An old message no longer fits what is being typed.
+            if typed {
+                self.server_msg = None;
+            }
             ui.horizontal(|ui| {
                 let changed = (edit.0.trim(), edit.1.trim()) != (saved.0.as_str(), saved.1.as_str());
                 let ok = changed && !edit.0.trim().is_empty() && !checking;
@@ -1484,10 +1492,7 @@ impl ClientApp {
                 Ok(if clear {
                     tr("Server removed.", "Server silindi.")
                 } else if verified {
-                    tr(
-                        "✓ Saved. The server was verified over HTTPS.",
-                        "✓ Yadda saxlanıldı. Server HTTPS ilə yoxlanıldı.",
-                    )
+                    tr("Saved. The server was verified over HTTPS.", "Yadda saxlanıldı. Server HTTPS ilə yoxlanıldı.")
                 } else {
                     tr("Saved.", "Yadda saxlanıldı.")
                 }

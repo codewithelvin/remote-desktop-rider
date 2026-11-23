@@ -62,14 +62,22 @@ impl ServerRef {
         };
         if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
             bail!(crate::i18n::tr(
-                "use the server's name (like rider.example.com): only a name can be checked over HTTPS. For an IP address, enter the fingerprint under Advanced.",
-                "serverin adını yazın (məsələn, rider.example.com): HTTPS ilə yalnız ad yoxlanıla bilər. IP ünvanı üçün barmaq izini «Əlavə» bölməsində daxil edin."
+                "Use the server's name (like rider.example.com): only a name can be checked over HTTPS. For an IP address, enter the fingerprint under Advanced.",
+                "Serverin adını yazın (məsələn, rider.example.com): HTTPS ilə yalnız ad yoxlanıla bilər. IP ünvanı üçün barmaq izini «Ətraflı» bölməsində daxil edin."
+            ));
+        }
+        // A name that does not exist gets a plain message, without the
+        // system's technical one.
+        if std::net::ToSocketAddrs::to_socket_addrs(&(host, 443)).is_err() {
+            bail!(crate::trf!(
+                "No server named {host} was found. Is the name spelled right?",
+                "{host} adlı server tapılmadı. Ad düzgün yazılıb?"
             ));
         }
         let body = crate::https::get(host, INFO_PATH, 4096).map_err(|e| {
             anyhow::anyhow!(crate::trf!(
-                "could not check {host} over HTTPS ({e:#}). Is the name right?",
-                "{host} HTTPS ilə yoxlanıla bilmədi ({e:#}). Ad düzgündür?"
+                "Could not check {host} over HTTPS ({e:#}). Is it a Remote Desktop Rider server?",
+                "{host} HTTPS ilə yoxlanıla bilmədi ({e:#}). Bu Remote Desktop Rider serveridir?"
             ))
         })?;
         let info: ServerInfo = serde_json::from_slice(&body).context("unexpected answer from the server")?;

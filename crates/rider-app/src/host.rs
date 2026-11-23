@@ -582,22 +582,29 @@ impl HostApp {
                      istənilən şəbəkədən qoşulur. Serverin adını yazın; o, HTTPS ilə yoxlanılır.",
                 ),
             );
+            let mut typed = false;
             egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
                 widgets::hint(ui, tr("Address", "Ünvan"));
-                ui.add(TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0));
+                typed |= ui
+                    .add(
+                        TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0),
+                    )
+                    .changed();
                 ui.end_row();
                 widgets::hint(ui, tr("Invite code", "Dəvət kodu"));
-                ui.add(
-                    TextEdit::singleline(&mut self.server_invite)
-                        .hint_text(tr(
-                            "only for a new computer, e.g. K7P-2QX",
-                            "yalnız yeni kompüter üçün, məs. K7P-2QX",
-                        ))
-                        .desired_width(360.0),
-                );
+                typed |= ui
+                    .add(
+                        TextEdit::singleline(&mut self.server_invite)
+                            .hint_text(tr(
+                                "only for a new computer, e.g. K7P-2QX",
+                                "yalnız yeni kompüter üçün, məs. K7P-2QX",
+                            ))
+                            .desired_width(360.0),
+                    )
+                    .changed();
                 ui.end_row();
             });
-            egui::CollapsingHeader::new(tr("Advanced", "Əlavə")).id_salt("server_advanced").show(ui, |ui| {
+            egui::CollapsingHeader::new(tr("Advanced", "Ətraflı")).id_salt("server_advanced").show(ui, |ui| {
                 widgets::hint(
                     ui,
                     tr(
@@ -605,13 +612,19 @@ impl HostApp {
                         "Barmaq izi: yalnız adı olmayan server (IP ünvanı) üçün. Əks halda o, HTTPS ilə avtomatik yoxlanılır.",
                     ),
                 );
-                ui.add(
-                    TextEdit::singleline(&mut self.server_fp)
-                        .hint_text(tr("64 hex characters", "64 onaltılıq simvol"))
-                        .desired_width(360.0)
-                        .font(egui::TextStyle::Monospace),
-                );
+                typed |= ui
+                    .add(
+                        TextEdit::singleline(&mut self.server_fp)
+                            .hint_text(tr("64 hex characters", "64 onaltılıq simvol"))
+                            .desired_width(360.0)
+                            .font(egui::TextStyle::Monospace),
+                    )
+                    .changed();
             });
+            // An old message no longer fits what is being typed.
+            if typed && self.busy.is_none() {
+                self.result = None;
+            }
             ui.horizontal(|ui| {
                 let idle = self.busy.is_none();
                 let (addr, fp, invite) =
