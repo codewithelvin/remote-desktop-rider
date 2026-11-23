@@ -182,6 +182,11 @@ pub fn status() -> Option<bool> {
 
 /// Stops the service for the lifetime of the guard (it holds the UDP port),
 /// restarting it on drop. Used while pairing interactively.
+///
+/// A drop does not run if the pairing process is killed (Task Manager, a
+/// crash, a closed remote shell), which would leave the computer unreachable
+/// until a reboot. So a detached helper (`service resume-after`) also waits
+/// for this process to end and starts the service if it is still stopped.
 pub struct Paused(bool);
 
 impl Paused {
@@ -189,10 +194,50 @@ impl Paused {
         if status() == Some(true) {
             println!("Pausing the background service while pairing...");
             set_running(false)?;
+            resume_when_gone(std::process::id());
             return Ok(Self(true));
         }
         Ok(Self(false))
     }
+}
+
+/// Start `rider-host service resume-after <pid>`, outside this process's
+/// job if allowed, so it outlives a killed process tree.
+fn resume_when_gone(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let spawn = |flags: u32| -> std::io::Result<()> {
+        std::process::Command::new(std::env::current_exe()?)
+            .args(["service", "resume-after", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(flags | DETACHED_PROCESS | CREATE_NO_WINDOW.0)
+            .spawn()
+            .map(drop)
+    };
+    // Breaking away fails inside a job that does not allow it: then stay in it.
+    if let Err(e) = spawn(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(0)) {
+        tracing::warn!("cannot start the service watchdog: {e}");
+    }
+}
+
+/// Wait for process `pid` to end, then start the service if it is stopped.
+pub fn resume_after(pid: u32) -> Result<()> {
+    use windows::Win32::System::Threading::{INFINITE, OpenProcess, PROCESS_SYNCHRONIZE};
+    // SAFETY: a handle we own, closed right after waiting on it.
+    unsafe {
+        if let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            WaitForSingleObject(h, INFINITE);
+            let _ = CloseHandle(h);
+        }
+    }
+    if status() == Some(false) {
+        tracing::info!("pairing ended without restarting the service: starting it");
+        set_running(true)?;
+    }
+    Ok(())
 }
 
 impl Drop for Paused {

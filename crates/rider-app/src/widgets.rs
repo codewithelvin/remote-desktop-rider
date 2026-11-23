@@ -311,15 +311,15 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// Page title with an optional subtitle; `right` adds actions on the right.
 pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str, right: impl FnOnce(&mut Ui)) {
+    // Buttons share the row with the (short) title only; the subtitle gets
+    // the full width below, so long translations never run under them.
     ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(self::title(title, 22.0));
-            if !subtitle.is_empty() {
-                hint(ui, subtitle);
-            }
-        });
+        ui.label(self::title(title, 22.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
     });
+    if !subtitle.is_empty() {
+        hint(ui, subtitle);
+    }
     ui.add_space(6.0);
 }
 
@@ -491,6 +491,25 @@ pub fn big_code(ui: &mut Ui, code: &str) {
                 });
             });
         });
+}
+
+/// A dialog that fits its content again whenever `shape` changes (its step,
+/// an error appearing or going away). egui otherwise keeps a dialog at the
+/// largest size it ever had, leaving empty space below shorter content.
+pub fn modal(ctx: &egui::Context, name: &str, shape: impl std::hash::Hash + std::fmt::Debug) -> egui::Modal {
+    let id = egui::Id::unique(name);
+    let shape = egui::Id::unique(shape);
+    let key = id.with("shape");
+    let changed = ctx.data_mut(|d| {
+        let old = d.get_temp::<egui::Id>(key);
+        d.insert_temp(key, shape);
+        old != Some(shape)
+    });
+    if changed {
+        // The sizing pass draws nothing: show the result on the next frame.
+        ctx.request_repaint();
+    }
+    egui::Modal::new(id).area(egui::Modal::default_area(id).sizing_pass(changed))
 }
 
 /// Right-aligned dialog buttons, laid out right to left (primary first).

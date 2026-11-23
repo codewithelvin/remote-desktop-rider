@@ -677,10 +677,10 @@ impl HostApp {
                 }
                 if info.server.is_some() {
                     if ui
-                        .add_enabled(idle, egui::Button::new(tr("Invite another computer", "Başqa kompüteri dəvət et")))
+                        .add_enabled(idle, egui::Button::new(tr("Get an invite code", "Dəvət kodu al")))
                         .on_hover_text(tr(
-                            "A one-time code for a new computer to use this server (valid 10 minutes).",
-                            "Yeni kompüterin bu serverdən istifadə etməsi üçün birdəfəlik kod (10 dəqiqə etibarlıdır).",
+                            "A one-time code that lets a new computer use this server (valid 10 minutes).                              To let a device control this computer, use Add a device instead.",
+                            "Yeni kompüterin bu serverdən istifadə etməsi üçün birdəfəlik kod (10 dəqiqə etibarlıdır).                              Cihazın bu kompüteri idarə etməsi üçün isə «Cihaz əlavə et» düyməsindən istifadə edin.",
                         ))
                         .clicked()
                     {

@@ -1507,7 +1507,8 @@ impl ClientApp {
         let mut start = false;
         let mut close = false;
         let mut reply = None;
-        Modal::new(Id::unique("add-computer")).show(ctx, |ui| {
+        let shape = (std::mem::discriminant(&d.stage), matches!(&d.stage, AddStage::Input { error: Some(_) }));
+        widgets::modal(ctx, "add-computer", shape).show(ctx, |ui| {
             ui.set_width(460.0);
             ui.label(widgets::title(tr("Add a computer", "Kompüter əlavə et"), 19.0));
             ui.add_space(4.0);
@@ -1620,7 +1621,7 @@ impl ClientApp {
         let Some(d) = &mut self.connect else { return };
         let mut go = false;
         let mut close = false;
-        Modal::new(Id::unique("connect")).show(ctx, |ui| {
+        widgets::modal(ctx, "connect", d.error.is_some()).show(ctx, |ui| {
             ui.set_width(380.0);
             let name = &d.name;
             ui.label(widgets::title(trf!("Connect to \"{name}\"", "\"{name}\" kompüterinə qoşulma"), 19.0));
@@ -1639,8 +1640,8 @@ impl ClientApp {
             widgets::hint(
                 ui,
                 tr(
-                    "Next time Connect opens the session directly. Anyone who can use your Windows account here could too.",
-                    "Növbəti dəfə «Qoşul» seansı birbaşa açacaq. Bu kompüterdə Windows hesabınızdan istifadə edə bilən hər kəs də bunu edə bilər.",
+                    "Next time Connect opens the session directly. Anyone who can sign in to your account on this device could too.",
+                    "Növbəti dəfə «Qoşul» seansı birbaşa açacaq. Bu cihazda hesabınıza daxil ola bilən hər kəs də bunu edə bilər.",
                 ),
             );
             widgets::dialog_buttons(ui, |ui| {
@@ -1664,7 +1665,8 @@ impl ClientApp {
         let Some(q) = &mut self.quick else { return };
         let mut go = false;
         let mut close = false;
-        Modal::new(Id::unique("quick-connect")).show(ctx, |ui| {
+        let shape = (std::mem::discriminant(&q.stage), matches!(&q.stage, QuickStage::Input { error: Some(_) }));
+        widgets::modal(ctx, "quick-connect", shape).show(ctx, |ui| {
             ui.set_width(440.0);
             ui.label(widgets::title(tr("Quick connect", "Sürətli qoşulma"), 19.0));
             ui.add_space(4.0);

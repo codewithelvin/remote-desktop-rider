@@ -116,6 +116,11 @@ enum ServiceCmd {
     /// Internal: entry point used by the Service Control Manager.
     #[command(hide = true)]
     Run,
+    /// Internal: start the service once process PID has ended (after pairing).
+    #[command(hide = true)]
+    ResumeAfter {
+        pid: u32,
+    },
 }
 
 fn main() -> Result<()> {
@@ -169,6 +174,7 @@ fn main() -> Result<()> {
             ServiceCmd::Start => service::set_running(true)?,
             ServiceCmd::Stop => service::set_running(false)?,
             ServiceCmd::Status => println!("{}", service_status()),
+            ServiceCmd::ResumeAfter { pid } => service::resume_after(pid)?,
         },
         Cmd::SetPin { pin_stdin } => {
             let pin = if pin_stdin {
