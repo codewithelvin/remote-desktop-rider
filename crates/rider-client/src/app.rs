@@ -26,7 +26,7 @@ use crate::toolbar::{Action, Extras, Toolbar};
 use anyhow::Result;
 use rider_core::i18n::tr;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
-use rider_core::proto::{ClientMsg, MonitorInfo, MouseButton, QUALITIES};
+use rider_core::proto::{ClientMsg, CursorShape, MonitorInfo, MouseButton, QUALITIES};
 use std::collections::HashSet;
 use std::future::Future;
 use std::num::NonZeroU32;
@@ -44,7 +44,7 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 #[cfg(windows)]
 use winit::platform::windows::WindowAttributesExtWindows;
-use winit::window::{Fullscreen, Icon, Window, WindowId};
+use winit::window::{CursorIcon, Fullscreen, Icon, Window, WindowId};
 
 /// Silence from the host (it answers a ping every second) that counts as lost.
 const SILENT: Duration = Duration::from_secs(3);
@@ -72,6 +72,7 @@ pub fn run(
     let diag = report_to.map(|t| Diag::new(t, &session.conn, session.relayed, rt.handle().clone()));
     // Hosts that speak protocol 2 take the quality setting (and lock).
     let v2 = rider_core::tls::speaks_v2(&session.conn);
+    let v3 = rider_core::tls::speaks_v3(&session.conn);
     let prefs = crate::config::ClientConfig::load().map(|c| c.viewer).unwrap_or_default();
     let net = net::start(rt.handle(), session, proxy.clone(), shared.clone());
     let quality = if v2 { prefs.quality } else { 0 };
@@ -101,7 +102,11 @@ pub fn run(
         diag,
         started: Instant::now(),
         v2,
+        v3,
         quality,
+        pointer: None,
+        remote_cursor: CursorShape::Arrow,
+        shown_cursor: CursorShape::Arrow,
         pinned: prefs.pin_toolbar,
         rt: rt.handle().clone(),
         proxy,
@@ -163,6 +168,13 @@ struct App {
     started: Instant,
     /// The host speaks protocol 2 (quality setting, lock).
     v2: bool,
+    /// The host speaks protocol 3 (cursor shapes, clicks with position).
+    v3: bool,
+    /// Last pointer position sent (0..=65535 across the remote screen).
+    pointer: Option<(u16, u16)>,
+    /// The host pointer's shape, and the one this window shows.
+    remote_cursor: CursorShape,
+    shown_cursor: CursorShape,
     /// Max lines asked of the host, 0 = automatic.
     quality: u32,
     pinned: bool,
@@ -439,6 +451,9 @@ impl App {
             d.restart(&session.conn, session.relayed, "connection lost; reconnected");
         }
         self.v2 = rider_core::tls::speaks_v2(&session.conn);
+        self.v3 = rider_core::tls::speaks_v3(&session.conn);
+        self.remote_cursor = CursorShape::Arrow;
+        self.update_cursor();
         self.net = net::start(&self.rt, session, self.proxy.clone(), self.shared.clone());
         #[cfg(windows)]
         if let Some(h) = &self.keyhook {
@@ -453,6 +468,18 @@ impl App {
         self.update_overlay();
         self.refresh_extras();
         self.redraw_soon();
+    }
+
+    /// The host's pointer shape, or an arrow over the toolbar.
+    fn update_cursor(&mut self) {
+        let want = if self.toolbar.hovering() { CursorShape::Arrow } else { self.remote_cursor };
+        if want == self.shown_cursor {
+            return;
+        }
+        self.shown_cursor = want;
+        if let Some(w) = &self.window {
+            w.set_cursor(cursor_icon(want));
+        }
     }
 
     fn redraw_soon(&self) {
@@ -521,6 +548,10 @@ impl ApplicationHandler<UiEvent> for App {
                 self.active_monitor = active;
                 self.redraw_soon();
             }
+            UiEvent::Cursor(shape) => {
+                self.remote_cursor = shape;
+                self.update_cursor();
+            }
             UiEvent::Notice(n) => {
                 tracing::info!("{n}");
                 self.notice = Some((n, Instant::now()));
@@ -568,11 +599,14 @@ impl ApplicationHandler<UiEvent> for App {
                 if self.toolbar.pointer(position.x, position.y) {
                     self.redraw_soon();
                 }
+                self.update_cursor();
                 let (ox, oy, w, h) = self.image_rect;
                 if w > 1 && h > 1 {
                     let x = ((position.x - ox as f64) / (w - 1) as f64).clamp(0.0, 1.0);
                     let y = ((position.y - oy as f64) / (h - 1) as f64).clamp(0.0, 1.0);
-                    self.net.mouse_move((x * 65535.0) as u16, (y * 65535.0) as u16);
+                    let at = ((x * 65535.0) as u16, (y * 65535.0) as u16);
+                    self.pointer = Some(at);
+                    self.net.mouse_move(at.0, at.1);
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -599,7 +633,11 @@ impl ApplicationHandler<UiEvent> for App {
                         }
                     }
                 }
-                self.net.send(ClientMsg::MouseButton { button: b, down: state == ElementState::Pressed });
+                let down = state == ElementState::Pressed;
+                self.net.send(match self.pointer.filter(|_| self.v3) {
+                    Some((x, y)) => ClientMsg::MouseButtonAt { button: b, down, x, y, seq: self.net.mouse_seq() },
+                    None => ClientMsg::MouseButton { button: b, down },
+                });
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -628,6 +666,7 @@ impl ApplicationHandler<UiEvent> for App {
                 if self.toolbar.leave() {
                     self.redraw_soon();
                 }
+                self.update_cursor();
             }
             WindowEvent::DroppedFile(path) => self.net.send_file(path),
             _ => {}
@@ -667,6 +706,24 @@ fn host_scancode(key: PhysicalKey) -> Option<(u16, bool)> {
     match key {
         PhysicalKey::Code(code) => crate::keymap::scancode(code),
         PhysicalKey::Unidentified(_) => None,
+    }
+}
+
+fn cursor_icon(shape: CursorShape) -> CursorIcon {
+    match shape {
+        CursorShape::Arrow => CursorIcon::Default,
+        CursorShape::Text => CursorIcon::Text,
+        CursorShape::Wait => CursorIcon::Wait,
+        CursorShape::Progress => CursorIcon::Progress,
+        CursorShape::Crosshair => CursorIcon::Crosshair,
+        CursorShape::Hand => CursorIcon::Pointer,
+        CursorShape::ResizeWE => CursorIcon::EwResize,
+        CursorShape::ResizeNS => CursorIcon::NsResize,
+        CursorShape::ResizeNWSE => CursorIcon::NwseResize,
+        CursorShape::ResizeNESW => CursorIcon::NeswResize,
+        CursorShape::Move => CursorIcon::Move,
+        CursorShape::NotAllowed => CursorIcon::NotAllowed,
+        CursorShape::Help => CursorIcon::Help,
     }
 }
 

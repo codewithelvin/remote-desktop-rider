@@ -127,6 +127,11 @@ impl Toolbar {
         self.visible()
     }
 
+    /// The pointer is on the bar or its tab (shown as a plain arrow there).
+    pub fn hovering(&self) -> bool {
+        self.on_bar || self.hover.is_some() || self.tab_hover
+    }
+
     pub fn visible(&self) -> bool {
         self.extras.pinned || self.on_bar || self.visible_until.is_some_and(|t| Instant::now() < t)
     }

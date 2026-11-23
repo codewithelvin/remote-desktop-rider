@@ -27,6 +27,8 @@ const MAX_FRAMES_READING: usize = 64;
 pub enum UiEvent {
     NewFrame,
     Monitors(Vec<MonitorInfo>, u32),
+    /// The host pointer's shape.
+    Cursor(CursorShape),
     Notice(String),
     /// The session with connection `conn` (its `stable_id`) ended. `lost`:
     /// the network failed (worth reconnecting), not a deliberate end.
@@ -92,6 +94,11 @@ impl NetHandle {
         if let Ok(b) = encode(&MouseMove { seq, x, y }) {
             let _ = self.conn.send_datagram(b.into());
         }
+    }
+
+    /// The sequence number of the last mouse move sent.
+    pub fn mouse_seq(&self) -> u32 {
+        self.mouse_seq.load(Ordering::Relaxed)
     }
 
     pub fn send_file(&self, path: PathBuf) {
@@ -205,6 +212,9 @@ pub fn start(
                             "host {fps:.0} fps, {:.1} Mbps, enc {encode_ms:.1} ms ({encoder})",
                             bitrate_kbps as f32 / 1000.0
                         );
+                    }
+                    Ok(Some(HostMsg::Cursor { shape })) => {
+                        let _ = proxy.send_event(UiEvent::Cursor(CursorShape::from_u8(shape)));
                     }
                     Ok(Some(HostMsg::Bye { reason })) => break (reason, false),
                     Ok(Some(_)) => {}

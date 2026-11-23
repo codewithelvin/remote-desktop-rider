@@ -492,6 +492,11 @@ async fn stream(
         })
     };
 
+    // Pointer shapes, for clients that show them.
+    if rider_core::tls::speaks_v3(conn) {
+        crate::cursor::spawn(out_tx.clone(), stop.clone());
+    }
+
     // Clipboard.
     let (clip_local_tx, mut clip_local_rx) = mpsc::unbounded_channel::<String>();
     let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<String>();
@@ -624,6 +629,9 @@ async fn stream(
                 }
                 ClientMsg::Key { scancode, extended, down } => input.send(InputEvent::Key { scancode, extended, down }),
                 ClientMsg::MouseButton { button, down } => input.send(InputEvent::Button { button, down }),
+                ClientMsg::MouseButtonAt { button, down, x, y, seq } => {
+                    input.send(InputEvent::ButtonAt { button, down, x, y, seq })
+                }
                 ClientMsg::MouseWheel { dx, dy } => input.send(InputEvent::Wheel { dx, dy }),
                 ClientMsg::SendSas => {
                     tracing::info!("Ctrl+Alt+Del requested by {name}");

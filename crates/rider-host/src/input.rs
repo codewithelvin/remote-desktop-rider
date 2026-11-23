@@ -24,10 +24,32 @@ struct Injector {
 }
 
 pub enum InputEvent {
-    Move { seq: u32, x: u16, y: u16 },
-    Button { button: MouseButton, down: bool },
-    Wheel { dx: i32, dy: i32 },
-    Key { scancode: u16, extended: bool, down: bool },
+    Move {
+        seq: u32,
+        x: u16,
+        y: u16,
+    },
+    Button {
+        button: MouseButton,
+        down: bool,
+    },
+    /// A button at a position (`seq`: the last move the client had sent).
+    ButtonAt {
+        button: MouseButton,
+        down: bool,
+        x: u16,
+        y: u16,
+        seq: u32,
+    },
+    Wheel {
+        dx: i32,
+        dy: i32,
+    },
+    Key {
+        scancode: u16,
+        extended: bool,
+        down: bool,
+    },
     Monitor(MonitorInfo),
 }
 
@@ -64,7 +86,14 @@ fn run(rx: Receiver<InputEvent>, mut inj: Injector) {
         }
         match ev {
             InputEvent::Move { seq, x, y } => inj.mouse_move(seq, x, y),
-            InputEvent::Button { button, down } => inj.mouse_button(button, down),
+            InputEvent::Button { button, down } => inj.mouse_button(button, down, None),
+            InputEvent::ButtonAt { button, down, x, y, seq } => {
+                // Moves sent before the click must not be replayed after it.
+                if inj.newer(seq) {
+                    inj.last_seq = seq;
+                }
+                inj.mouse_button(button, down, Some((x, y)));
+            }
             InputEvent::Wheel { dx, dy } => inj.wheel(dx, dy),
             InputEvent::Key { scancode, extended, down } => inj.key(scancode, extended, down),
             InputEvent::Monitor(m) => inj.monitor = m,
@@ -113,25 +142,39 @@ impl Injector {
     /// Absolute move; `x`/`y` are 0..=65535 across the streamed monitor.
     /// Datagrams can arrive out of order, so stale positions are dropped.
     fn mouse_move(&mut self, seq: u32, x: u16, y: u16) {
-        if seq.wrapping_sub(self.last_seq) > u32::MAX / 2 && self.last_seq != 0 {
+        if !self.newer(seq) {
             return;
         }
         self.last_seq = seq;
+        send(&[self.move_to(x, y)]);
+    }
+
+    /// `seq` is not older than the last applied move (wrapping).
+    fn newer(&self, seq: u32) -> bool {
+        self.last_seq == 0 || seq.wrapping_sub(self.last_seq) <= u32::MAX / 2
+    }
+
+    /// Absolute move to `x`/`y` (0..=65535 across the streamed monitor).
+    fn move_to(&self, x: u16, y: u16) -> INPUT {
         let m = &self.monitor;
         let px = m.x as i64 + (x as i64 * (m.width as i64 - 1)) / 65535;
         let py = m.y as i64 + (y as i64 * (m.height as i64 - 1)) / 65535;
-        unsafe {
-            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN) as i64;
-            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN) as i64;
-            let vw = (GetSystemMetrics(SM_CXVIRTUALSCREEN) as i64 - 1).max(1);
-            let vh = (GetSystemMetrics(SM_CYVIRTUALSCREEN) as i64 - 1).max(1);
-            let nx = ((px - vx) * 65535 / vw) as i32;
-            let ny = ((py - vy) * 65535 / vh) as i32;
-            send(&[mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, nx, ny, 0)]);
-        }
+        // SAFETY: plain metric queries.
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN) as i64,
+                GetSystemMetrics(SM_YVIRTUALSCREEN) as i64,
+                (GetSystemMetrics(SM_CXVIRTUALSCREEN) as i64 - 1).max(1),
+                (GetSystemMetrics(SM_CYVIRTUALSCREEN) as i64 - 1).max(1),
+            )
+        };
+        let nx = ((px - vx) * 65535 / vw) as i32;
+        let ny = ((py - vy) * 65535 / vh) as i32;
+        mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, nx, ny, 0)
     }
 
-    fn mouse_button(&mut self, b: MouseButton, down: bool) {
+    /// `at`: move there first, in the same batch, so the press lands exactly.
+    fn mouse_button(&mut self, b: MouseButton, down: bool, at: Option<(u16, u16)>) {
         let id = b as u8;
         if down {
             self.held_buttons.insert(id);
@@ -139,7 +182,11 @@ impl Injector {
             self.held_buttons.remove(&id);
         }
         let (flags, data) = button_flags(b, down);
-        send(&[mouse(flags, 0, 0, data)]);
+        let press = mouse(flags, 0, 0, data);
+        match at {
+            Some((x, y)) => send(&[self.move_to(x, y), press]),
+            None => send(&[press]),
+        }
     }
 
     fn wheel(&mut self, dx: i32, dy: i32) {

@@ -23,7 +23,9 @@ pub const ALPN: &[u8] = b"rider/1";
 /// and clients offer both; older peers only know "rider/1", so a session
 /// still connects and the newer messages are simply not used.
 pub const ALPN_V2: &[u8] = b"rider/2";
-const SESSION_ALPNS: &[&[u8]] = &[ALPN_V2, ALPN];
+/// Protocol 2 plus cursor shapes and clicks that carry their position.
+pub const ALPN_V3: &[u8] = b"rider/3";
+const SESSION_ALPNS: &[&[u8]] = &[ALPN_V3, ALPN_V2, ALPN];
 /// ALPN for the rendezvous server, so a server connection can never be
 /// mistaken for a host session (or the reverse).
 pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
@@ -31,6 +33,9 @@ pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
 /// host offers only this, and only quick-connect clients ask for it, so a
 /// support session never mixes with paired, PIN-protected access.
 pub const SUPPORT_ALPN: &[u8] = b"rider-support/1";
+/// Support sessions with the `ALPN_V3` additions.
+pub const SUPPORT_ALPN_V2: &[u8] = b"rider-support/2";
+const SUPPORT_ALPNS: &[&[u8]] = &[SUPPORT_ALPN_V2, SUPPORT_ALPN];
 /// Server name used in the handshake. Ignored by our verifiers (we pin keys, not names).
 pub const SERVER_NAME: &str = "rider";
 
@@ -206,10 +211,16 @@ pub fn client_config_alpn(
 /// Whether the peer of an established session speaks [`ALPN_V2`] (support
 /// sessions were introduced later and always do).
 pub fn speaks_v2(conn: &quinn::Connection) -> bool {
-    conn.handshake_data()
-        .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
-        .and_then(|d| d.protocol)
-        .is_some_and(|p| p == ALPN_V2 || p == SUPPORT_ALPN)
+    protocol(conn).is_some_and(|p| [ALPN_V3, ALPN_V2, SUPPORT_ALPN_V2, SUPPORT_ALPN].contains(&p.as_slice()))
+}
+
+/// Whether the peer speaks [`ALPN_V3`]: cursor shapes, clicks with position.
+pub fn speaks_v3(conn: &quinn::Connection) -> bool {
+    protocol(conn).is_some_and(|p| p == ALPN_V3 || p == SUPPORT_ALPN_V2)
+}
+
+fn protocol(conn: &quinn::Connection) -> Option<Vec<u8>> {
+    conn.handshake_data()?.downcast::<quinn::crypto::rustls::HandshakeData>().ok()?.protocol
 }
 
 /// Fingerprint of the certificate the peer presented on an established connection.
@@ -223,11 +234,11 @@ pub fn peer_fingerprint(conn: &quinn::Connection) -> Result<Fingerprint> {
 
 /// Host side of a one-time support session.
 pub fn support_server_config(id: &Identity, trust: Arc<dyn ClientTrust>) -> Result<quinn::ServerConfig> {
-    server_config_alpn(id, trust, &[SUPPORT_ALPN])
+    server_config_alpn(id, trust, SUPPORT_ALPNS)
 }
 
 /// Client side of a one-time support session; `expected_host` is the key the
 /// rendezvous server named for the code.
 pub fn support_client_config(id: &Identity, expected_host: Option<Fingerprint>) -> Result<quinn::ClientConfig> {
-    client_config_alpn(id, expected_host, &[SUPPORT_ALPN])
+    client_config_alpn(id, expected_host, SUPPORT_ALPNS)
 }

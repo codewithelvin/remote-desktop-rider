@@ -84,6 +84,18 @@ pub enum ClientMsg {
     /// Lock the host (Win+L cannot be sent: Windows reserves it locally).
     /// Only sent to hosts that speak `tls::ALPN_V2`.
     LockScreen,
+    /// A button at a position (as `MouseMove`). Motion travels as datagrams
+    /// and buttons on this stream, so a press could overtake the last move
+    /// and land beside a title bar or window border; this one cannot.
+    /// `seq`: the last `MouseMove` sent, so older ones are not replayed after.
+    /// Only sent to hosts that speak `tls::ALPN_V3`.
+    MouseButtonAt {
+        button: MouseButton,
+        down: bool,
+        x: u16,
+        y: u16,
+        seq: u32,
+    },
 }
 
 /// Quality choices offered to the user: (max height, label); 0 = automatic.
@@ -124,6 +136,45 @@ pub enum HostMsg {
     Bye {
         reason: String,
     },
+    /// The host pointer's shape changed: a `CursorShape` as a number, so a
+    /// shape added later reads as an arrow instead of breaking the session.
+    /// Only sent to clients that speak `tls::ALPN_V3`.
+    Cursor {
+        shape: u8,
+    },
+}
+
+/// Pointer shapes the viewer can show (values are on the wire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CursorShape {
+    Arrow = 0,
+    Text = 1,
+    Wait = 2,
+    Progress = 3,
+    Crosshair = 4,
+    Hand = 5,
+    ResizeWE = 6,
+    ResizeNS = 7,
+    ResizeNWSE = 8,
+    ResizeNESW = 9,
+    Move = 10,
+    NotAllowed = 11,
+    Help = 12,
+}
+
+impl CursorShape {
+    /// Unknown values (from a newer host) are shown as an arrow.
+    pub fn from_u8(v: u8) -> Self {
+        use CursorShape::*;
+        [
+            Arrow, Text, Wait, Progress, Crosshair, Hand, ResizeWE, ResizeNS, ResizeNWSE, ResizeNESW, Move, NotAllowed,
+            Help,
+        ]
+        .get(v as usize)
+        .copied()
+        .unwrap_or(Arrow)
+    }
 }
 
 /// Mouse motion sent as a QUIC datagram. Coordinates are normalised to
@@ -213,4 +264,28 @@ pub fn frame_prefix(h: &FrameHeader) -> Result<Vec<u8>> {
     buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
     buf.extend_from_slice(&body);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_shapes_round_trip_and_unknown_is_arrow() {
+        for v in 0..=12u8 {
+            assert_eq!(CursorShape::from_u8(v) as u8, v);
+        }
+        assert_eq!(CursorShape::from_u8(13), CursorShape::Arrow);
+        assert_eq!(CursorShape::from_u8(255), CursorShape::Arrow);
+    }
+
+    #[test]
+    fn older_messages_keep_their_wire_form() {
+        // New variants go at the end: what older peers send decodes the same.
+        assert_eq!(encode(&ClientMsg::LockScreen).unwrap(), [12]);
+        assert_eq!(encode(&HostMsg::Bye { reason: String::new() }).unwrap(), [7, 0]);
+        let at = ClientMsg::MouseButtonAt { button: MouseButton::Left, down: true, x: 1, y: 2, seq: 3 };
+        assert_eq!(encode(&at).unwrap()[0], 13);
+        assert_eq!(encode(&HostMsg::Cursor { shape: 6 }).unwrap(), [8, 6]);
+    }
 }

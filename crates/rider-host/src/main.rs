@@ -9,6 +9,7 @@ mod autoupdate;
 mod banner;
 mod capture;
 mod config;
+mod cursor;
 mod input;
 mod rendezvous;
 mod service;
