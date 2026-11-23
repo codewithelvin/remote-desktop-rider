@@ -17,25 +17,24 @@ use rider_core::identity::{Fingerprint, fp_from_hex, fp_hex};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const INVITE_LIFETIME: Duration = Duration::from_secs(600);
+/// How soon changes by the `members` command reach the running server.
+const REREAD: Duration = Duration::from_secs(1);
 
 pub struct Members {
     dir: PathBuf,
     pub invite_only: bool,
-    /// Members as last read, and the file's modification time then.
-    cache: Mutex<(Option<SystemTime>, HashMap<Fingerprint, u64>)>,
+    /// Members as last read, and when. File times are too coarse to spot
+    /// every change (Linux: a few ms), so the file is simply re-read.
+    cache: Mutex<Option<(Instant, HashMap<Fingerprint, u64>)>>,
     /// Serializes read-modify-write of the files within this process.
     write: Mutex<()>,
 }
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-fn mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Replace `path` atomically (a reader never sees half a file).
@@ -58,23 +57,30 @@ impl Members {
         self.dir.join("invites")
     }
 
-    /// The members, re-read when the file changed (e.g. by `members remove`).
+    /// The members (re-read at most every `REREAD`, so `members --remove`
+    /// reaches a running server within a second).
     pub fn list(&self) -> HashMap<Fingerprint, u64> {
-        let path = self.members_path();
         let mut cache = self.cache.lock().unwrap();
-        let m = mtime(&path);
-        if cache.0 != m || m.is_none() {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            let list = text
-                .lines()
-                .filter_map(|l| {
-                    let mut it = l.split_whitespace();
-                    Some((fp_from_hex(it.next()?).ok()?, it.next().and_then(|t| t.parse().ok()).unwrap_or(0)))
-                })
-                .collect();
-            *cache = (m, list);
+        if let Some((read, list)) = cache.as_ref()
+            && read.elapsed() < REREAD
+        {
+            return list.clone();
         }
-        cache.1.clone()
+        let list = self.read();
+        *cache = Some((Instant::now(), list.clone()));
+        list
+    }
+
+    /// The file as it is now; changes start from this, never from the cache.
+    fn read(&self) -> HashMap<Fingerprint, u64> {
+        std::fs::read_to_string(self.members_path())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                Some((fp_from_hex(it.next()?).ok()?, it.next().and_then(|t| t.parse().ok()).unwrap_or(0)))
+            })
+            .collect()
     }
 
     pub fn contains(&self, fp: &Fingerprint) -> bool {
@@ -89,17 +95,15 @@ impl Members {
     fn save(&self, list: &HashMap<Fingerprint, u64>) -> Result<()> {
         let mut lines: Vec<_> = list.iter().map(|(fp, t)| format!("{} {t}\n", fp_hex(fp))).collect();
         lines.sort();
-        let path = self.members_path();
-        write_atomic(&path, &lines.concat())?;
-        // Ours is the newest state, whatever the file time resolution.
-        *self.cache.lock().unwrap() = (mtime(&path), list.clone());
+        write_atomic(&self.members_path(), &lines.concat())?;
+        *self.cache.lock().unwrap() = Some((Instant::now(), list.clone()));
         Ok(())
     }
 
     /// Make `fp` a member (no-op if it is one).
     pub fn add(&self, fp: Fingerprint) -> Result<()> {
         let _w = self.write.lock().unwrap();
-        let mut list = self.list();
+        let mut list = self.read();
         if list.contains_key(&fp) {
             return Ok(());
         }
@@ -115,7 +119,7 @@ impl Members {
             bail!("give at least the first 8 characters of the fingerprint");
         }
         let _w = self.write.lock().unwrap();
-        let mut list = self.list();
+        let mut list = self.read();
         let before = list.len();
         list.retain(|fp, _| !fp_hex(fp).starts_with(&prefix));
         let removed = before - list.len();
@@ -199,7 +203,7 @@ mod tests {
         assert!(server.join(b, "XXX-XXX").is_err());
         // Removing by fingerprint prefix takes effect for the running server.
         assert_eq!(m.remove(&fp_hex(&a)[..12]).unwrap(), 1);
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(REREAD + Duration::from_millis(100));
         assert!(!server.admitted(&a));
         let _ = std::fs::remove_dir_all(&d);
     }
