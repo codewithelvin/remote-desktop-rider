@@ -130,6 +130,15 @@ The tests reach the Windows VM through a small agent in it
 step has a time limit. The Lubuntu VM is reached with plain `ssh`/`scp`
 using `vagrant ssh-config`, read once per run.
 
+The macOS VM is a Docker-OSX container driven by `test/macos/mac.sh`: `up`
+(through the boot picker and auto-login, about 70 s), `build` (copies this
+source over and builds the viewer there), `down`. Run
+`MAC_PASS=... test/macos/mac.sh setup` once after installing macOS: it
+turns on auto-login, allows `shutdown` without a password and switches off
+animations, transparency and Spotlight indexing, which are slow in an
+emulated Mac. A cold start, the chat test and the shutdown take about 3
+minutes.
+
 The VM build comes from `target/release` (`rider-host service install`
 inside the VM); switch the VM's automatic updates off first, or it replaces
 the build with the latest release.

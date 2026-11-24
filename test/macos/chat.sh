@@ -45,7 +45,15 @@ wait_for '"support_request"' 90 || { echo "no request from the Mac"; mac 'cat /t
 send "y view"
 wait_for '"support_started"' 30
 check "the Mac's viewer connected with the code" $(wait_for '"support_started"' 1 && echo 1 || echo 0)
-sleep 8
+# The viewer says when it is connected (a freshly started Mac takes a while);
+# then a moment for the first frames.
+for _ in $(seq 60); do mac 'grep -q "^Connected to" /tmp/rider-viewer.log' && break; sleep 1; done
+sleep 3
+# Keys go to the front app: right after a cold start Finder can keep that
+# place. Click the session window (in the Mac, View only) until it is in front.
+front() { mac 'lsappinfo info -only name "$(lsappinfo front)"' 2>/dev/null | grep -q rider-client; }
+for _ in $(seq 15); do front && break; vnc move 960 500 click 1 >/dev/null 2>&1; sleep 1; done
+front || echo "  (the session window did not come to the front)"
 
 # This PC -> Mac first, so the panel has something to show when it opens.
 send 'chat "Salam from the host"'

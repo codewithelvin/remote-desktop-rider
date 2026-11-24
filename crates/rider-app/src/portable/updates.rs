@@ -45,6 +45,9 @@ impl Updater {
     pub fn install(&mut self, _release: Release) {}
 
     pub fn install_offered(&mut self) {}
+
+    /// `RIDER_PREVIEW=update-*`: nothing to show (no self-update here).
+    pub fn preview(&self, _stage: &str) {}
 }
 
 pub fn current() -> &'static str {
