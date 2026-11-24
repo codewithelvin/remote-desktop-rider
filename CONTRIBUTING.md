@@ -67,6 +67,23 @@ On macOS or Linux, limit clippy and test to the crates that build there:
 Every push to `main` is released automatically as the next version, so `main`
 must always be releasable.
 
+## Testing a whole session on one Windows PC
+
+`test/local-session/banner-click.ps1` runs a real session on one PC with no
+admin rights and nothing installed: a scratch `rider-server` on loopback,
+`rider-host support` and `rider-client quick`, settings in a temporary
+folder. It checks that a remote click where the host's session banner is
+reaches the window underneath and does not end the session. Run it before
+releasing changes to the host's input or banner:
+
+```powershell
+cargo build --profile quick -p rider-host -p rider-client -p rider-server
+powershell -ExecutionPolicy Bypass -File test\local-session\banner-click.ps1
+```
+
+Desktop tests in the crates (marked `#[ignore]`) need a signed-in desktop:
+`cargo test -p rider-host -- --ignored --test-threads=1`.
+
 ## Testing on virtual machines
 
 `test/` has Vagrant setups used for end-to-end checks: a Windows 11 host
