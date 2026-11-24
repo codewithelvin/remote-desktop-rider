@@ -19,14 +19,7 @@ if (-not $Client) { $Client = Join-Path $repo "target\release\rider-client.exe" 
 $guest = Join-Path $PSScriptRoot "guest"
 $vm = $PSScriptRoot
 
-# Runs a script from guest/ in the VM (no arguments: PowerShell 5 mangles
-# quotes passed to native programs).
-function Guest([string]$script) {
-    Push-Location $vm
-    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try { & vagrant winrm -c "powershell -NoProfile -ExecutionPolicy Bypass -File C:\rider-test\$script" 2>&1 | Out-Null }
-    finally { $ErrorActionPreference = $old; Pop-Location }
-}
+. "$PSScriptRoot\vmlib.ps1"   # Guest: run a guest/ script in the VM
 function Wait-File([string]$file, [string]$pattern, [int]$seconds = 60) {
     $end = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $end) {
@@ -71,30 +64,33 @@ try {
     do { Start-Sleep -Milliseconds 300; $win = [Rdr]::WindowOf($viewer.P.Id) } while ($win -eq [IntPtr]::Zero -and (Get-Date) -lt $end)
     if ($win -eq [IntPtr]::Zero) { throw "no viewer window: $($viewer.All())" }
     [Rdr]::Place($win, 100, 100, 1280, 800)
-    Start-Sleep 7   # first frames; the toolbar intro is over
+    # First frames (the title counts them), then the toolbar's intro is over.
+    Wait-Until { [Rdr]::Title($win) -match ' [1-9]\d* fps' } 20 | Out-Null
+    Start-Sleep 3
 
     # On the tab strip, away from the banner and the viewer's toolbar tab.
     $hx = [int]($vw / 2 - 360); $hy = 150
     $s = @{ Viewer = $win }
     $title = [Rdr]::Title($win)
-    [Rdr]::ClickHostPixel($win, $hx, $hy, $vw, $vh) | Out-Null; Start-Sleep 3
+    # A dropped click can only be seen by waiting a moment.
+    [Rdr]::ClickHostPixel($win, $hx, $hy, $vw, $vh) | Out-Null; Start-Sleep 2
     Check "view only: the click is dropped" ((Clicks) -eq 0)
     Write-Host "  viewer title: $title"
     Check "view only: the viewer says so" ($title -like "*View only*" -or $Client -notlike "*target*")
 
     Command "access full"
     Wait-File "support.out" '"access":"full"' | Out-Null
-    Start-Sleep 2
-    [Rdr]::ClickHostPixel($win, $hx, $hy, $vw, $vh) | Out-Null; Start-Sleep 3
-    Check "full access: the click arrives" ((Clicks) -eq 1)
+    Start-Sleep 1
+    [Rdr]::ClickHostPixel($win, $hx, $hy, $vw, $vh) | Out-Null
+    Check "full access: the click arrives" ((Wait-Until { (Clicks) -ge 1 } 5) -and (Clicks) -eq 1)
     # On the (hidden) banner: goes through to the tab strip, session stays.
-    [Rdr]::ClickHostPixel($win, [int]($vw / 2 + 150), 17, $vw, $vh) | Out-Null; Start-Sleep 3
-    Check "full access: a click on the banner spot reaches the window under it" ((Clicks) -eq 2)
+    [Rdr]::ClickHostPixel($win, [int]($vw / 2 + 150), 17, $vw, $vh) | Out-Null
+    Check "full access: a click on the banner spot reaches the window under it" ((Wait-Until { (Clicks) -ge 2 } 5) -and (Clicks) -eq 2)
 
     Command "access view"
     Wait-File "support.out" '"access":"view"' | Out-Null
-    Start-Sleep 2
-    [Rdr]::ClickHostPixel($win, $hx, $hy, $vw, $vh) | Out-Null; Start-Sleep 3
+    Start-Sleep 1
+    [Rdr]::ClickHostPixel($win, $hx, $hy, $vw, $vh) | Out-Null; Start-Sleep 2
     Check "back to view only: the click is dropped" ((Clicks) -eq 2)
     $ended = Get-Content (Join-Path $guest "support.out") | Where-Object { $_ -match '"support_ended"' }
     Check "the session is still up" (-not $viewer.P.HasExited -and -not $ended)

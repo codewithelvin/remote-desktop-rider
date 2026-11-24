@@ -3,3 +3,8 @@
 *.err
 support.cmd
 support.args
+chat-viewer.args
+received-*
+from-viewer.txt
+shot-*.png
+agent/

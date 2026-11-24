@@ -3,6 +3,7 @@
 //! `rider-client` CLI and the desktop app.
 
 pub mod app;
+mod chat;
 pub mod config;
 pub mod diag;
 #[cfg(windows)]

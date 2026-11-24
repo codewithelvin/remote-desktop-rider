@@ -52,4 +52,9 @@ Vagrant.configure("2") do |config|
     # The box disables UAC; enable it so elevation prompts can be tested.
     Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name EnableLUA -Value 1
   PS1
+
+  # The tests' helper in the VM (guest/agent.ps1): on every `vagrant up`, so
+  # an existing VM gets it too.
+  config.vm.provision "agent", type: "shell", privileged: true, run: "always",
+    inline: 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\rider-test\install-agent.ps1'
 end

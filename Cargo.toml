@@ -2,10 +2,11 @@
 resolver = "3"
 members = [
   "crates/rider-core", "crates/rider-media", "crates/rider-host", "crates/rider-client", "crates/rider-server", "crates/rider-app",
+  "crates/rider-ui",
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["Elvin Huseynov"]
 license = "MIT"
@@ -14,6 +15,7 @@ repository = "https://github.com/codewithelvin/remote-desktop-rider"
 [workspace.dependencies]
 rider-core = { path = "crates/rider-core" }
 rider-media = { path = "crates/rider-media" }
+rider-ui = { path = "crates/rider-ui" }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal", "net"] }
 quinn = "0.11"

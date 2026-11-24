@@ -8,6 +8,7 @@
 mod autoupdate;
 mod banner;
 mod capture;
+mod chat;
 mod config;
 mod cursor;
 mod input;

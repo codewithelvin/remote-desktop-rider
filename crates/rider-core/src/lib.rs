@@ -13,7 +13,9 @@ pub mod pixels;
 pub mod proto;
 pub mod rendezvous;
 pub mod sas;
+pub mod session_files;
 pub mod tls;
+pub mod transfer;
 pub mod tunnel;
 #[cfg(windows)]
 pub mod update;

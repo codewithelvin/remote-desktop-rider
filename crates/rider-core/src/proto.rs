@@ -96,7 +96,15 @@ pub enum ClientMsg {
         y: u16,
         seq: u32,
     },
+    /// A chat message to the person at the host (at most
+    /// [`MAX_CHAT`] characters). Only sent to hosts that speak `tls::ALPN_V5`.
+    Chat {
+        text: String,
+    },
 }
+
+/// Longest chat message, in characters (longer ones are cut on arrival).
+pub const MAX_CHAT: usize = 4000;
 
 /// Quality choices offered to the user: (max height, label); 0 = automatic.
 pub const QUALITIES: [(u32, &str); 4] = [(0, "Auto"), (1080, "1080p"), (720, "720p"), (480, "480p")];
@@ -146,6 +154,14 @@ pub enum HostMsg {
     /// changes. Only sent to clients that speak `tls::ALPN_V4`; the host
     /// enforces it for every client.
     Permissions(Permissions),
+    /// A chat message from the person at the host. Only sent to clients that
+    /// speak `tls::ALPN_V5`, which also accept file streams from the host.
+    Chat {
+        text: String,
+    },
+    /// Whether someone at the host can see the chat (a chat window is open
+    /// there). Sent to `ALPN_V5` clients at the start and when it changes.
+    ChatReady(bool),
 }
 
 /// What the viewer may do, decided by the person at the controlled computer.
@@ -261,7 +277,8 @@ pub struct FrameHeader {
     pub height: u32,
 }
 
-/// Prefix of a file-transfer stream (client → host); raw bytes follow.
+/// Prefix of a file-transfer stream; raw bytes follow. Client → host, and
+/// from protocol 5 on also host → client (chat files).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FileHeader {
     pub name: String,
@@ -373,6 +390,9 @@ mod tests {
         assert_eq!(encode(&HostMsg::Cursor { shape: 6 }).unwrap(), [8, 6]);
         let p = Access::Standard.permissions();
         assert_eq!(encode(&HostMsg::Permissions(p)).unwrap(), [9, 1, 1, 0]);
+        assert_eq!(encode(&ClientMsg::Chat { text: "hi".into() }).unwrap(), [14, 2, b'h', b'i']);
+        assert_eq!(encode(&HostMsg::Chat { text: "hi".into() }).unwrap(), [10, 2, b'h', b'i']);
+        assert_eq!(encode(&HostMsg::ChatReady(true)).unwrap(), [11, 1]);
     }
 
     #[test]

@@ -37,7 +37,7 @@
 | **Private by design** | Devices pair once by comparing a code. Every session is end-to-end encrypted and needs the computer's PIN. No accounts, no cloud. |
 | **Gets through firewalls** | Direct on the LAN, NAT hole punching or an encrypted relay across the internet. Falls back to a random UDP port, then to an HTTPS (TCP 443) tunnel through the system proxy. |
 | **Works everywhere on the host** | Login screen, lock screen, UAC prompts and after a restart. |
-| **Everyday tools** | Text clipboard sync both ways, drag-and-drop files to the host, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
+| **Everyday tools** | Chat with files both ways in one-time sessions (nothing kept afterwards), text clipboard sync, drag-and-drop files, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
 | **Self-hosted** | The optional `rider-server` runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions. |
 | **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
 | **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow** with an access level (Full access, Standard or View only) they can change at any time. The code works once and expires after 10 minutes. |
@@ -131,6 +131,13 @@ For helping someone once, without pairing devices or sharing a PIN:
    The level can be changed at any time while the session runs. The
    computer being helped enforces it, and the helper's toolbar and window
    title show it (for example **View only**).
+4. While the session runs, the two of you can **chat and send files** both
+   ways: the helper with the **Chat** button on the session toolbar (the
+   panel opens beside the remote screen), the person being helped in the
+   app's window, which shows the session with the chat. Messages stay in
+   memory only; received files sit in a private temporary folder until the
+   session ends and are then deleted, unless someone chose **Save as…**.
+   Files need **Full access**.
 
 The code works **once** and expires after **10 minutes**. Nothing is kept
 afterwards: the computer uses a throwaway key and is not added anywhere. Either
@@ -170,7 +177,8 @@ Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.
 | `Ctrl+Alt+Shift+F` | Toggle full screen |
 | `Ctrl+Alt+Shift+M` | Next monitor |
 | `Ctrl+Alt+Shift+Q` | Disconnect |
-| Drag a file onto the window | Send it to the remote user's `Downloads\Rider` |
+| `Ctrl+Alt+Shift+C` | Open or close the chat (one-time sessions) |
+| Drag a file onto the window | Send it: into the chat in one-time sessions, otherwise to the remote user's `Downloads\Rider` |
 
 The text clipboard syncs both ways. The title bar shows fps, round-trip time,
 estimated latency and the encoder in use.

@@ -28,7 +28,9 @@ pub const ALPN_V3: &[u8] = b"rider/3";
 /// Protocol 3 plus access levels (`HostMsg::Permissions`); control messages
 /// a peer does not know are skipped from here on.
 pub const ALPN_V4: &[u8] = b"rider/4";
-const SESSION_ALPNS: &[&[u8]] = &[ALPN_V4, ALPN_V3, ALPN_V2, ALPN];
+/// Protocol 4 plus chat: messages both ways and file streams from the host.
+pub const ALPN_V5: &[u8] = b"rider/5";
+const SESSION_ALPNS: &[&[u8]] = &[ALPN_V5, ALPN_V4, ALPN_V3, ALPN_V2, ALPN];
 /// ALPN for the rendezvous server, so a server connection can never be
 /// mistaken for a host session (or the reverse).
 pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
@@ -40,7 +42,9 @@ pub const SUPPORT_ALPN: &[u8] = b"rider-support/1";
 pub const SUPPORT_ALPN_V2: &[u8] = b"rider-support/2";
 /// Support sessions with the `ALPN_V4` additions.
 pub const SUPPORT_ALPN_V3: &[u8] = b"rider-support/3";
-const SUPPORT_ALPNS: &[&[u8]] = &[SUPPORT_ALPN_V3, SUPPORT_ALPN_V2, SUPPORT_ALPN];
+/// Support sessions with the `ALPN_V5` additions.
+pub const SUPPORT_ALPN_V4: &[u8] = b"rider-support/4";
+const SUPPORT_ALPNS: &[&[u8]] = &[SUPPORT_ALPN_V4, SUPPORT_ALPN_V3, SUPPORT_ALPN_V2, SUPPORT_ALPN];
 /// Server name used in the handshake. Ignored by our verifiers (we pin keys, not names).
 pub const SERVER_NAME: &str = "rider";
 
@@ -217,18 +221,26 @@ pub fn client_config_alpn(
 /// sessions were introduced later and always do).
 pub fn speaks_v2(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
-        [ALPN_V4, ALPN_V3, ALPN_V2, SUPPORT_ALPN_V3, SUPPORT_ALPN_V2, SUPPORT_ALPN].contains(&p.as_slice())
+        [ALPN_V5, ALPN_V4, ALPN_V3, ALPN_V2, SUPPORT_ALPN_V4, SUPPORT_ALPN_V3, SUPPORT_ALPN_V2, SUPPORT_ALPN]
+            .contains(&p.as_slice())
     })
 }
 
 /// Whether the peer speaks [`ALPN_V3`]: cursor shapes, clicks with position.
 pub fn speaks_v3(conn: &quinn::Connection) -> bool {
-    protocol(conn).is_some_and(|p| [ALPN_V4, ALPN_V3, SUPPORT_ALPN_V3, SUPPORT_ALPN_V2].contains(&p.as_slice()))
+    protocol(conn).is_some_and(|p| {
+        [ALPN_V5, ALPN_V4, ALPN_V3, SUPPORT_ALPN_V4, SUPPORT_ALPN_V3, SUPPORT_ALPN_V2].contains(&p.as_slice())
+    })
 }
 
 /// Whether the peer speaks [`ALPN_V4`]: access levels, unknown messages skipped.
 pub fn speaks_v4(conn: &quinn::Connection) -> bool {
-    protocol(conn).is_some_and(|p| p == ALPN_V4 || p == SUPPORT_ALPN_V3)
+    protocol(conn).is_some_and(|p| [ALPN_V5, ALPN_V4, SUPPORT_ALPN_V4, SUPPORT_ALPN_V3].contains(&p.as_slice()))
+}
+
+/// Whether the peer speaks [`ALPN_V5`]: chat messages and files both ways.
+pub fn speaks_v5(conn: &quinn::Connection) -> bool {
+    protocol(conn).is_some_and(|p| p == ALPN_V5 || p == SUPPORT_ALPN_V4)
 }
 
 fn protocol(conn: &quinn::Connection) -> Option<Vec<u8>> {

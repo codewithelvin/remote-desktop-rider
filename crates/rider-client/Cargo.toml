@@ -20,12 +20,18 @@ tracing-subscriber.workspace = true
 bytes.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
+rider-ui.workspace = true
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
+egui-winit = { version = "0.37", default-features = false, features = ["clipboard"] }
 
-# Toolbar labels without GDI: the app's font, rasterized in Rust.
+# Chat panel: icons from egui's emoji font; clipboard and input on X11 and Wayland.
 [target.'cfg(not(windows))'.dependencies]
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+egui-winit = { version = "0.37", default-features = false, features = ["clipboard", "x11", "wayland"] }
+# Toolbar labels without GDI: the app's font, rasterized in Rust.
 ab_glyph = "0.2"
 epaint_default_fonts = "0.37"
 

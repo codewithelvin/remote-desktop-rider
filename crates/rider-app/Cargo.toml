@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 rider-core.workspace = true
+rider-ui.workspace = true
 rider-client = { path = "../rider-client" }
 anyhow.workspace = true
 tokio.workspace = true

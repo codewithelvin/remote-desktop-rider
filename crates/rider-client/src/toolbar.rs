@@ -33,6 +33,8 @@ pub enum Action {
     Elapsed,
     /// The access level when it is not full access: shown, not clickable.
     Access,
+    /// Open or close the chat.
+    Chat,
 }
 
 impl Action {
@@ -55,6 +57,10 @@ pub struct Extras {
     pub access: Option<String>,
     /// The person at the computer does not allow control: no Ctrl+Alt+Del.
     pub no_control: bool,
+    /// The host has chat: the button, with this many unread messages.
+    pub chat: Option<usize>,
+    /// The chat panel is open (the button is highlighted).
+    pub chat_open: bool,
 }
 
 /// Shown at the start of a session so people learn where it is.
@@ -147,6 +153,15 @@ impl Toolbar {
         self.extras = extras;
         self.sprite = None;
         self.visible()
+    }
+
+    /// Show the bar for a while (something new on it, e.g. a chat message).
+    pub fn reveal(&mut self) {
+        let until = Instant::now() + INTRO;
+        if self.visible_until.is_none_or(|t| t < until) && !self.on_bar {
+            self.visible_until = Some(until);
+            self.sprite = None;
+        }
     }
 
     /// The pointer is on the bar or its tab (shown as a plain arrow there).
@@ -405,6 +420,11 @@ fn labels(
     }
     if count > 1 {
         v.extend((0..count).map(|i| (Action::Monitor(i), icon('\u{E7F4}'), (i + 1).to_string())));
+    }
+    if let Some(unread) = extras.chat {
+        let label = tr("Chat", "Söhbət");
+        let text = if unread > 0 { format!("{label} \u{2022} {unread}") } else { label.into() };
+        v.push((Action::Chat, icon('\u{E8BD}'), text));
     }
     if let Some(q) = &extras.quality {
         // Label plus a down chevron: it opens a menu.
@@ -736,6 +756,9 @@ fn render(
     let pill = |act: Action| buttons.iter().find(|b| b.0 == act).map(|&(_, a, b)| (a, b));
     let active = (monitors.0 > 1).then(|| pill(Action::Monitor(monitors.1))).flatten().map(|(a, b)| (a, b, ACCENT));
     let pinned = extras.pinned.then(|| pill(Action::Pin)).flatten().map(|(a, b)| (a, b, ACCENT));
+    // Unread messages light the chat button up too, so they are not missed.
+    let chat_lit = extras.chat_open || extras.chat.is_some_and(|n| n > 0);
+    let chat = chat_lit.then(|| pill(Action::Chat)).flatten().map(|(a, b)| (a, b, ACCENT));
     let confirm = confirming.then(|| pill(Action::Disconnect)).flatten().map(|(a, b)| (a, b, DANGER));
     let hovered = hover
         .and_then(|h| pill(h).map(|(a, b)| (a, b, if h == Action::Disconnect { DANGER } else { HOVER })))
@@ -750,6 +773,7 @@ fn render(
                 .or_else(|| in_pill(confirm))
                 .or_else(|| in_pill(active))
                 .or_else(|| in_pill(pinned))
+                .or_else(|| in_pill(chat))
                 .unwrap_or((BG.0, BG.1, BG.2));
             let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
             let cx = fx.clamp(r, w as f64 - r);
@@ -867,6 +891,16 @@ mod tests {
         t.draw(&mut buf, 1600, 900);
         let acts: Vec<Action> = t.sprite.as_ref().unwrap().buttons.iter().map(|b| b.0).collect();
         assert_eq!(acts, [Action::Access, Action::Fullscreen, Action::Pin, Action::Disconnect]);
+        // Chat, when the host has it, sits before quality.
+        t.set_extras(Extras { chat: Some(2), quality: Some("Auto".into()), ..Extras::default() });
+        t.draw(&mut buf, 1600, 900);
+        let acts: Vec<Action> = t.sprite.as_ref().unwrap().buttons.iter().map(|b| b.0).collect();
+        assert_eq!(
+            acts,
+            [Action::Fullscreen, Action::CtrlAltDel, Action::Chat, Action::Quality, Action::Pin, Action::Disconnect]
+        );
+        t.set_extras(Extras { access: Some("View only".into()), no_control: true, ..Extras::default() });
+        t.draw(&mut buf, 1600, 900);
         // The level is a label, not a button.
         let (a, b, _) = t.button_rect(Action::Access).unwrap();
         t.pointer(((a + b) / 2) as f64, 10.0);

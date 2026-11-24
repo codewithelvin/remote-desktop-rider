@@ -202,7 +202,7 @@ first. Voice and video calls are not planned.
 | # | Feature | Size | State |
 |---|---|---|---|
 | 1 | Access levels: Full access / Standard / View only, changeable during the session | small | **done** for one-time sessions (unattended: with the session panel, #2) |
-| 2 | Chat with file transfer both ways, nothing kept after the session | medium | designed (below) |
+| 2 | Chat with file transfer both ways, nothing kept after the session | medium | **done** for one-time sessions (unattended: the session panel, next) |
 | 3 | Clipboard with images (files go through chat) | small | planned |
 | 4 | Sharp text when the screen is still (a lossless refresh after motion stops) | medium | planned |
 | 5 | TCP tunnels through the session (reach a port on the remote network) | medium | planned |
@@ -241,9 +241,10 @@ session** on either computer.
   on the right (about 340 px); the remote picture shrinks to the rest of the
   window, so the panel never covers the remote screen and works in full
   screen. Closing it gives the space back.
-- A message arriving while the panel is closed shows a short toast at the
-  top right of the session window (name + first line); clicking it opens the
-  panel. The toolbar keeps the unread count.
+- A message arriving while the panel is closed shows in the title bar (name
+  + first line), the toolbar slides in for a few seconds and its **Chat**
+  button lights up with the unread count. `Ctrl+Alt+Shift+C` opens and
+  closes the panel.
 - Keyboard: while the message box has focus, keys type there instead of going
   to the remote computer (Esc or a click on the picture gives them back).
 - Files: the attach button, or drag files onto the panel. Dropping a file on
@@ -256,8 +257,10 @@ session** on either computer.
 the signed-in user (never as SYSTEM: file dialogs and file access must have
 the user's rights, not the service's).
 
-- One-time sessions: it is the existing support window, which gains the chat
-  and the access level.
+- One-time sessions: while someone is connected, the app's whole window is
+  the session: who is connected, the access level (a dropdown) and **End
+  session** at the top, the chat below. A message arriving while the app is
+  in the background flashes its taskbar button and shows a notification.
 - Unattended sessions: the service agent starts it in the user's session as
   the user, linked by pipes. It does not open by itself when a session
   starts (it would sit in the remote picture); it opens when a message
@@ -286,7 +289,10 @@ the user's rights, not the service's).
   **Save as…** is the only way to keep a file, and it is the user's choice.
 - Drag-and-drop to `Downloads\Rider` (which kept files) is replaced by chat.
 
-**Protocol (`rider/5`):** `ClientMsg::Chat` / `HostMsg::Chat` (id, text),
-file streams in both directions (the host also opens streams), and
-`FileResult` answers with a reason. Control messages a peer does not know are
+**Protocol (`rider/5`, `rider-support/4`):** `ClientMsg::Chat` /
+`HostMsg::Chat` (text), `HostMsg::ChatReady` (whether someone at the host
+sees the chat: the viewer shows the Chat button only then), file streams in
+both directions (the host also opens streams), and `FileResult` answers with
+a reason. Without someone at the host (unattended, until the session panel),
+files dropped on the window still go to `Downloads\Rider`. Control messages a peer does not know are
 skipped (from `rider/4` on), so later additions cannot break a session.

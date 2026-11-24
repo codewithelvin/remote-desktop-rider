@@ -85,6 +85,20 @@ powershell -ExecutionPolicy Bypass -File test\local-session\banner-click.ps1
 View only, Full access and back during one session, with this build's viewer
 and with an installed (older) one, so the host is shown to enforce them.
 
+`test\local-session\chat.ps1` checks the session chat: messages both ways,
+files both ways (through the panel's attach button and file dialog), files
+refused under Standard access, and nothing left on disk when the session
+ends. It **types real keys** into the session window, so run it on a PC (or
+VM) nobody is using at the time: if the chat panel failed to open, the keys
+would reach the remote side, which on one PC is your own desktop.
+
+To look at the chat's layout after a change without starting a session,
+draw it with sample messages into images (no window, no input):
+
+```powershell
+cargo run -p rider-ui --example chat_preview -- $env:TEMP dark   # or light
+```
+
 Desktop tests in the crates (marked `#[ignore]`) need a signed-in desktop:
 `cargo test -p rider-host -- --ignored --test-threads=1`.
 
@@ -106,6 +120,15 @@ pushes for test builds):
   unattended service.
 - `test/lubuntu/access-levels.sh`: the Linux viewer (`.deb`) controls the
   Windows VM.
+- `test/vm/chat.ps1`, `test/lubuntu/chat.sh`, `test/macos/chat.sh`: the
+  session chat with the Windows, Linux and macOS viewers (this PC is the
+  host; all typing happens inside the VM).
+
+The tests reach the Windows VM through a small agent in it
+(`test/vm/guest/agent.ps1`, started on `vagrant up`) instead of a
+`vagrant winrm` per step: about 0.3 s per step instead of 5-15 s, and every
+step has a time limit. The Lubuntu VM is reached with plain `ssh`/`scp`
+using `vagrant ssh-config`, read once per run.
 
 The VM build comes from `target/release` (`rider-host service install`
 inside the VM); switch the VM's automatic updates off first, or it replaces

@@ -5,8 +5,13 @@
 //! plain `y` is full access) and changed while it runs with `access <level>`.
 //! Closing stdin counts as `quit`, so a crashed app never leaves the host
 //! in pairing mode or the service paused.
+//!
+//! Chat (see `chat`): `chat "<text>"` sends a message, `send-file "<path>"`
+//! a file, `cancel-file <id>` stops one (text and paths as JSON strings, so
+//! any character fits on one line).
 
 use rider_core::proto::Access;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, Notify, mpsc, watch};
 
@@ -15,6 +20,29 @@ static JSON: OnceLock<()> = OnceLock::new();
 static ANSWERS: OnceLock<Mutex<mpsc::UnboundedReceiver<Option<Access>>>> = OnceLock::new();
 /// The level asked for during a session (`access <level>` lines).
 static ACCESS: OnceLock<watch::Sender<Option<Access>>> = OnceLock::new();
+
+/// What the person at this computer does in the chat.
+#[derive(Debug, PartialEq)]
+pub enum ChatCmd {
+    Text(String),
+    SendFile(PathBuf),
+    Cancel(u64),
+}
+
+type ChatChannel = (mpsc::UnboundedSender<ChatCmd>, Mutex<mpsc::UnboundedReceiver<ChatCmd>>);
+static CHAT: OnceLock<ChatChannel> = OnceLock::new();
+
+fn chat_channel() -> &'static ChatChannel {
+    CHAT.get_or_init(|| {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (tx, Mutex::new(rx))
+    })
+}
+
+/// The chat commands from the app; a session holds the lock while it runs.
+pub fn chat_commands() -> &'static Mutex<mpsc::UnboundedReceiver<ChatCmd>> {
+    &chat_channel().1
+}
 
 fn access_tx() -> &'static watch::Sender<Option<Access>> {
     ACCESS.get_or_init(|| watch::channel(None).0)
@@ -32,6 +60,7 @@ pub fn access_changes() -> watch::Receiver<Option<Access>> {
 enum Line {
     Answer(Option<Access>),
     Access(Access),
+    Chat(ChatCmd),
     Quit,
 }
 
@@ -44,6 +73,9 @@ fn parse_line(line: &str) -> Option<Line> {
         "y" | "yes" => Access::from_code(arg).map(|a| Line::Answer(Some(a))),
         "n" | "no" => Some(Line::Answer(None)),
         "access" => Access::from_code(arg).map(Line::Access),
+        "chat" => serde_json::from_str::<String>(arg).ok().map(|t| Line::Chat(ChatCmd::Text(t))),
+        "send-file" => serde_json::from_str::<String>(arg).ok().map(|p| Line::Chat(ChatCmd::SendFile(p.into()))),
+        "cancel-file" => arg.parse().ok().map(|id| Line::Chat(ChatCmd::Cancel(id))),
         "quit" => Some(Line::Quit),
         _ => None,
     }
@@ -76,14 +108,23 @@ pub fn start_input() -> Arc<Notify> {
     std::thread::Builder::new()
         .name("ui-stdin".into())
         .spawn(move || {
-            let mut line = String::new();
+            use std::io::BufRead;
+            let mut bytes = Vec::new();
+            let mut input = std::io::stdin().lock();
             loop {
-                line.clear();
-                match std::io::stdin().read_line(&mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => match parse_line(&line) {
+                bytes.clear();
+                match input.read_until(b'\n', &mut bytes) {
+                    Ok(0) => break,
+                    Err(e) => {
+                        tracing::warn!("input from the app ended: {e}");
+                        break;
+                    }
+                    // A line that is not UTF-8 is skipped, not taken as the
+                    // end of input (which would end the session).
+                    Ok(_) => match parse_line(&String::from_utf8_lossy(&bytes)) {
                         Some(Line::Answer(a)) => _ = tx.send(a),
                         Some(Line::Access(a)) => _ = access_tx().send(Some(a)),
+                        Some(Line::Chat(c)) => _ = chat_channel().0.send(c),
                         Some(Line::Quit) => break,
                         None => {}
                     },
@@ -127,5 +168,13 @@ mod tests {
         assert_eq!(parse_line("y everything"), None);
         assert_eq!(parse_line("access root"), None);
         assert_eq!(parse_line("maybe"), None);
+        let chat = |t: &str| Some(Line::Chat(ChatCmd::Text(t.into())));
+        assert_eq!(parse_line(r#"chat "hi\nthere \"x\"""#), chat("hi\nthere \"x\""));
+        assert_eq!(
+            parse_line(r#"send-file "C:\\Users\\me\\a b.txt""#),
+            Some(Line::Chat(ChatCmd::SendFile(r"C:\Users\me\a b.txt".into())))
+        );
+        assert_eq!(parse_line("cancel-file 7"), Some(Line::Chat(ChatCmd::Cancel(7))));
+        assert_eq!(parse_line("chat unquoted"), None);
     }
 }

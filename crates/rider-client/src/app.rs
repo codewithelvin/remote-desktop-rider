@@ -8,15 +8,22 @@
 //!   Ctrl+Alt+Shift+M  next monitor
 //!   Ctrl+Alt+Shift+F  toggle fullscreen
 //!   Ctrl+Alt+Shift+Q  disconnect
+//!   Ctrl+Alt+Shift+C  open or close the chat
 //!   Ctrl+Alt+Shift+L  lock the remote computer (Win+L always locks this one)
 //!   Ctrl+Alt+End      Ctrl+Alt+Del on the host (login screen, lock screen)
 //!   Win key combinations, Alt+Tab, Alt+Esc, Ctrl+Esc, Alt+F4 go to the host (keyhook)
 //!   Drag and drop a file onto the window to send it to the host.
 //!
+//! Chat (hosts with protocol 5 and someone at that computer): the toolbar's
+//! Chat button opens a panel at the right edge (see `chat`); the remote
+//! screen fits into the space left of it. Files dropped on the window go
+//! into the chat.
+//!
 //! When the host goes silent the picture dims under "Connection lost,
 //! reconnecting" (see `overlay`). QUIC keeps retrying the same connection;
 //! if it dies, a new one is made with `Reconnect` until `RECONNECT_FOR` runs out.
 
+use crate::chat::ChatPanel;
 use crate::diag::{self, Diag};
 #[cfg(windows)]
 use crate::keyhook::KeyHook;
@@ -27,6 +34,8 @@ use anyhow::Result;
 use rider_core::i18n::tr;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
 use rider_core::proto::{Access, ClientMsg, CursorShape, MonitorInfo, MouseButton, Permissions, QUALITIES};
+use rider_core::trf;
+use rider_ui::chat::Action as ChatAction;
 use std::collections::HashSet;
 use std::future::Future;
 use std::num::NonZeroU32;
@@ -113,9 +122,17 @@ pub fn run(
         reconnect: reconnect.map(Arc::new),
         reconnecting: None,
         overlay: Overlay::default(),
+        chat: None,
+        chat_ready: false,
+        scratch: Vec::new(),
+        pointer_px: (-1.0, -1.0),
+        hook_on: true,
     };
     app.refresh_extras();
     event_loop.run_app(&mut app)?;
+    // Nothing of the chat outlives the window.
+    app.chat = None;
+    app.shared.end_files();
     if let Some(d) = app.diag.take() {
         d.finish(&rt, app.closed.as_deref().unwrap_or("closed by the user"));
     }
@@ -184,6 +201,17 @@ struct App {
     /// Why the last connection was lost, while new ones are being tried.
     reconnecting: Option<String>,
     overlay: Overlay,
+    /// Created with the window.
+    chat: Option<ChatPanel>,
+    /// Someone at the host sees the chat (`HostMsg::ChatReady`).
+    chat_ready: bool,
+    /// The remote screen, toolbar and overlay while the chat takes the
+    /// right edge (copied next to it).
+    scratch: Vec<u32>,
+    /// Last pointer position in the window (physical px).
+    pointer_px: (f64, f64),
+    /// Whether the keyboard hook currently forwards keys.
+    hook_on: bool,
 }
 
 impl App {
@@ -196,15 +224,34 @@ impl App {
         }
         let Ok(mut buf) = surface.buffer_mut() else { return };
         let (w, h) = (w.get() as usize, h.get() as usize);
+        let panel = self.chat.as_ref().map_or(0, |c| c.width(w, window.scale_factor()));
+        // The remote screen, overlay and toolbar fill the area left of the chat.
+        let vw = w - panel;
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let area: &mut [u32] = if panel == 0 {
+            &mut buf
+        } else {
+            scratch.resize(vw * h, 0);
+            &mut scratch
+        };
         match &self.current {
-            Some(f) => self.image_rect = nv12_to_xrgb_fit(f, &mut buf, w, h),
-            None => buf.fill(0x0010_1014),
+            Some(f) => self.image_rect = nv12_to_xrgb_fit(f, area, vw, h),
+            None => area.fill(0x0010_1014),
         }
-        self.overlay.draw(&mut buf, w, h, window.scale_factor());
+        self.overlay.draw(area, vw, h, window.scale_factor());
         let monitors = (self.monitors.len() as u32, self.active_monitor);
         self.toolbar.set_state(window.scale_factor(), window.fullscreen().is_some(), monitors);
-        self.toolbar.draw(&mut buf, w, h);
+        self.toolbar.draw(area, vw, h);
         self.toolbar_shown = self.toolbar.visible();
+        if panel > 0 {
+            for y in 0..h {
+                buf[y * w..y * w + vw].copy_from_slice(&scratch[y * vw..(y + 1) * vw]);
+            }
+            if let Some(c) = &mut self.chat {
+                c.draw(window, &mut buf, w, h);
+            }
+        }
+        self.scratch = scratch;
         let _ = buf.present();
     }
 
@@ -267,6 +314,7 @@ impl App {
             }
             PhysicalKey::Code(KeyCode::KeyF) => Action::Fullscreen,
             PhysicalKey::Code(KeyCode::KeyQ) => Action::Disconnect,
+            PhysicalKey::Code(KeyCode::KeyC) if self.chat_available() => Action::Chat,
             // Win+L itself always locks this computer: Windows reserves it.
             PhysicalKey::Code(KeyCode::KeyL) => {
                 self.lock_remote();
@@ -305,6 +353,14 @@ impl App {
                 self.refresh_extras();
                 self.redraw_soon();
             }
+            Action::Chat => {
+                if let Some(c) = &mut self.chat {
+                    let open = !c.is_open();
+                    c.set_open(open);
+                }
+                self.refresh_extras();
+                self.redraw_soon();
+            }
             Action::Elapsed | Action::Access => {}
             Action::Disconnect => {
                 self.release_keys();
@@ -322,13 +378,117 @@ impl App {
             .find(|q| q.0 == self.quality)
             .map_or(tr("Auto", "Avto"), |q| if q.0 == 0 { tr("Auto", "Avto") } else { q.1 });
         let p = self.shared.permissions();
+        let chat = self.chat.as_ref().filter(|_| self.chat_available());
         self.toolbar.set_extras(Extras {
             elapsed: elapsed(self.started.elapsed()),
             quality: self.v2.then(|| label.to_owned()),
             pinned: self.pinned,
             access: access_label(p),
             no_control: !p.control,
+            chat: chat.map(|c| c.chat.unread),
+            chat_open: chat.is_some_and(ChatPanel::is_open),
         })
+    }
+
+    /// The host speaks protocol 5 and someone there sees the chat.
+    fn chat_available(&self) -> bool {
+        self.chat_ready && self.net.chat()
+    }
+
+    /// Carry out what was done in the chat panel.
+    fn chat_actions(&mut self) {
+        let Some(c) = &mut self.chat else { return };
+        let actions = c.take_actions();
+        for a in actions {
+            match a {
+                ChatAction::Send(text) => {
+                    if let Some(c) = &mut self.chat {
+                        c.chat.text(true, &text);
+                        c.changed();
+                    }
+                    self.net.send(ClientMsg::Chat { text });
+                }
+                ChatAction::Attach => {
+                    let proxy = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        let files = rider_ui::files::pick_files();
+                        if !files.is_empty() {
+                            let _ = proxy.send_event(UiEvent::Attach(files));
+                        }
+                    });
+                }
+                ChatAction::Cancel(id) => self.shared.cancel(id),
+                ChatAction::Open(id) => {
+                    if let Some(path) = self.chat.as_ref().and_then(|c| c.file_path(id))
+                        && let Err(e) = rider_ui::files::open(path)
+                    {
+                        self.show_notice(format!("{}: {e}", path.display()));
+                    }
+                }
+                ChatAction::SaveAs(id) => {
+                    let Some(c) = &self.chat else { continue };
+                    let (Some(path), Some(f)) = (c.file_path(id).cloned(), c.chat.file(id)) else { continue };
+                    let (name, proxy) = (f.name.clone(), self.proxy.clone());
+                    std::thread::spawn(move || {
+                        let msg = match rider_ui::files::save_copy(&path, &name) {
+                            Ok(Some(to)) => format!("{} {}", tr("Saved to", "Saxlanıldı:"), to.display()),
+                            Ok(None) => return,
+                            Err(e) => format!("{name}: {e}"),
+                        };
+                        let _ = proxy.send_event(UiEvent::Notice(msg));
+                    });
+                }
+                ChatAction::Close => {
+                    if let Some(c) = &mut self.chat {
+                        c.set_open(false);
+                    }
+                    self.refresh_extras();
+                }
+            }
+        }
+        self.redraw_soon();
+    }
+
+    fn show_notice(&mut self, text: String) {
+        self.notice = Some((text, Instant::now()));
+        self.update_title();
+    }
+
+    /// Something arrived for the chat; with the panel closed, say so.
+    fn chat_event(&mut self, notice: Option<String>) {
+        let Some(c) = &mut self.chat else { return };
+        c.changed();
+        let open = c.is_open();
+        if !open && let Some(n) = notice {
+            self.show_notice(n);
+            self.toolbar.reveal();
+        }
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
+    /// Keys go to the chat while its message box has focus: the keyboard
+    /// hook must not send Win or Alt+Tab to the host then.
+    fn update_hook(&mut self) {
+        let typing = self.chat.as_ref().is_some_and(ChatPanel::typing);
+        let on = self.shared.permissions().control && !typing;
+        if on == self.hook_on {
+            return;
+        }
+        self.hook_on = on;
+        if typing {
+            self.release_keys();
+        }
+        #[cfg(windows)]
+        if let Some(h) = &self.keyhook {
+            h.set_enabled(on);
+        }
+    }
+
+    /// Whether the pointer is over the chat panel.
+    fn over_chat(&self, x: f64) -> bool {
+        let (Some(c), Some(w)) = (&self.chat, &self.window) else { return false };
+        c.contains(x, w.inner_size().width as usize, w.scale_factor())
     }
 
     /// The quality dropdown, under its toolbar button.
@@ -394,9 +554,11 @@ impl App {
             // The host has let go of them already; nothing more to send.
             self.held_keys.clear();
         }
-        #[cfg(windows)]
-        if let Some(h) = &self.keyhook {
-            h.set_enabled(p.control);
+        self.hook_on = !p.control; // makes update_hook apply the new state
+        self.update_hook();
+        if let Some(c) = &mut self.chat {
+            c.chat.files_allowed = p.files;
+            c.changed();
         }
         let text = match p.access() {
             Some(Access::Full) => {
@@ -512,8 +674,19 @@ impl App {
         self.redraw_soon();
     }
 
-    /// The host's pointer shape, or an arrow over the toolbar.
+    /// The host's pointer shape, an arrow over the toolbar, or the chat's.
     fn update_cursor(&mut self) {
+        if self.over_chat(self.pointer_px.0) {
+            if let (Some(c), Some(w)) = (&self.chat, &self.window) {
+                w.set_cursor(c.cursor());
+            }
+            // Set again when the pointer goes back to the remote screen.
+            self.shown_cursor = CursorShape::NotAllowed;
+            if self.remote_cursor == CursorShape::NotAllowed {
+                self.shown_cursor = CursorShape::Arrow;
+            }
+            return;
+        }
         let want = if self.toolbar.hovering() { CursorShape::Arrow } else { self.remote_cursor };
         if want == self.shown_cursor {
             return;
@@ -572,7 +745,12 @@ impl ApplicationHandler<UiEvent> for App {
                 tracing::warn!("Win key and Alt+Tab will act on this computer (keyboard hook unavailable)");
             }
         }
+        let mut chat = ChatPanel::new(&window, &self.host_name);
+        chat.ready = self.chat_ready;
+        chat.chat.files_allowed = self.shared.permissions().files;
+        self.chat = Some(chat);
         self.window = Some(window);
+        self.refresh_extras();
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, ev: UiEvent) {
@@ -595,6 +773,68 @@ impl ApplicationHandler<UiEvent> for App {
                 self.update_cursor();
             }
             UiEvent::Permissions(p) => self.permissions_changed(p),
+            UiEvent::Chat(text) => {
+                let preview: String = text.chars().take(60).collect();
+                if let Some(c) = &mut self.chat {
+                    c.chat.text(false, &text);
+                }
+                let notice = format!("{}: {preview}", self.host_name);
+                self.chat_event(Some(notice));
+            }
+            UiEvent::ChatReady(ready) => {
+                self.chat_ready = ready;
+                if let Some(c) = &mut self.chat {
+                    c.ready = ready;
+                    if !ready && c.is_open() {
+                        c.chat.notice(tr(
+                            "Nobody at that computer has the chat open now",
+                            "O kompüterdə indi söhbət açıq deyil",
+                        ));
+                    }
+                }
+                self.chat_event(None);
+            }
+            UiEvent::File { id, mine, name, size } => {
+                let notice = (!mine).then(|| trf!("{} sent {name}", "{} {name} göndərdi", self.host_name));
+                if let Some(c) = &mut self.chat {
+                    c.chat.file_started(id, mine, &name, size);
+                }
+                self.chat_event(notice);
+            }
+            UiEvent::FileProgress { id, done } => {
+                if let Some(c) = &mut self.chat {
+                    c.chat.file_progress(id, done);
+                    if c.is_open() {
+                        c.changed();
+                        self.redraw_soon();
+                    }
+                }
+            }
+            UiEvent::FileDone { id, path } => {
+                let name = self.chat.as_ref().and_then(|c| c.chat.file(id)).map(|f| f.name.clone());
+                if let Some(c) = &mut self.chat {
+                    c.chat.file_done(id);
+                    if let Some(p) = path {
+                        c.set_file_path(id, p);
+                    }
+                }
+                // Without the chat (older host) the title says how it went.
+                let notice =
+                    (!self.chat_available()).then(|| trf!("{} sent", "{} göndərildi", name.unwrap_or_default()));
+                self.chat_event(notice);
+            }
+            UiEvent::FileFailed { id, reason } => {
+                let name = self.chat.as_ref().and_then(|c| c.chat.file(id)).map(|f| f.name.clone());
+                if let Some(c) = &mut self.chat {
+                    c.chat.file_failed(id, &reason);
+                }
+                self.chat_event(Some(format!("{}: {reason}", name.unwrap_or_default())));
+            }
+            UiEvent::Attach(files) => {
+                for f in files {
+                    self.net.send_file(f, &self.shared);
+                }
+            }
             UiEvent::Notice(n) => {
                 tracing::info!("{n}");
                 self.notice = Some((n, Instant::now()));
@@ -617,6 +857,35 @@ impl ApplicationHandler<UiEvent> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            self.pointer_px = (position.x, position.y);
+        }
+        let to_chat = match &event {
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                self.over_chat(self.pointer_px.0)
+            }
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
+                self.chat.as_ref().is_some_and(ChatPanel::typing)
+            }
+            _ => false,
+        };
+        if let (Some(c), Some(w)) = (&mut self.chat, &self.window) {
+            // Pointer events always (egui sees the pointer leave, and a click
+            // on the remote screen takes the focus from the message box).
+            if c.on_event(w, &event) {
+                w.request_redraw();
+            }
+        }
+        if to_chat {
+            if matches!(event, WindowEvent::CursorMoved { .. }) {
+                if self.toolbar.leave() {
+                    self.redraw_soon();
+                }
+                self.update_cursor();
+            }
+            self.update_hook();
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.release_keys();
@@ -721,7 +990,17 @@ impl ApplicationHandler<UiEvent> for App {
                 }
                 self.update_cursor();
             }
-            WindowEvent::DroppedFile(path) => self.net.send_file(path, self.shared.permissions().files),
+            WindowEvent::DroppedFile(path) => {
+                // Into the chat, where its progress shows.
+                if self.chat_available()
+                    && let Some(c) = &mut self.chat
+                {
+                    c.set_open(true);
+                    self.refresh_extras();
+                    self.redraw_soon();
+                }
+                self.net.send_file(path, &self.shared);
+            }
             _ => {}
         }
     }
@@ -742,7 +1021,15 @@ impl ApplicationHandler<UiEvent> for App {
         if self.toolbar.expire_confirm() || self.toolbar.visible() != self.toolbar_shown {
             self.redraw_soon();
         }
-        let wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
+        self.chat_actions();
+        self.update_hook();
+        if self.chat.as_ref().is_some_and(ChatPanel::due) {
+            self.redraw_soon();
+        }
+        let mut wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
+        if let Some(t) = self.chat.as_ref().and_then(ChatPanel::deadline) {
+            wake = wake.min(t);
+        }
         el.set_control_flow(ControlFlow::WaitUntil(wake));
     }
 }

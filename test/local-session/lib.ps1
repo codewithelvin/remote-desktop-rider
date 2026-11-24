@@ -76,15 +76,22 @@ public static class Rdr {
         public void Stop() { try { if (!P.HasExited) P.Kill(); } catch { } }
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+    // The process's main window: winit also keeps a small visible helper
+    // window ("Winit Thread Event Target"), which must not be taken for it.
     public static IntPtr WindowOf(int pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p);
-            if (p == pid && IsWindowVisible(h)) { found = h; return false; } return true; }, IntPtr.Zero);
+            var c = new System.Text.StringBuilder(256); GetClassName(h, c, 256);
+            if (p == pid && IsWindowVisible(h) && c.ToString() != "Winit Thread Event Target") { found = h; return false; }
+            return true; }, IntPtr.Zero);
         return found;
     }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
     public static string Title(IntPtr h) { var b = new System.Text.StringBuilder(1024); GetWindowText(h, b, 1024); return b.ToString(); }
     public static void Place(IntPtr h, int x, int y, int w, int hh) { SetWindowPos(h, new IntPtr(-1), x, y, w, hh, 0x0040); } // topmost: nothing covers it
+
+    public static void Post(IntPtr h, uint m, int w, IntPtr l) { PostMessage(h, m, new IntPtr(w), l); }
 
     public static void ClickAt(int x, int y) {
         SetCursorPos(x, y); Thread.Sleep(100);

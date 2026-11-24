@@ -88,6 +88,29 @@ impl Updater {
         self.state.lock().map(|s| s.clone()).unwrap_or(State::Idle)
     }
 
+    /// `RIDER_PREVIEW=update-available|-downloading|-installing|-failed`: show
+    /// that stage of an update with a sample release, to look at the banner.
+    pub fn preview(&self, stage: &str) {
+        let release = Release {
+            version: Version::parse("9.9.0").unwrap_or_else(current),
+            page: "https://example.com".into(),
+            file_name: "rdr-setup-9.9.0.exe".into(),
+            url: String::new(),
+            size: 31_400_000,
+            sha256: [0; 32],
+        };
+        let s = match stage {
+            "downloading" => State::Downloading { release, done: 13_100_000 },
+            "installing" => State::Installing(release),
+            "failed" => State::Failed {
+                error: "The download was interrupted (connection reset).".into(),
+                release: Some(release),
+            },
+            _ => State::Available(release),
+        };
+        Self::set(&self.state, &self.ctx, s);
+    }
+
     fn set(state: &Mutex<State>, ctx: &egui::Context, s: State) {
         if let Ok(mut g) = state.lock() {
             *g = s;

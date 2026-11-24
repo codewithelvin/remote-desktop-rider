@@ -423,6 +423,7 @@ async fn stream(
     let perms = Arc::new(AtomicU8::new(access.permissions().bits()));
     let allows = |perms: &AtomicU8| Permissions::from_bits(perms.load(Ordering::Relaxed));
     let v4 = rider_core::tls::speaks_v4(conn);
+    let v5 = rider_core::tls::speaks_v5(conn);
     let recorder = Arc::new(Mutex::new(recorder(state, conn, tunnel).await));
     let monitors = capture::monitors()?;
     let list: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
@@ -445,6 +446,11 @@ async fn stream(
     if v4 {
         let _ = out_tx.send(HostMsg::Permissions(access.permissions()));
     }
+    let chat = crate::chat::Chat::new(conn.clone(), out_tx.clone(), v5);
+    let chat_task = {
+        let perms = perms.clone();
+        tokio::spawn(chat.clone().run(move || allows(&perms)))
+    };
 
     // Video pipeline.
     let stop = Arc::new(AtomicBool::new(false));
@@ -552,19 +558,27 @@ async fn stream(
         })
     };
 
-    // Incoming files.
+    // Incoming files: into the chat when someone here sees it, else to
+    // Downloads\Rider.
     let files = {
-        let conn = conn.clone();
-        let perms = perms.clone();
+        let (conn, perms, chat) = (conn.clone(), perms.clone(), chat.clone());
         tokio::spawn(async move {
             while let Ok((s, r)) = conn.accept_bi().await {
-                let allowed = allows(&perms).files;
-                tokio::spawn(async move {
-                    let result = if allowed { receive_file(s, r).await } else { refuse_file(s, r).await };
-                    if let Err(e) = result {
-                        tracing::warn!("file transfer failed: {e:#}");
+                if !allows(&perms).files {
+                    let refused =
+                        rider_core::transfer::refuse(s, r, "the person at that computer does not allow files");
+                    if let Ok(size) = refused.await {
+                        tracing::info!("refused a file ({size} bytes): not allowed at this access level");
                     }
-                });
+                } else if crate::chat::available() {
+                    tokio::spawn(chat.clone().receive_file(s, r));
+                } else {
+                    tokio::spawn(async move {
+                        if let Err(e) = receive_file(s, r).await {
+                            tracing::warn!("file transfer failed: {e:#}");
+                        }
+                    });
+                }
             }
         })
     };
@@ -726,6 +740,7 @@ async fn stream(
                         tracing::warn!("cannot lock: {e}");
                     }
                 }
+                ClientMsg::Chat { text } => chat.text_from_viewer(&text),
                 ClientMsg::Hello { .. } | ClientMsg::Auth { .. } | ClientMsg::PairConfirm { .. } => {}
             }
         }
@@ -760,9 +775,10 @@ async fn stream(
     };
 
     stop.store(true, Ordering::SeqCst);
-    for t in [sender, mouse, access_task, clip_fwd, files, ticker, writer] {
+    for t in [sender, mouse, access_task, chat_task, clip_fwd, files, ticker, writer] {
         t.abort();
     }
+    chat.end();
     if let Some(r) = recorder.lock().unwrap().take() {
         if ended.is_empty() {
             ended = match &result {
@@ -912,22 +928,6 @@ async fn send_frame(conn: &quinn::Connection, p: VideoPacket) -> bool {
     }
 }
 
-/// A file name from the client that is safe to create in the incoming folder:
-/// no folders, no NTFS streams (`a.txt:x`), no device names (`CON`, `nul.txt`),
-/// no characters Windows refuses, and no trailing dots or spaces.
-fn safe_file_name(raw: &str) -> Option<String> {
-    // Either separator: the client may run on another system.
-    let base = raw.rsplit(['/', '\\']).next()?;
-    let name: String = base.chars().map(|c| if c.is_control() || "<>:\"|?*".contains(c) { '_' } else { c }).collect();
-    let name = name.trim_end_matches(['.', ' ']).trim_start();
-    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem[3..].chars().all(|c| c.is_ascii_digit()));
-    (!name.is_empty() && !device && name.chars().count() <= 200).then(|| name.to_owned())
-}
-
 /// Create a new file for `name` in `dir` ("name (2).ext" if taken). Runs as
 /// the signed-in user (see `system::as_console_user`).
 fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std::path::PathBuf, std::fs::File)> {
@@ -947,72 +947,22 @@ fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std::path::Path
     bail!("too many files named {name}")
 }
 
-async fn remove_incoming(path: std::path::PathBuf) {
-    let _ = tokio::task::spawn_blocking(move || crate::system::as_console_user(|| std::fs::remove_file(path))).await;
-}
-
-/// Files are not allowed at the current access level: say so, take nothing.
-async fn refuse_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Result<()> {
-    let header: Option<FileHeader> = read_msg(&mut recv).await?;
-    let _ = recv.stop(0u32.into());
-    tracing::info!("refused a file ({} bytes): not allowed at this access level", header.map_or(0, |h| h.size));
-    let message = "the person at that computer does not allow files".into();
-    write_msg(&mut send, &FileResult { ok: false, message }).await?;
-    let _ = send.finish();
-    Ok(())
-}
-
-async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Result<()> {
-    let header: FileHeader = read_msg(&mut recv).await?.context("missing file header")?;
-    let name = safe_file_name(&header.name).context("invalid file name")?;
+/// A file dropped on the viewer while nobody here has the chat open: saved
+/// to Downloads\\Rider as the signed-in user.
+async fn receive_file(send: quinn::SendStream, recv: quinn::RecvStream) -> Result<()> {
     let dir = crate::system::incoming_files_dir()?;
-    let (path, file) =
-        tokio::task::spawn_blocking(move || crate::system::as_console_user(|| create_incoming(&dir, &name)))
-            .await???;
-    tracing::info!("receiving {} ({} bytes)", path.display(), header.size);
-    use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::from_std(file);
-    let mut buf = vec![0u8; 256 * 1024];
-    let mut total = 0u64;
-    while let Some(n) = recv.read(&mut buf).await? {
-        total += n as u64;
-        if total > header.size {
-            drop(file);
-            remove_incoming(path).await;
-            bail!("sender exceeded announced size");
-        }
-        file.write_all(&buf[..n]).await?;
-    }
-    file.flush().await?;
-    let ok = total == header.size;
-    if !ok {
-        drop(file);
-        remove_incoming(path.clone()).await;
-    }
-    let message = if ok { path.display().to_string() } else { "transfer incomplete".into() };
-    tracing::info!("file {}: {message}", if ok { "saved" } else { "failed" });
-    write_msg(&mut send, &FileResult { ok, message }).await?;
-    let _ = send.finish();
+    let create = move |name: &str| {
+        let name = name.to_owned();
+        crate::system::as_console_user(|| create_incoming(&dir, &name))?
+    };
+    let got = rider_core::transfer::receive(send, recv, |_, _| {}, create, &Default::default(), |_| {}).await?;
+    tracing::info!("file saved: {} ({} bytes)", got.path.display(), got.size);
     Ok(())
 }
 
 #[cfg(test)]
 mod auto_resolution_tests {
     use super::*;
-
-    #[test]
-    fn incoming_file_names_are_tamed() {
-        assert_eq!(safe_file_name("report.pdf").as_deref(), Some("report.pdf"));
-        assert_eq!(safe_file_name("../../Windows/evil.dll").as_deref(), Some("evil.dll"));
-        assert_eq!(safe_file_name("C:\\Users\\x\\a.txt").as_deref(), Some("a.txt"));
-        assert_eq!(safe_file_name("a.txt:hidden").as_deref(), Some("a.txt_hidden"));
-        assert_eq!(safe_file_name("notes.txt. . ").as_deref(), Some("notes.txt"));
-        for bad in ["", ".", "..", "CON", "nul.txt", "Com1.log", "LPT9", "aux .txt", "/", "x/"] {
-            assert_eq!(safe_file_name(bad), None, "{bad:?}");
-        }
-        assert_eq!(safe_file_name("COM10.txt").as_deref(), Some("COM10.txt"));
-        assert_eq!(safe_file_name("console.txt").as_deref(), Some("console.txt"));
-    }
 
     #[test]
     fn bitrate_recovers_at_low_frame_rates() {

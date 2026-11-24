@@ -14,6 +14,7 @@ use rider_core::i18n::tr;
 use rider_core::identity::{Identity, fp_from_hex};
 use rider_core::proto::Access;
 use rider_core::trf;
+use rider_ui::chat::{Action as ChatAction, Chat};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::process::{Child, ChildStdin, Stdio};
@@ -49,9 +50,28 @@ enum Msg {
     Online(Result<Vec<(String, bool)>, String>),
     PairPrompt(PairPrompt, oneshot::Sender<bool>),
     PairDone(Result<KnownHost, String>),
-    Session { id: u64, update: SessionUpdate },
-    Quick { id: u64, update: QuickUpdate },
-    Support { id: u64, event: SupportEvent },
+    Session {
+        id: u64,
+        update: SessionUpdate,
+    },
+    Quick {
+        id: u64,
+        update: QuickUpdate,
+    },
+    Support {
+        id: u64,
+        event: SupportEvent,
+    },
+    /// Files picked in the support chat's dialog, to send.
+    SupportFiles {
+        id: u64,
+        files: Vec<std::path::PathBuf>,
+    },
+    /// A short message for the support chat (e.g. where a file was saved).
+    SupportNotice {
+        id: u64,
+        text: String,
+    },
 }
 
 enum SessionUpdate {
@@ -143,6 +163,11 @@ enum SupportEvent {
     Declined,
     Expired,
     Exited(String),
+    Chat(String),
+    File { id: u64, mine: bool, name: String, size: u64 },
+    FileProgress { id: u64, done: u64 },
+    FileDone { id: u64, path: Option<std::path::PathBuf> },
+    FileFailed { id: u64, reason: String },
 }
 
 #[derive(Clone)]
@@ -165,13 +190,40 @@ struct Support {
     /// A short note under the code, e.g. after declining someone.
     note: Option<String>,
     stage: SupportStage,
+    /// Messages and files with the helper; gone with this struct.
+    chat: Chat,
+    /// Where each received file is (in the host's session folder).
+    files: HashMap<u64, std::path::PathBuf>,
 }
 
 impl Support {
+    fn new(id: u64, stdin: Option<ChildStdin>, stage: SupportStage) -> Self {
+        let mut chat = Chat::new(tr("The person helping you", "Sizə kömək edən şəxs"));
+        chat.closable = false;
+        chat.heading = false;
+        Self {
+            id,
+            stdin,
+            access: Access::Full,
+            code: None,
+            server_error: None,
+            note: None,
+            stage,
+            chat,
+            files: HashMap::new(),
+        }
+    }
+
     fn send(&mut self, line: &str) {
         if let Some(s) = &mut self.stdin {
             let _ = writeln!(s, "{line}");
         }
+    }
+
+    /// A line with a JSON string argument (any text fits on one line).
+    fn send_json(&mut self, word: &str, arg: &str) {
+        let line = format!("{word} {}", serde_json::Value::from(arg));
+        self.send(&line);
     }
 }
 
@@ -276,14 +328,15 @@ impl ClientApp {
         app
     }
 
-    /// `RIDER_PREVIEW=this|settings|add|quick|connect`: start on that page or
-    /// dialog, to look at every view (both themes and languages).
+    /// `RIDER_PREVIEW=this|settings|add|quick|connect|update-<stage>`: start on
+    /// that page or dialog, to look at every view (both themes and languages).
     fn preview(&mut self) {
         match std::env::var("RIDER_PREVIEW").as_deref() {
             Ok("this") => self.tab = Tab::ThisComputer,
             Ok("settings") => self.tab = Tab::Settings,
             Ok("add") => self.open_add(),
             Ok("quick") => self.open_quick(),
+            Ok(s) if s.starts_with("update-") => self.updater.preview(&s["update-".len()..]),
             Ok("connect") => {
                 if let Some(h) = self.cfg.hosts.first() {
                     self.connect = Some(ConnectDialog {
@@ -397,6 +450,18 @@ impl ClientApp {
                 Msg::Session { id, update } => self.session_update(id, update),
                 Msg::Quick { id, update } => self.quick_update(id, update),
                 Msg::Support { id, event } => self.support_event(id, event),
+                Msg::SupportFiles { id, files } => {
+                    if let Some(s) = self.support.as_mut().filter(|s| s.id == id) {
+                        for f in files {
+                            s.send_json("send-file", &f.to_string_lossy());
+                        }
+                    }
+                }
+                Msg::SupportNotice { id, text } => {
+                    if let Some(s) = self.support.as_mut().filter(|s| s.id == id) {
+                        s.chat.notice(text);
+                    }
+                }
             }
         }
         // Finished sessions without an error disappear on their own.
@@ -497,7 +562,32 @@ impl ClientApp {
                 s.note = None;
                 s.stage = SupportStage::Asking { device, code };
             }
-            SupportEvent::Started(device) => s.stage = SupportStage::Active { device },
+            SupportEvent::Started(device) => {
+                s.chat.peer.clone_from(&device);
+                s.chat.files_allowed = s.access.permissions().files;
+                s.stage = SupportStage::Active { device };
+            }
+            SupportEvent::Chat(text) => {
+                s.chat.text(false, &text);
+                let title = trf!("Message from {}", "{} mesaj göndərdi", s.chat.peer);
+                let preview: String = text.chars().take(120).collect();
+                self.attention(&title, &preview);
+            }
+            SupportEvent::File { id, mine, name, size } => {
+                s.chat.file_started(id, mine, &name, size);
+                if !mine {
+                    let title = trf!("{} is sending a file", "{} fayl göndərir", s.chat.peer);
+                    self.attention(&title, &name);
+                }
+            }
+            SupportEvent::FileProgress { id, done } => s.chat.file_progress(id, done),
+            SupportEvent::FileDone { id, path } => {
+                s.chat.file_done(id);
+                if let Some(p) = path {
+                    s.files.insert(id, p);
+                }
+            }
+            SupportEvent::FileFailed { id, reason } => s.chat.file_failed(id, reason),
             SupportEvent::Ended => s.stage = SupportStage::Ended,
             SupportEvent::Cancelled => {
                 s.stage = SupportStage::Waiting;
@@ -522,6 +612,20 @@ impl ClientApp {
                 }
             }
         }
+    }
+
+    /// Something new in the support chat: flash the taskbar button and, with
+    /// the window in the background, show a notification.
+    fn attention(&self, title: &str, text: &str) {
+        let ctx = self.bus.ctx();
+        if ctx.input(|i| i.focused) {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+        if let Some(tray) = &self.tray {
+            tray.notify(title, text);
+        }
+        ctx.request_repaint();
     }
 
     fn poll_online(&mut self) {
@@ -710,18 +814,11 @@ impl ClientApp {
         let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
-                self.support = Some(Support {
-                    id,
-                    stdin: None,
-                    access: Access::Full,
-                    code: None,
-                    server_error: None,
-                    note: None,
-                    stage: SupportStage::Failed(trf!(
-                        "cannot start rider-host.exe: {e}",
-                        "rider-host.exe başladıla bilmir: {e}"
-                    )),
-                });
+                let stage = SupportStage::Failed(trf!(
+                    "cannot start rider-host.exe: {e}",
+                    "rider-host.exe başladıla bilmir: {e}"
+                ));
+                self.support = Some(Support::new(id, None, stage));
                 return;
             }
         };
@@ -745,15 +842,7 @@ impl ClientApp {
             let _ = child.wait();
             tx.send(Msg::Support { id, event: SupportEvent::Exited(err) });
         });
-        self.support = Some(Support {
-            id,
-            stdin,
-            access: Access::Full,
-            code: None,
-            server_error: None,
-            note: None,
-            stage: SupportStage::Waiting,
-        });
+        self.support = Some(Support::new(id, stdin, SupportStage::Waiting));
     }
 
     fn open_add(&mut self) {
@@ -1212,7 +1301,10 @@ impl ClientApp {
         });
     }
 
-    /// "Version x is available" above every page while there is one.
+    /// "Version x is available" above every page while there is one. The
+    /// card keeps its shape through the stages: the title says what is
+    /// happening, a slim bar under it shows the progress, the right side has
+    /// the button (or the figures).
     fn update_banner(&mut self, ui: &mut Ui) {
         use updates::State;
         let state = self.updater.state();
@@ -1223,33 +1315,39 @@ impl ClientApp {
             | State::Failed { release: Some(r), .. } => r.clone(),
             _ => return,
         };
+        let version = release.version.to_string();
+        let failed = matches!(state, State::Failed { .. });
         widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon::DOWNLOAD).size(18.0).color(ACCENT));
-                let version = &release.version;
-                ui.label(
-                    RichText::new(trf!("Version {version} is available", "{version} versiyası mövcuddur")).strong(),
-                );
+                let color = if failed { ui.visuals().error_fg_color } else { ACCENT };
+                ui.label(RichText::new(icon::DOWNLOAD).size(18.0).color(color));
+                let title = match &state {
+                    State::Downloading { .. } => trf!("Downloading version {version}", "{version} versiyası yüklənir"),
+                    State::Installing(_) => trf!("Installing version {version}", "{version} versiyası quraşdırılır"),
+                    State::Failed { .. } => {
+                        trf!("Version {version} could not be installed", "{version} versiyası quraşdırıla bilmədi")
+                    }
+                    _ => trf!("Version {version} is available", "{version} versiyası mövcuddur"),
+                };
+                ui.label(RichText::new(title).strong());
                 ui.hyperlink_to(tr("What's new", "Yeniliklər"), &release.page);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &state {
                     State::Downloading { done, .. } => {
-                        let f = *done as f32 / release.size.max(1) as f32;
-                        let pct = f * 100.0;
-                        ui.add(
-                            egui::ProgressBar::new(f)
-                                .desired_width(220.0)
-                                .text(trf!("Downloading… {pct:.0}%", "Yüklənir… {pct:.0}%")),
+                        let pct = *done as f32 * 100.0 / release.size.max(1) as f32;
+                        ui.label(RichText::new(format!("{pct:.0}%")).strong().color(ACCENT));
+                        let of = trf!(
+                            "{} of {}",
+                            "{} / {}",
+                            rider_ui::chat::human_size(*done),
+                            rider_ui::chat::human_size(release.size)
                         );
+                        ui.label(RichText::new(of).weak());
                     }
                     State::Installing(_) => {
-                        widgets::hint(
-                            ui,
-                            tr("Installing… the app reopens by itself.", "Quraşdırılır… proqram özü yenidən açılacaq."),
-                        );
-                        ui.spinner();
+                        ui.add(egui::Spinner::new().size(16.0));
                     }
                     _ => {
-                        let label = if matches!(state, State::Failed { .. }) {
+                        let label = if failed {
                             tr("Try again", "Yenidən cəhd et")
                         } else {
                             tr("Install update", "Yeniləməni quraşdır")
@@ -1260,16 +1358,35 @@ impl ClientApp {
                     }
                 });
             });
-            if let State::Failed { error, .. } = &state {
-                widgets::error(ui, error);
-            } else if matches!(state, State::Available(_)) {
-                widgets::hint(
+            match &state {
+                State::Downloading { done, .. } => {
+                    progress_line(ui, Some(*done as f32 / release.size.max(1) as f32));
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "Windows asks for permission once the download is done.",
+                            "Yükləmə bitəndə Windows bir dəfə icazə istəyəcək.",
+                        ),
+                    );
+                }
+                State::Installing(_) => {
+                    progress_line(ui, None);
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "Allow it if Windows asks. The app reopens by itself; sessions from this device end.",
+                            "Windows soruşsa, icazə verin. Proqram özü yenidən açılacaq; bu cihazdan seanslar bağlanacaq.",
+                        ),
+                    );
+                }
+                State::Failed { error, .. } => widgets::error(ui, error),
+                _ => widgets::hint(
                     ui,
                     tr(
                         "Windows asks for permission once. Open sessions from this device end while it installs.",
                         "Windows bir dəfə icazə istəyəcək. Quraşdırma zamanı bu cihazdan açılmış seanslar bağlanacaq.",
                     ),
-                );
+                ),
             }
         });
         ui.add_space(12.0);
@@ -1797,9 +1914,12 @@ impl ClientApp {
     /// Get help (the person being helped): the code, then Allow / Decline.
     fn support_dialog(&mut self, ctx: &egui::Context) {
         let Some(s) = &mut self.support else { return };
+        // A running session is a page of its own (`session_page`).
+        if matches!(s.stage, SupportStage::Active { .. }) {
+            return;
+        }
         let mut close = false;
         let mut answer = None;
-        let mut access_changed = false;
         let mut again = false;
         // Each stage sizes to its own content.
         widgets::modal(ctx, "support", std::mem::discriminant(&s.stage)).show(ctx, |ui| {
@@ -1891,39 +2011,7 @@ impl ClientApp {
                         }
                     });
                 }
-                SupportStage::Active { device } => {
-                    ui.horizontal(|ui| {
-                        widgets::dot(ui, Some(GREEN));
-                        let text = if s.access == Access::ViewOnly {
-                            trf!(
-                                "\"{device}\" is connected and can see this screen.",
-                                "\"{device}\" qoşulub və bu ekranı görə bilər."
-                            )
-                        } else {
-                            trf!(
-                                "\"{device}\" is connected and can control this computer.",
-                                "\"{device}\" qoşulub və bu kompüteri idarə edə bilər."
-                            )
-                        };
-                        ui.add(egui::Label::new(text).wrap());
-                    });
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(tr("What they can do", "Nə edə bilər")).strong());
-                    ui.add_space(2.0);
-                    if widgets::access_choice(ui, &mut s.access) {
-                        access_changed = true;
-                    }
-                    widgets::hint(
-                        ui,
-                        tr(
-                            "To end it, click End session here or the red bar at the top of the screen.",
-                            "Bitirmək üçün burada «Seansı bitir» düyməsini və ya ekranın yuxarısındakı qırmızı zolağı klikləyin.",
-                        ),
-                    );
-                    widgets::dialog_buttons(ui, |ui| {
-                        close = widgets::danger(ui, tr("End session", "Seansı bitir")).clicked();
-                    });
-                }
+                SupportStage::Active { .. } => {}
                 SupportStage::Ended => {
                     widgets::success(
                         ui,
@@ -1954,10 +2042,6 @@ impl ClientApp {
             let line = if yes { format!("y {}", s.access.code()) } else { "n".into() };
             s.send(&line);
         }
-        if access_changed {
-            let line = format!("access {}", s.access.code());
-            s.send(&line);
-        }
         if close || again {
             // Ends the one-time host (and a running session) at once.
             s.send("quit");
@@ -1965,6 +2049,110 @@ impl ClientApp {
         }
         if again {
             self.start_support();
+        }
+    }
+
+    /// The whole window while someone is connected through a one-time code:
+    /// who it is, what they may do and End session at the top, the chat
+    /// below. Returns false when no session is running (normal pages show).
+    fn session_page(&mut self, ui: &mut Ui) -> bool {
+        let Some(s) = &mut self.support else { return false };
+        let SupportStage::Active { device } = s.stage.clone() else { return false };
+        let mut close = false;
+        let mut access_changed = false;
+        let dark = ui.visuals().dark_mode;
+        let bar = if dark { egui::Color32::from_rgb(30, 31, 36) } else { egui::Color32::from_rgb(232, 234, 239) };
+        egui::Panel::top("session")
+            .resizable(false)
+            .show_separator_line(true)
+            .frame(egui::Frame::new().fill(bar).inner_margin(egui::Margin::symmetric(14, 7)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // From the right: the buttons keep their place, the
+                    // name is cut to what is left.
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        close = widgets::danger(ui, tr("End session", "Seansı bitir")).clicked();
+                        ui.add_space(4.0);
+                        access_changed = widgets::access_menu(ui, &mut s.access);
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            widgets::dot(ui, Some(GREEN));
+                            let what = if s.access == Access::ViewOnly {
+                                tr("They can see this screen.", "Bu ekranı görə bilər.")
+                            } else {
+                                tr("They can see and control this computer.", "Bu kompüteri görə və idarə edə bilər.")
+                            };
+                            let who = trf!("\"{device}\" is connected", "\"{device}\" qoşulub");
+                            ui.add(egui::Label::new(widgets::title(&who, 14.0)).truncate()).on_hover_text(what);
+                        });
+                    });
+                });
+            });
+        let mut chat_actions = Vec::new();
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            // Readable line lengths on a wide window: at most 620 wide, centred.
+            let full = ui.available_rect_before_wrap();
+            let w = full.width().min(620.0);
+            let rect = egui::Rect::from_center_size(full.center(), egui::vec2(w, full.height()));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| chat_actions = s.chat.show(ui));
+        });
+        if access_changed {
+            let line = format!("access {}", s.access.code());
+            s.send(&line);
+            s.chat.files_allowed = s.access.permissions().files;
+            s.chat.notice(trf!("Access changed: {}", "Giriş dəyişdi: {}", widgets::access_name(s.access)));
+        }
+        self.support_chat(chat_actions);
+        if close {
+            // Ends the one-time host and the session at once.
+            if let Some(s) = &mut self.support {
+                s.send("quit");
+            }
+            self.support = None;
+        }
+        true
+    }
+
+    /// Carry out what was done in the support chat.
+    fn support_chat(&mut self, actions: Vec<ChatAction>) {
+        let Some(s) = &mut self.support else { return };
+        for a in actions {
+            match a {
+                ChatAction::Send(text) => {
+                    s.chat.text(true, &text);
+                    s.send_json("chat", &text);
+                }
+                ChatAction::Attach => {
+                    let (id, tx) = (s.id, self.bus.tx());
+                    std::thread::spawn(move || {
+                        let files = rider_ui::files::pick_files();
+                        if !files.is_empty() {
+                            tx.send(Msg::SupportFiles { id, files });
+                        }
+                    });
+                }
+                ChatAction::Cancel(id) => s.send(&format!("cancel-file {id}")),
+                ChatAction::Open(id) => {
+                    if let Some(p) = s.files.get(&id)
+                        && let Err(e) = rider_ui::files::open(p)
+                    {
+                        let text = format!("{}: {e}", p.display());
+                        s.chat.notice(text);
+                    }
+                }
+                ChatAction::SaveAs(fid) => {
+                    let (Some(path), Some(f)) = (s.files.get(&fid).cloned(), s.chat.file(fid)) else { continue };
+                    let (name, id, tx) = (f.name.clone(), s.id, self.bus.tx());
+                    std::thread::spawn(move || {
+                        let text = match rider_ui::files::save_copy(&path, &name) {
+                            Ok(Some(to)) => format!("{} {}", tr("Saved to", "Saxlanıldı:"), to.display()),
+                            Ok(None) => return,
+                            Err(e) => format!("{name}: {e}"),
+                        };
+                        tx.send(Msg::SupportNotice { id, text });
+                    });
+                }
+                ChatAction::Close => {}
+            }
         }
     }
 
@@ -2000,6 +2188,7 @@ fn parse_connected(line: &str) -> Option<(String, String)> {
 fn parse_support_event(line: &str) -> Option<SupportEvent> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
+    let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or_default();
     Some(match v.get("event")?.as_str()? {
         "registered" => SupportEvent::Code(v.get("code").and_then(|c| c.as_str()).map(str::to_owned)),
         "server_error" => SupportEvent::ServerError(s("message")),
@@ -2009,6 +2198,19 @@ fn parse_support_event(line: &str) -> Option<SupportEvent> {
         "support_cancelled" => SupportEvent::Cancelled,
         "declined" => SupportEvent::Declined,
         "expired" => SupportEvent::Expired,
+        "chat" => SupportEvent::Chat(s("text")),
+        "file" => SupportEvent::File {
+            id: n("id"),
+            mine: v.get("dir").and_then(|d| d.as_str()) == Some("out"),
+            name: s("name"),
+            size: n("size"),
+        },
+        "file_progress" => SupportEvent::FileProgress { id: n("id"), done: n("done") },
+        "file_done" => SupportEvent::FileDone {
+            id: n("id"),
+            path: v.get("path").and_then(|p| p.as_str()).map(std::path::PathBuf::from),
+        },
+        "file_failed" => SupportEvent::FileFailed { id: n("id"), reason: s("reason") },
         _ => return None,
     })
 }
@@ -2040,6 +2242,9 @@ impl eframe::App for ClientApp {
         } else {
             egui::Color32::from_rgb(232, 234, 239)
         };
+        if self.session_page(ui) {
+            return;
+        }
         egui::Panel::left("nav")
             .exact_size(220.0)
             .resizable(false)
@@ -2066,6 +2271,33 @@ impl eframe::App for ClientApp {
         self.quick_dialog(&ctx);
         self.support_dialog(&ctx);
     }
+}
+
+/// A slim progress line across the card: `Some(fraction)` fills from the
+/// left; `None` is a short segment sliding along (no figures to show).
+fn progress_line(ui: &mut Ui, fraction: Option<f32>) {
+    ui.add_space(2.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, ui.visuals().widgets.inactive.weak_bg_fill);
+    let w = rect.width();
+    let (x0, x1) = match fraction {
+        Some(f) => (0.0, w * f.clamp(0.0, 1.0)),
+        None => {
+            let t = ui.input(|i| i.time) as f32;
+            let pos = (t / 1.4).fract() * (w * 1.3) - w * 0.3;
+            ui.ctx().request_repaint();
+            (pos.max(0.0), (pos + w * 0.3).min(w))
+        }
+    };
+    if x1 > x0 {
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + x0, rect.top()),
+            egui::pos2(rect.left() + x1, rect.bottom()),
+        );
+        p.rect_filled(bar, 2.0, ACCENT);
+    }
+    ui.add_space(2.0);
 }
 
 #[cfg(test)]
