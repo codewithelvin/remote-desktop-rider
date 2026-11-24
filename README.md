@@ -148,7 +148,7 @@ Click the small tab at the top centre of the session window to open the toolbar:
 | **1, 2, …** | Switch between remote monitors (shown when there are several) |
 | **Quality ▾** | Auto / 1080p / 720p / 480p |
 | Pin | Keep the toolbar open instead of hiding it |
-| **Disconnect** | End the session |
+| **Disconnect** | End the session (click it twice: the first click asks "Click again to disconnect") |
 
 While the session window is in front, Windows key combinations (Win+R, Win+E,
 Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.

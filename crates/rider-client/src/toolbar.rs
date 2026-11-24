@@ -7,6 +7,10 @@
 //! title bars are, and a bar sliding in under the pointer would take the click
 //! meant for them (e.g. turn "close tab" into Disconnect).
 //!
+//! Pinned, the bar does sit over remote tabs and title bars, so Disconnect
+//! takes two clicks: the first turns it into "Click again to disconnect" for a
+//! few seconds. A stray click (closing a remote tab) cannot end the session.
+//!
 //! The bar is rendered once per state (labels: see `text`; on Windows GDI with
 //! Segoe UI and the Segoe MDL2 icon font) into a premultiplied ARGB
 //! sprite, then alpha-blended over each frame: a few thousand pixels per draw.
@@ -46,6 +50,8 @@ const INTRO: Duration = Duration::from_secs(4);
 const LINGER: Duration = Duration::from_millis(800);
 /// Opened by its tab but not reached by the pointer: hide again after this.
 const OPEN_WAIT: Duration = Duration::from_secs(3);
+/// After a first click on Disconnect, a second one within this ends the session.
+const CONFIRM: Duration = Duration::from_secs(4);
 /// The tab shown while the bar is hidden (logical px).
 const TAB_W: f64 = 56.0;
 const TAB_H: f64 = 12.0;
@@ -83,6 +89,8 @@ pub struct Toolbar {
     tab_hover: bool,
     tab_pressed: bool,
     last: (f64, f64),
+    /// Disconnect was clicked once: a second click before this ends the session.
+    confirm_until: Option<Instant>,
 }
 
 impl Toolbar {
@@ -102,6 +110,7 @@ impl Toolbar {
             tab_hover: false,
             tab_pressed: false,
             last: (-1.0, -1.0),
+            confirm_until: None,
         }
     }
 
@@ -133,7 +142,23 @@ impl Toolbar {
     }
 
     pub fn visible(&self) -> bool {
-        self.extras.pinned || self.on_bar || self.visible_until.is_some_and(|t| Instant::now() < t)
+        self.extras.pinned || self.on_bar || self.confirming() || self.visible_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// Disconnect is waiting for its second click.
+    fn confirming(&self) -> bool {
+        self.confirm_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// Drop an unconfirmed Disconnect once its time is up; true if the bar
+    /// must be redrawn (the button reads "Disconnect" again).
+    pub fn expire_confirm(&mut self) -> bool {
+        if self.confirm_until.is_some() && !self.confirming() {
+            self.confirm_until = None;
+            self.sprite = None;
+            return true;
+        }
+        false
     }
 
     /// A button's horizontal extent and the bar's height (window px), to
@@ -147,7 +172,12 @@ impl Toolbar {
 
     /// When the bar should be hidden next (to schedule a redraw then).
     pub fn deadline(&self) -> Option<Instant> {
-        if self.on_bar || self.extras.pinned { None } else { self.visible_until.filter(|t| Instant::now() < *t) }
+        let hide =
+            if self.on_bar || self.extras.pinned { None } else { self.visible_until.filter(|t| Instant::now() < *t) };
+        match (hide, self.confirm_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Pointer moved to (x, y) physical px. Returns true if the bar changed.
@@ -214,6 +244,15 @@ impl Toolbar {
             return (true, None);
         }
         match self.pressed.take() {
+            Some(Action::Disconnect) if self.hover == Some(Action::Disconnect) => {
+                if self.confirming() {
+                    self.confirm_until = None;
+                    return (true, Some(Action::Disconnect));
+                }
+                self.confirm_until = Some(Instant::now() + CONFIRM);
+                self.sprite = None;
+                (true, None)
+            }
             Some(a) => (true, (self.hover == Some(a) && a != Action::Elapsed).then_some(a)),
             None => (self.on_bar && self.visible(), None),
         }
@@ -244,7 +283,8 @@ impl Toolbar {
     /// Draw over a frame of `w` x `h` pixels (XRGB).
     pub fn draw(&mut self, buf: &mut [u32], w: usize, h: usize) {
         if self.sprite.is_none() {
-            self.sprite = render(self.scale, self.fullscreen, self.monitors, &self.extras, self.hover);
+            self.sprite =
+                render(self.scale, self.fullscreen, self.monitors, &self.extras, self.hover, self.confirming());
         }
         let Some(s) = &self.sprite else { return };
         self.x = w.saturating_sub(s.w) / 2;
@@ -327,7 +367,12 @@ fn inside_round(x: usize, y: usize, w: usize, h: usize, scale: f64) -> bool {
 }
 
 /// Buttons: action, icon (Windows icon font; none elsewhere) and label.
-fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Action, Option<char>, String)> {
+fn labels(
+    fullscreen: bool,
+    (count, _): (u32, u32),
+    extras: &Extras,
+    confirming: bool,
+) -> Vec<(Action, Option<char>, String)> {
     let icon = |c: char| cfg!(windows).then_some(c);
     let mut v = Vec::new();
     if !extras.elapsed.is_empty() {
@@ -349,7 +394,12 @@ fn labels(fullscreen: bool, (count, _): (u32, u32), extras: &Extras) -> Vec<(Act
     // Without the icon font the pin needs a word (the pill shows it is on).
     let pin = if cfg!(windows) { String::new() } else { tr("Pin", "Sabitlə").into() };
     v.push((Action::Pin, icon(if extras.pinned { '\u{E77A}' } else { '\u{E718}' }), pin));
-    v.push((Action::Disconnect, icon('\u{E711}'), tr("Disconnect", "Bağlantını kəs").into()));
+    let disconnect = if confirming {
+        tr("Click again to disconnect", "Kəsmək üçün yenə klikləyin")
+    } else {
+        tr("Disconnect", "Bağlantını kəs")
+    };
+    v.push((Action::Disconnect, icon('\u{E711}'), disconnect.into()));
     v
 }
 
@@ -629,11 +679,12 @@ fn render(
     monitors: (u32, u32),
     extras: &Extras,
     hover: Option<Action>,
+    confirming: bool,
 ) -> Option<Sprite> {
     let fonts = text::Fonts::new(scale)?;
     let s = |v: f64| (v * scale).round() as i32;
     let (pad, gap, h) = (s(14.0), s(8.0), s(36.0));
-    let items: Vec<_> = labels(fullscreen, monitors, extras)
+    let items: Vec<_> = labels(fullscreen, monitors, extras, confirming)
         .into_iter()
         .map(|(act, icon, text)| {
             let iw = icon.map_or(0, |c| fonts.icon_width(c));
@@ -666,6 +717,7 @@ fn render(
     let pill = |act: Action| buttons.iter().find(|b| b.0 == act).map(|&(_, a, b)| (a, b));
     let active = (monitors.0 > 1).then(|| pill(Action::Monitor(monitors.1))).flatten().map(|(a, b)| (a, b, ACCENT));
     let pinned = extras.pinned.then(|| pill(Action::Pin)).flatten().map(|(a, b)| (a, b, ACCENT));
+    let confirm = confirming.then(|| pill(Action::Disconnect)).flatten().map(|(a, b)| (a, b, DANGER));
     let hovered = hover
         .and_then(|h| pill(h).map(|(a, b)| (a, b, if h == Action::Disconnect { DANGER } else { HOVER })))
         .filter(|_| hover != Some(Action::Monitor(monitors.1)) || monitors.0 < 2);
@@ -675,8 +727,11 @@ fn render(
             let in_pill = |p: Option<(usize, usize, (u8, u8, u8))>| {
                 p.filter(|&(a, b, _)| x >= a && x < b && inside_round(x - a, y, b - a, hu, scale)).map(|p| p.2)
             };
-            let bg =
-                in_pill(hovered).or_else(|| in_pill(active)).or_else(|| in_pill(pinned)).unwrap_or((BG.0, BG.1, BG.2));
+            let bg = in_pill(hovered)
+                .or_else(|| in_pill(confirm))
+                .or_else(|| in_pill(active))
+                .or_else(|| in_pill(pinned))
+                .unwrap_or((BG.0, BG.1, BG.2));
             let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
             let cx = fx.clamp(r, w as f64 - r);
             let cy = fy.min(hu as f64 - r);
@@ -782,5 +837,44 @@ mod tests {
         assert!(t.press());
         assert_eq!(t.release(), (true, None));
         assert!(!t.set_extras(extras), "unchanged");
+    }
+
+    #[test]
+    fn pinned_disconnect_takes_two_clicks() {
+        let mut t = Toolbar::new();
+        t.set_state(1.0, false, (1, 0));
+        t.set_extras(Extras { pinned: true, ..Extras::default() });
+        let mut buf = vec![0u32; 1600 * 900];
+        t.draw(&mut buf, 1600, 900);
+        t.visible_until = None;
+        let at = |t: &Toolbar| {
+            let (a, b, _) = t.button_rect(Action::Disconnect).unwrap();
+            ((a + b) / 2) as f64
+        };
+        // A remote tab's close button under the pinned bar: one click must not end the session.
+        let x = at(&t);
+        t.pointer(x, 10.0);
+        assert!(t.press());
+        assert_eq!(t.release(), (true, None), "first click only asks");
+        assert!(t.confirming());
+        // The label grew: find the button again, then confirm.
+        t.draw(&mut buf, 1600, 900);
+        let x = at(&t);
+        t.pointer(x, 10.0);
+        assert!(t.press());
+        assert_eq!(t.release(), (true, Some(Action::Disconnect)));
+        assert!(!t.confirming());
+        // Unconfirmed, it times out and goes back to plain Disconnect.
+        t.pointer(x, 10.0);
+        t.press();
+        t.release();
+        t.confirm_until = Some(Instant::now() - Duration::from_millis(1));
+        assert!(t.expire_confirm());
+        assert!(!t.expire_confirm());
+        t.draw(&mut buf, 1600, 900);
+        let x = at(&t);
+        t.pointer(x, 10.0);
+        assert!(t.press());
+        assert_eq!(t.release(), (true, None), "a fresh first click again");
     }
 }

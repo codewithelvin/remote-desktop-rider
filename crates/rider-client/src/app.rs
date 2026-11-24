@@ -687,7 +687,7 @@ impl ApplicationHandler<UiEvent> for App {
             self.update_overlay();
         }
         // Hide (or show) the toolbar on time even when no frames arrive.
-        if self.toolbar.visible() != self.toolbar_shown {
+        if self.toolbar.expire_confirm() || self.toolbar.visible() != self.toolbar_shown {
             self.redraw_soon();
         }
         let wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
