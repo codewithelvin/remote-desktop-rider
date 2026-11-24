@@ -403,6 +403,67 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32) {
         });
 }
 
+/// The access level the person at this computer gives the other side: three
+/// rows (title + what it means), the chosen one marked. True when changed.
+pub fn access_choice(ui: &mut Ui, access: &mut rider_core::proto::Access) -> bool {
+    use rider_core::proto::Access;
+    let mut changed = false;
+    for a in Access::ALL {
+        let (name, what) = match a {
+            Access::Full => (
+                tr("Full access", "Tam giriş"),
+                tr(
+                    "See and control the screen, use the clipboard, send files",
+                    "Ekranı görmək və idarə etmək, mübadilə buferi, fayl göndərmək",
+                ),
+            ),
+            Access::Standard => (
+                tr("Standard", "Standart"),
+                tr(
+                    "See and control the screen, use the clipboard; no files",
+                    "Ekranı görmək və idarə etmək, mübadilə buferi; fayllar olmadan",
+                ),
+            ),
+            Access::ViewOnly => (tr("View only", "Yalnız baxış"), tr("See the screen only", "Yalnız ekranı görmək")),
+        };
+        let selected = *access == a;
+        let dark = ui.visuals().dark_mode;
+        let resp = Frame::new()
+            .fill(if selected { ACCENT.linear_multiply(if dark { 0.22 } else { 0.10 }) } else { Color32::TRANSPARENT })
+            .stroke(Stroke::new(if selected { 1.5 } else { 1.0 }, if selected { ACCENT } else { border(dark) }))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                    let p = ui.painter();
+                    if selected {
+                        p.circle_filled(rect.center(), 7.0, ACCENT);
+                        p.circle_filled(rect.center(), 3.0, Color32::WHITE);
+                    } else {
+                        p.circle_stroke(rect.center(), 6.5, (1.5, GREY));
+                    }
+                    // Not selectable: a click anywhere on the row, text
+                    // included, picks it.
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(RichText::new(name).family(semibold()).size(14.0)).selectable(false));
+                        ui.add(egui::Label::new(RichText::new(what).size(12.5).weak()).selectable(false));
+                    });
+                });
+            })
+            .response
+            .interact(Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, name));
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !selected {
+            *access = a;
+            changed = true;
+        }
+        ui.add_space(4.0);
+    }
+    changed
+}
+
 /// A sidebar entry; returns true when clicked.
 pub fn nav_item(ui: &mut Ui, icon: &str, text: &str, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());

@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use rider_core::diag::{self, Recorder, Role, Route, Sample, u16_of};
 use rider_core::identity::{Fingerprint, Identity, fp_short};
 use rider_core::proto::*;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -193,9 +193,9 @@ async fn run(
     write_msg(&mut send, &HostMsg::HelloAck { version: PROTOCOL_VERSION, host_name }).await?;
 
     if state.support {
-        support_allow(state, conn, &mut send, &client_fp, &device_name).await?;
-        tracing::info!("support session started with {device_name} from {}", conn.remote_address());
-        let result = stream(state, conn, send, recv, device_name, tunnel).await;
+        let access = support_allow(state, conn, &mut send, &client_fp, &device_name).await?;
+        tracing::info!("support session started with {device_name} from {} ({})", conn.remote_address(), access.code());
+        let result = stream(state, conn, send, recv, device_name, tunnel, access).await;
         crate::ui::emit(serde_json::json!({ "event": "support_ended" }));
         state.done.notify_one();
         return result;
@@ -217,18 +217,19 @@ async fn run(
 
     authenticate(state, &mut send, &mut recv, &name).await?;
     tracing::info!("session started with {name} ({}) from {}", fp_short(&client_fp), conn.remote_address());
-    stream(state, conn, send, recv, name, tunnel).await
+    stream(state, conn, send, recv, name, tunnel, Access::Full).await
 }
 
 /// One-time support: the person at this computer sees who wants to connect
-/// (and the verification code the helper sees) and allows or declines. No PIN.
+/// (and the verification code the helper sees) and allows, with an access
+/// level, or declines. No PIN.
 async fn support_allow(
     state: &Arc<HostState>,
     conn: &quinn::Connection,
     send: &mut quinn::SendStream,
     client_fp: &Fingerprint,
     device_name: &str,
-) -> Result<()> {
+) -> Result<Access> {
     if !state.pairing_open() {
         write_msg(send, &HostMsg::Bye { reason: "this code has expired or was already used".into() }).await?;
         bail!("support request after the code expired");
@@ -239,21 +240,26 @@ async fn support_allow(
     }));
     let answer = async {
         if crate::ui::json() {
-            return crate::ui::answer().await;
+            return crate::ui::answer_access().await;
         }
         println!();
         println!("  \"{device_name}\" ({}) wants to see and control this screen.", conn.remote_address());
         println!("  Verification code: {code} (the helper sees the same code)");
-        print!("  Allow? [y/N] ");
+        print!("  Allow? [y = full access, s = standard (no files), v = view only, N = no] ");
         use std::io::Write;
         let _ = std::io::stdout().flush();
         tokio::task::spawn_blocking(|| {
             let mut line = String::new();
             let _ = std::io::stdin().read_line(&mut line);
-            matches!(line.trim(), "y" | "Y" | "yes")
+            match line.trim() {
+                "y" | "Y" | "yes" => Some(Access::Full),
+                "s" | "S" => Some(Access::Standard),
+                "v" | "V" => Some(Access::ViewOnly),
+                _ => None,
+            }
         })
         .await
-        .unwrap_or(false)
+        .unwrap_or(None)
     };
     let allowed = tokio::select! {
         a = answer => a,
@@ -262,19 +268,19 @@ async fn support_allow(
             bail!("{device_name} gave up before an answer");
         }
     };
-    if !allowed {
+    let Some(access) = allowed else {
         write_msg(send, &HostMsg::AuthResult { ok: false, message: "the person at that computer declined".into() })
             .await?;
         crate::ui::emit(serde_json::json!({ "event": "declined", "by": "this computer" }));
         // Let the answer arrive: the helper closes once it has read it.
         let _ = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
         bail!("support request from {device_name} declined");
-    }
+    };
     // The code is used up: the next registration update withdraws it.
     state.close_pairing();
     write_msg(send, &HostMsg::AuthResult { ok: true, message: String::new() }).await?;
-    crate::ui::emit(serde_json::json!({ "event": "support_started", "device": device_name }));
-    Ok(())
+    crate::ui::emit(serde_json::json!({ "event": "support_started", "device": device_name, "access": access.code() }));
+    Ok(access)
 }
 
 async fn pair(
@@ -409,8 +415,14 @@ async fn stream(
     mut recv: quinn::RecvStream,
     name: String,
     tunnel: bool,
+    access: Access,
 ) -> Result<()> {
     let cfg = state.config.lock().unwrap().clone();
+    // What the viewer may do (`Permissions::bits`); checked on every input,
+    // clipboard and file, changed live by the person at this computer.
+    let perms = Arc::new(AtomicU8::new(access.permissions().bits()));
+    let allows = |perms: &AtomicU8| Permissions::from_bits(perms.load(Ordering::Relaxed));
+    let v4 = rider_core::tls::speaks_v4(conn);
     let recorder = Arc::new(Mutex::new(recorder(state, conn, tunnel).await));
     let monitors = capture::monitors()?;
     let list: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
@@ -430,6 +442,9 @@ async fn stream(
         }
     });
     let _ = out_tx.send(HostMsg::Monitors { list: list.clone(), active: 0 });
+    if v4 {
+        let _ = out_tx.send(HostMsg::Permissions(access.permissions()));
+    }
 
     // Video pipeline.
     let stop = Arc::new(AtomicBool::new(false));
@@ -483,10 +498,34 @@ async fn stream(
     let mouse = {
         let conn = conn.clone();
         let input = input.clone();
+        let perms = perms.clone();
         tokio::spawn(async move {
             while let Ok(d) = conn.read_datagram().await {
-                if let Ok(m) = decode::<MouseMove>(&d) {
+                if let Ok(m) = decode::<MouseMove>(&d)
+                    && allows(&perms).control
+                {
                     input.send(InputEvent::Move { seq: m.seq, x: m.x, y: m.y });
+                }
+            }
+        })
+    };
+
+    // Access changes by the person at this computer (the app's `access` lines).
+    let access_task = {
+        let (perms, out_tx, input) = (perms.clone(), out_tx.clone(), input.clone());
+        let mut changes = crate::ui::access_changes();
+        tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let Some(access) = *changes.borrow_and_update() else { continue };
+                let new = access.permissions();
+                let old = Permissions::from_bits(perms.swap(new.bits(), Ordering::Relaxed));
+                if old.control && !new.control {
+                    input.send(InputEvent::ReleaseAll);
+                }
+                tracing::info!("access changed to {}", access.code());
+                crate::ui::emit(serde_json::json!({ "event": "access", "access": access.code() }));
+                if v4 {
+                    let _ = out_tx.send(HostMsg::Permissions(new));
                 }
             }
         })
@@ -503,9 +542,12 @@ async fn stream(
     rider_core::clipboard::spawn(clip_local_tx, clip_remote_rx, stop.clone());
     let clip_fwd = {
         let out_tx = out_tx.clone();
+        let perms = perms.clone();
         tokio::spawn(async move {
             while let Some(text) = clip_local_rx.recv().await {
-                let _ = out_tx.send(HostMsg::Clipboard { text });
+                if allows(&perms).clipboard {
+                    let _ = out_tx.send(HostMsg::Clipboard { text });
+                }
             }
         })
     };
@@ -513,10 +555,13 @@ async fn stream(
     // Incoming files.
     let files = {
         let conn = conn.clone();
+        let perms = perms.clone();
         tokio::spawn(async move {
             while let Ok((s, r)) = conn.accept_bi().await {
+                let allowed = allows(&perms).files;
                 tokio::spawn(async move {
-                    if let Err(e) = receive_file(s, r).await {
+                    let result = if allowed { receive_file(s, r).await } else { refuse_file(s, r).await };
+                    if let Err(e) = result {
                         tracing::warn!("file transfer failed: {e:#}");
                     }
                 });
@@ -622,7 +667,20 @@ async fn stream(
 
     // Control messages from the client.
     let control = async {
-        while let Some(msg) = read_msg::<ClientMsg>(&mut recv).await? {
+        while let Some(msg) = read_known::<ClientMsg>(&mut recv).await? {
+            let p = allows(&perms);
+            let needs_control = matches!(
+                msg,
+                ClientMsg::Key { .. }
+                    | ClientMsg::MouseButton { .. }
+                    | ClientMsg::MouseButtonAt { .. }
+                    | ClientMsg::MouseWheel { .. }
+                    | ClientMsg::SendSas
+                    | ClientMsg::LockScreen
+            );
+            if (needs_control && !p.control) || (matches!(msg, ClientMsg::Clipboard { .. }) && !p.clipboard) {
+                continue;
+            }
             match msg {
                 ClientMsg::Ping { client_us } => {
                     let _ = out_tx.send(HostMsg::Pong { client_us, host_us: rider_core::now_us() });
@@ -702,7 +760,7 @@ async fn stream(
     };
 
     stop.store(true, Ordering::SeqCst);
-    for t in [sender, mouse, clip_fwd, files, ticker, writer] {
+    for t in [sender, mouse, access_task, clip_fwd, files, ticker, writer] {
         t.abort();
     }
     if let Some(r) = recorder.lock().unwrap().take() {
@@ -891,6 +949,17 @@ fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std::path::Path
 
 async fn remove_incoming(path: std::path::PathBuf) {
     let _ = tokio::task::spawn_blocking(move || crate::system::as_console_user(|| std::fs::remove_file(path))).await;
+}
+
+/// Files are not allowed at the current access level: say so, take nothing.
+async fn refuse_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Result<()> {
+    let header: Option<FileHeader> = read_msg(&mut recv).await?;
+    let _ = recv.stop(0u32.into());
+    tracing::info!("refused a file ({} bytes): not allowed at this access level", header.map_or(0, |h| h.size));
+    let message = "the person at that computer does not allow files".into();
+    write_msg(&mut send, &FileResult { ok: false, message }).await?;
+    let _ = send.finish();
+    Ok(())
 }
 
 async fn receive_file(mut send: quinn::SendStream, mut recv: quinn::RecvStream) -> Result<()> {

@@ -4,8 +4,9 @@
 use crate::video::{self, IncomingFrame};
 use rider_core::pixels::Nv12Frame;
 use rider_core::proto::*;
+use rider_core::trf;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -29,6 +30,8 @@ pub enum UiEvent {
     Monitors(Vec<MonitorInfo>, u32),
     /// The host pointer's shape.
     Cursor(CursorShape),
+    /// What the person at the host allows (hosts with protocol 4).
+    Permissions(Permissions),
     Notice(String),
     /// The session with connection `conn` (its `stable_id`) ended. `lost`:
     /// the network failed (worth reconnecting), not a deliberate end.
@@ -59,6 +62,9 @@ pub struct Shared {
     pub host_stats: Mutex<String>,
     /// When the host was last heard from (`rider_core::now_us`).
     pub last_rx_us: AtomicU64,
+    /// What the host does *not* allow (`Permissions::bits`, inverted so the
+    /// default, also for hosts that never say, is everything allowed).
+    denied: AtomicU8,
 }
 
 impl Shared {
@@ -69,6 +75,15 @@ impl Shared {
 
     fn heard(&self) {
         self.last_rx_us.store(rider_core::now_us(), Ordering::Relaxed);
+    }
+
+    /// What the person at the host currently allows.
+    pub fn permissions(&self) -> Permissions {
+        Permissions::from_bits(!self.denied.load(Ordering::Relaxed) & 0b111)
+    }
+
+    fn set_permissions(&self, p: Permissions) {
+        self.denied.store(!p.bits() & 0b111, Ordering::Relaxed);
     }
 }
 
@@ -101,11 +116,18 @@ impl NetHandle {
         self.mouse_seq.load(Ordering::Relaxed)
     }
 
-    pub fn send_file(&self, path: PathBuf) {
+    pub fn send_file(&self, path: PathBuf, allowed: bool) {
         let conn = self.conn.clone();
         let proxy = self.proxy.clone();
         self.rt.spawn(async move {
             let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !allowed {
+                let _ = proxy.send_event(UiEvent::Notice(trf!(
+                    "{name}: the person at that computer does not allow files",
+                    "{name}: o kompüterdəki şəxs fayl göndərməyə icazə vermir"
+                )));
+                return;
+            }
             let _ = proxy.send_event(UiEvent::Notice(format!("sending {name}...")));
             let msg = match upload(&conn, &path).await {
                 Ok(r) if r.ok => format!("{name} saved on host: {}", r.message),
@@ -167,9 +189,12 @@ pub fn start(
     rider_core::clipboard::spawn(clip_local_tx, clip_remote_rx, stop.clone());
     {
         let ctrl = ctrl_tx.clone();
+        let shared = shared.clone();
         rt.spawn(async move {
             while let Some(text) = clip_local_rx.recv().await {
-                let _ = ctrl.send(ClientMsg::Clipboard { text });
+                if shared.permissions().clipboard {
+                    let _ = ctrl.send(ClientMsg::Clipboard { text });
+                }
             }
         });
     }
@@ -183,7 +208,7 @@ pub fn start(
         rt.spawn(async move {
             let mut recv = recv;
             let (reason, lost) = loop {
-                let msg = read_msg::<HostMsg>(&mut recv).await;
+                let msg = read_known::<HostMsg>(&mut recv).await;
                 shared.heard();
                 match msg {
                     Ok(Some(HostMsg::Monitors { list, active })) => {
@@ -191,6 +216,10 @@ pub fn start(
                     }
                     Ok(Some(HostMsg::Clipboard { text })) => {
                         let _ = clip_remote_tx.send(text);
+                    }
+                    Ok(Some(HostMsg::Permissions(p))) => {
+                        shared.set_permissions(p);
+                        let _ = proxy.send_event(UiEvent::Permissions(p));
                     }
                     Ok(Some(HostMsg::Pong { client_us, host_us })) => {
                         let now = rider_core::now_us();

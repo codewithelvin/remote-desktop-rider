@@ -40,7 +40,7 @@
 | **Everyday tools** | Text clipboard sync both ways, drag-and-drop files to the host, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
 | **Self-hosted** | The optional `rider-server` runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions. |
 | **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
-| **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow**. The code works once and expires after 10 minutes. |
+| **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow** with an access level (Full access, Standard or View only) they can change at any time. The code works once and expires after 10 minutes. |
 | **English and Azerbaijani** | The whole interface in either language, switched with a click on the flag. |
 | **Windows, macOS and Linux** | Control computers from Windows, a Mac (Apple Silicon and Intel) or Debian/Ubuntu. Being controlled is Windows-only for now. |
 | **Small and native** | One ~8 MB installer. Rust end to end. |
@@ -120,7 +120,17 @@ For helping someone once, without pairing devices or sharing a PIN:
 2. **The helper** clicks **Quick connect** on the Computers page and enters
    that code.
 3. The person sees who wants to connect and a verification code (the helper
-   sees the same one) and clicks **Allow**.
+   sees the same one), chooses what the helper may do and clicks **Allow**:
+
+   | Access level | See the screen | Mouse and keyboard | Clipboard | Send files |
+   |---|---|---|---|---|
+   | **Full access** | yes | yes | yes | yes |
+   | **Standard** | yes | yes | yes | no |
+   | **View only** | yes | no | no | no |
+
+   The level can be changed at any time while the session runs. The
+   computer being helped enforces it, and the helper's toolbar and window
+   title show it (for example **View only**).
 
 The code works **once** and expires after **10 minutes**. Nothing is kept
 afterwards: the computer uses a throwaway key and is not added anywhere. Either

@@ -51,6 +51,8 @@ pub enum InputEvent {
         down: bool,
     },
     Monitor(MonitorInfo),
+    /// Control was taken away: let go of every key and button held.
+    ReleaseAll,
 }
 
 /// Cheap, cloneable handle; the thread exits (releasing every held key and
@@ -97,6 +99,7 @@ fn run(rx: Receiver<InputEvent>, mut inj: Injector) {
             InputEvent::Wheel { dx, dy } => inj.wheel(dx, dy),
             InputEvent::Key { scancode, extended, down } => inj.key(scancode, extended, down),
             InputEvent::Monitor(m) => inj.monitor = m,
+            InputEvent::ReleaseAll => inj.release_all(),
         }
     }
     // `inj` drops here and releases anything still held.

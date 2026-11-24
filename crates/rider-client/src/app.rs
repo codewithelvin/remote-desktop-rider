@@ -26,7 +26,7 @@ use crate::toolbar::{Action, Extras, Toolbar};
 use anyhow::Result;
 use rider_core::i18n::tr;
 use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
-use rider_core::proto::{ClientMsg, CursorShape, MonitorInfo, MouseButton, QUALITIES};
+use rider_core::proto::{Access, ClientMsg, CursorShape, MonitorInfo, MouseButton, Permissions, QUALITIES};
 use std::collections::HashSet;
 use std::future::Future;
 use std::num::NonZeroU32;
@@ -228,6 +228,10 @@ impl App {
         if self.monitors.len() > 1 {
             title.push_str(&format!(" · monitor {}/{}", self.active_monitor + 1, self.monitors.len()));
         }
+        // Not full access: always said, not only in the passing notice.
+        if let Some(level) = access_label(self.shared.permissions()) {
+            title = format!("{} [{level}]{}", self.host_name, &title[self.host_name.len()..]);
+        }
         if let Some((n, t)) = &self.notice
             && t.elapsed() < Duration::from_secs(6)
         {
@@ -283,6 +287,7 @@ impl App {
                     w.request_redraw();
                 }
             }
+            Action::CtrlAltDel if !self.shared.permissions().control => {}
             Action::CtrlAltDel => {
                 self.release_keys();
                 self.net.send(ClientMsg::SendSas);
@@ -300,7 +305,7 @@ impl App {
                 self.refresh_extras();
                 self.redraw_soon();
             }
-            Action::Elapsed => {}
+            Action::Elapsed | Action::Access => {}
             Action::Disconnect => {
                 self.release_keys();
                 self.closed = Some("disconnected by you".into());
@@ -316,10 +321,13 @@ impl App {
             .iter()
             .find(|q| q.0 == self.quality)
             .map_or(tr("Auto", "Avto"), |q| if q.0 == 0 { tr("Auto", "Avto") } else { q.1 });
+        let p = self.shared.permissions();
         self.toolbar.set_extras(Extras {
             elapsed: elapsed(self.started.elapsed()),
             quality: self.v2.then(|| label.to_owned()),
             pinned: self.pinned,
+            access: access_label(p),
+            no_control: !p.control,
         })
     }
 
@@ -380,7 +388,40 @@ impl App {
     }
 
     /// Lock the remote computer (what Win+L would do there).
+    /// The person at the host changed what this side may do.
+    fn permissions_changed(&mut self, p: Permissions) {
+        if !p.control {
+            // The host has let go of them already; nothing more to send.
+            self.held_keys.clear();
+        }
+        #[cfg(windows)]
+        if let Some(h) = &self.keyhook {
+            h.set_enabled(p.control);
+        }
+        let text = match p.access() {
+            Some(Access::Full) => {
+                tr("The person at that computer allowed full access", "O kompüterdəki şəxs tam girişə icazə verdi")
+            }
+            Some(Access::Standard) => tr(
+                "Standard access: control and clipboard, no files",
+                "Standart giriş: idarəetmə və mübadilə buferi, fayllar olmadan",
+            ),
+            _ if !p.control => tr(
+                "View only: the person at that computer has not allowed control",
+                "Yalnız baxış: o kompüterdəki şəxs idarəetməyə icazə verməyib",
+            ),
+            _ => tr("The access level changed", "Giriş səviyyəsi dəyişdi"),
+        };
+        self.notice = Some((text.into(), Instant::now()));
+        self.update_title();
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
     fn lock_remote(&mut self) {
+        if !self.shared.permissions().control {
+            return;
+        }
         self.release_keys();
         if self.v2 {
             self.net.send(ClientMsg::LockScreen);
@@ -553,6 +594,7 @@ impl ApplicationHandler<UiEvent> for App {
                 self.remote_cursor = shape;
                 self.update_cursor();
             }
+            UiEvent::Permissions(p) => self.permissions_changed(p),
             UiEvent::Notice(n) => {
                 tracing::info!("{n}");
                 self.notice = Some((n, Instant::now()));
@@ -607,7 +649,9 @@ impl ApplicationHandler<UiEvent> for App {
                     let y = ((position.y - oy as f64) / (h - 1) as f64).clamp(0.0, 1.0);
                     let at = ((x * 65535.0) as u16, (y * 65535.0) as u16);
                     self.pointer = Some(at);
-                    self.net.mouse_move(at.0, at.1);
+                    if self.shared.permissions().control {
+                        self.net.mouse_move(at.0, at.1);
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -634,6 +678,9 @@ impl ApplicationHandler<UiEvent> for App {
                         }
                     }
                 }
+                if !self.shared.permissions().control {
+                    return;
+                }
                 let down = state == ElementState::Pressed;
                 self.net.send(match self.pointer.filter(|_| self.v3) {
                     Some((x, y)) => ClientMsg::MouseButtonAt { button: b, down, x, y, seq: self.net.mouse_seq() },
@@ -645,7 +692,9 @@ impl ApplicationHandler<UiEvent> for App {
                     MouseScrollDelta::LineDelta(x, y) => ((x * 120.0) as i32, (y * 120.0) as i32),
                     MouseScrollDelta::PixelDelta(p) => (p.x as i32, p.y as i32),
                 };
-                self.net.send(ClientMsg::MouseWheel { dx, dy });
+                if self.shared.permissions().control {
+                    self.net.send(ClientMsg::MouseWheel { dx, dy });
+                }
             }
             WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
                 if is_synthetic {
@@ -653,6 +702,9 @@ impl ApplicationHandler<UiEvent> for App {
                 }
                 let down = event.state == ElementState::Pressed;
                 if down && self.shortcut(el, &event) {
+                    return;
+                }
+                if !self.shared.permissions().control {
                     return;
                 }
                 let Some((scancode, extended)) = host_scancode(event.physical_key) else { return };
@@ -669,7 +721,7 @@ impl ApplicationHandler<UiEvent> for App {
                 }
                 self.update_cursor();
             }
-            WindowEvent::DroppedFile(path) => self.net.send_file(path),
+            WindowEvent::DroppedFile(path) => self.net.send_file(path, self.shared.permissions().files),
             _ => {}
         }
     }
@@ -692,6 +744,16 @@ impl ApplicationHandler<UiEvent> for App {
         }
         let wake = self.toolbar.deadline().map_or(self.next_title, |t| t.min(self.next_title));
         el.set_control_flow(ControlFlow::WaitUntil(wake));
+    }
+}
+
+/// The toolbar's access label: none for full access.
+fn access_label(p: Permissions) -> Option<String> {
+    match p.access() {
+        Some(Access::Full) => None,
+        Some(Access::Standard) => Some(tr("Standard access", "Standart giriş").into()),
+        _ if !p.control => Some(tr("View only", "Yalnız baxış").into()),
+        _ => Some(tr("Limited access", "Məhdud giriş").into()),
     }
 }
 

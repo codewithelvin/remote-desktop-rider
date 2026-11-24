@@ -142,6 +142,70 @@ pub enum HostMsg {
     Cursor {
         shape: u8,
     },
+    /// What the person at the host allows. Sent at the start and whenever it
+    /// changes. Only sent to clients that speak `tls::ALPN_V4`; the host
+    /// enforces it for every client.
+    Permissions(Permissions),
+}
+
+/// What the viewer may do, decided by the person at the controlled computer.
+/// Seeing the screen is always allowed.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions {
+    /// Mouse, keyboard, Ctrl+Alt+Del and lock.
+    pub control: bool,
+    pub clipboard: bool,
+    /// Send files to the controlled computer.
+    pub files: bool,
+}
+
+/// The three choices offered to the person at the controlled computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Full,
+    Standard,
+    ViewOnly,
+}
+
+impl Access {
+    pub const ALL: [Access; 3] = [Access::Full, Access::Standard, Access::ViewOnly];
+
+    pub fn permissions(self) -> Permissions {
+        match self {
+            Access::Full => Permissions { control: true, clipboard: true, files: true },
+            Access::Standard => Permissions { control: true, clipboard: true, files: false },
+            Access::ViewOnly => Permissions { control: false, clipboard: false, files: false },
+        }
+    }
+
+    /// Name used on the command line and in the app's JSON lines.
+    pub fn code(self) -> &'static str {
+        match self {
+            Access::Full => "full",
+            Access::Standard => "standard",
+            Access::ViewOnly => "view",
+        }
+    }
+
+    pub fn from_code(s: &str) -> Option<Self> {
+        Access::ALL.into_iter().find(|a| a.code() == s)
+    }
+}
+
+impl Permissions {
+    /// The named level these permissions match, if any.
+    pub fn access(self) -> Option<Access> {
+        Access::ALL.into_iter().find(|a| a.permissions() == self)
+    }
+
+    /// As a byte (for an atomic): bit 0 control, 1 clipboard, 2 files.
+    pub fn bits(self) -> u8 {
+        self.control as u8 | (self.clipboard as u8) << 1 | (self.files as u8) << 2
+    }
+
+    pub fn from_bits(b: u8) -> Self {
+        Permissions { control: b & 1 != 0, clipboard: b & 2 != 0, files: b & 4 != 0 }
+    }
 }
 
 /// Pointer shapes the viewer can show (values are on the wire).
@@ -230,6 +294,26 @@ pub async fn write_msg<T: Serialize>(s: &mut quinn::SendStream, msg: &T) -> Resu
 
 /// Read one length-prefixed message; `Ok(None)` on a clean end of stream.
 pub async fn read_msg<T: DeserializeOwned>(s: &mut quinn::RecvStream) -> Result<Option<T>> {
+    match read_body(s).await? {
+        Some(body) => Ok(Some(decode(&body)?)),
+        None => Ok(None),
+    }
+}
+
+/// Like [`read_msg`], but skips messages this version does not know (a
+/// newer peer's additions) instead of failing: each message is length
+/// prefixed, so the next one is found either way. For control streams.
+pub async fn read_known<T: DeserializeOwned>(s: &mut quinn::RecvStream) -> Result<Option<T>> {
+    loop {
+        let Some(body) = read_body(s).await? else { return Ok(None) };
+        match decode(&body) {
+            Ok(m) => return Ok(Some(m)),
+            Err(e) => tracing::debug!("skipped an unknown control message ({} bytes): {e}", body.len()),
+        }
+    }
+}
+
+async fn read_body(s: &mut quinn::RecvStream) -> Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match s.read_exact(&mut len).await {
         Ok(()) => {}
@@ -242,7 +326,7 @@ pub async fn read_msg<T: DeserializeOwned>(s: &mut quinn::RecvStream) -> Result<
     }
     let mut body = vec![0u8; len];
     s.read_exact(&mut body).await?;
-    Ok(Some(decode(&body)?))
+    Ok(Some(body))
 }
 
 /// Split a received frame stream into header and payload.
@@ -287,5 +371,29 @@ mod tests {
         let at = ClientMsg::MouseButtonAt { button: MouseButton::Left, down: true, x: 1, y: 2, seq: 3 };
         assert_eq!(encode(&at).unwrap()[0], 13);
         assert_eq!(encode(&HostMsg::Cursor { shape: 6 }).unwrap(), [8, 6]);
+        let p = Access::Standard.permissions();
+        assert_eq!(encode(&HostMsg::Permissions(p)).unwrap(), [9, 1, 1, 0]);
+    }
+
+    #[test]
+    fn access_levels() {
+        for a in Access::ALL {
+            assert_eq!(Access::from_code(a.code()), Some(a));
+            assert_eq!(a.permissions().access(), Some(a));
+            assert_eq!(Permissions::from_bits(a.permissions().bits()), a.permissions());
+        }
+        assert_eq!(Access::from_code("everything"), None);
+        let view = Access::ViewOnly.permissions();
+        assert!(!view.control && !view.clipboard && !view.files);
+        // Control without clipboard is no named level.
+        assert_eq!(Permissions { control: true, clipboard: false, files: false }.access(), None);
+    }
+
+    #[test]
+    fn unknown_messages_from_newer_peers_fail_to_decode() {
+        // What `read_known` relies on: a variant past the end is an error,
+        // not a misread message.
+        assert!(decode::<HostMsg>(&[200, 1, 2]).is_err());
+        assert!(decode::<ClientMsg>(&[99]).is_err());
     }
 }

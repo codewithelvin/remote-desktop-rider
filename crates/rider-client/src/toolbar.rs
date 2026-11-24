@@ -31,6 +31,15 @@ pub enum Action {
     Disconnect,
     /// The session time: shown, not clickable.
     Elapsed,
+    /// The access level when it is not full access: shown, not clickable.
+    Access,
+}
+
+impl Action {
+    /// Shown on the bar but not a button.
+    fn passive(self) -> bool {
+        matches!(self, Action::Elapsed | Action::Access)
+    }
 }
 
 /// What the bar shows besides the buttons that are always there.
@@ -42,6 +51,10 @@ pub struct Extras {
     /// (the host cannot change it).
     pub quality: Option<String>,
     pub pinned: bool,
+    /// The access level, when it is not full access ("View only").
+    pub access: Option<String>,
+    /// The person at the computer does not allow control: no Ctrl+Alt+Del.
+    pub no_control: bool,
 }
 
 /// Shown at the start of a session so people learn where it is.
@@ -193,7 +206,7 @@ impl Toolbar {
             self.on_bar = false;
             self.visible_until = Some(Instant::now() + LINGER);
         }
-        self.set_hover(if self.visible() { self.hit(x, y).filter(|a| *a != Action::Elapsed) } else { None });
+        self.set_hover(if self.visible() { self.hit(x, y).filter(|a| !a.passive()) } else { None });
         (self.visible(), self.hover, self.tab_hover) != before
     }
 
@@ -253,7 +266,7 @@ impl Toolbar {
                 self.sprite = None;
                 (true, None)
             }
-            Some(a) => (true, (self.hover == Some(a) && a != Action::Elapsed).then_some(a)),
+            Some(a) => (true, (self.hover == Some(a) && !a.passive()).then_some(a)),
             None => (self.on_bar && self.visible(), None),
         }
     }
@@ -378,12 +391,18 @@ fn labels(
     if !extras.elapsed.is_empty() {
         v.push((Action::Elapsed, icon('\u{E916}'), extras.elapsed.clone()));
     }
+    if let Some(access) = &extras.access {
+        // An eye: what the other side lets you do.
+        v.push((Action::Access, icon('\u{E890}'), access.clone()));
+    }
     v.push(if fullscreen {
         (Action::Fullscreen, icon('\u{E73F}'), tr("Exit full screen", "Tam ekrandan çıx").into())
     } else {
         (Action::Fullscreen, icon('\u{E740}'), tr("Full screen", "Tam ekran").into())
     });
-    v.push((Action::CtrlAltDel, icon('\u{E765}'), "Ctrl+Alt+Del".into()));
+    if !extras.no_control {
+        v.push((Action::CtrlAltDel, icon('\u{E765}'), "Ctrl+Alt+Del".into()));
+    }
     if count > 1 {
         v.extend((0..count).map(|i| (Action::Monitor(i), icon('\u{E7F4}'), (i + 1).to_string())));
     }
@@ -817,7 +836,7 @@ mod tests {
     fn extras_time_quality_and_pin() {
         let mut t = Toolbar::new();
         t.set_state(1.0, false, (1, 0));
-        let extras = Extras { elapsed: "1:05".into(), quality: Some("720p".into()), pinned: true };
+        let extras = Extras { elapsed: "1:05".into(), quality: Some("720p".into()), pinned: true, ..Extras::default() };
         t.set_extras(extras.clone());
         let mut buf = vec![0u32; 1600 * 900];
         t.draw(&mut buf, 1600, 900);
@@ -837,6 +856,23 @@ mod tests {
         assert!(t.press());
         assert_eq!(t.release(), (true, None));
         assert!(!t.set_extras(extras), "unchanged");
+    }
+
+    #[test]
+    fn view_only_shows_the_level_and_no_ctrl_alt_del() {
+        let mut t = Toolbar::new();
+        t.set_state(1.0, false, (1, 0));
+        t.set_extras(Extras { access: Some("View only".into()), no_control: true, ..Extras::default() });
+        let mut buf = vec![0u32; 1600 * 900];
+        t.draw(&mut buf, 1600, 900);
+        let acts: Vec<Action> = t.sprite.as_ref().unwrap().buttons.iter().map(|b| b.0).collect();
+        assert_eq!(acts, [Action::Access, Action::Fullscreen, Action::Pin, Action::Disconnect]);
+        // The level is a label, not a button.
+        let (a, b, _) = t.button_rect(Action::Access).unwrap();
+        t.pointer(((a + b) / 2) as f64, 10.0);
+        assert_eq!(t.hover, None);
+        assert!(t.press());
+        assert_eq!(t.release(), (true, None));
     }
 
     #[test]

@@ -189,7 +189,104 @@ ends remote sessions while it waits).
 
 ## Milestone 5: More features
 
-- Host→client file transfer and a file browser.
-- Cursor shape sync.
+- [x] Cursor shape sync.
+- Host→client file transfer: now part of chat (Milestone 6).
 - Audio.
 - Session log / audit on the host (who connected, when, from where).
+
+## Milestone 6: What other remote desktop apps have (from Remoteer, 2026-11-24)
+
+Compared with Remoteer (Windows, macOS and browser; WebRTC). Small items
+first. Voice and video calls are not planned.
+
+| # | Feature | Size | State |
+|---|---|---|---|
+| 1 | Access levels: Full access / Standard / View only, changeable during the session | small | **done** for one-time sessions (unattended: with the session panel, #2) |
+| 2 | Chat with file transfer both ways, nothing kept after the session | medium | designed (below) |
+| 3 | Clipboard with images (files go through chat) | small | planned |
+| 4 | Sharp text when the screen is still (a lossless refresh after motion stops) | medium | planned |
+| 5 | TCP tunnels through the session (reach a port on the remote network) | medium | planned |
+| 6 | Browser client (phones included) | large | later |
+| 7 | macOS as the controlled computer | large | later |
+
+### 1. Access levels
+
+The person at the controlled computer decides what the other side may do:
+
+| Level | See the screen | Mouse and keyboard, Ctrl+Alt+Del, lock | Clipboard | Send files to this computer |
+|---|---|---|---|---|
+| **Full access** | yes | yes | yes | yes |
+| **Standard** | yes | yes | yes | no |
+| **View only** | yes | no | no | no |
+
+- Chosen when allowing a one-time session (Full access preselected), changed
+  at any time while it runs. Paired, PIN-protected sessions start with Full
+  access; the host-side session panel (chat, below) can lower it.
+- The **host enforces** it: input, clipboard and files are dropped there, so a
+  modified viewer gains nothing. When control is taken away, keys and mouse
+  buttons the viewer was holding are released.
+- The viewer is told (`HostMsg::Permissions`, protocol `rider/4`) and shows
+  it: a "View only" badge in the toolbar, Ctrl+Alt+Del hidden, a notice when
+  the level changes, nothing sent that would be dropped.
+
+### 2. Chat with files
+
+Goals: polished, always where you expect it, and **nothing survives the
+session** on either computer.
+
+**Viewer side: a panel inside the session window**, not a separate window
+(a separate window falls behind a full-screen session and gets lost).
+
+- A **Chat** button on the toolbar with an unread count. The panel slides in
+  on the right (about 340 px); the remote picture shrinks to the rest of the
+  window, so the panel never covers the remote screen and works in full
+  screen. Closing it gives the space back.
+- A message arriving while the panel is closed shows a short toast at the
+  top right of the session window (name + first line); clicking it opens the
+  panel. The toolbar keeps the unread count.
+- Keyboard: while the message box has focus, keys type there instead of going
+  to the remote computer (Esc or a click on the picture gives them back).
+- Files: the attach button, or drag files onto the panel. Dropping a file on
+  the picture sends it through chat too (it shows up in the conversation).
+- Drawn with egui (the same widgets and look as the app), rendered on the CPU
+  into the viewer's frame buffer next to the video: no GPU dependency, the
+  same on Windows, macOS and Linux.
+
+**Controlled side: a session panel**, a small window of the app running as
+the signed-in user (never as SYSTEM: file dialogs and file access must have
+the user's rights, not the service's).
+
+- One-time sessions: it is the existing support window, which gains the chat
+  and the access level.
+- Unattended sessions: the service agent starts it in the user's session as
+  the user, linked by pipes. It does not open by itself when a session
+  starts (it would sit in the remote picture); it opens when a message
+  arrives or when the person clicks **Chat** on the red banner.
+- The banner gets two parts: **Chat** and **Disconnect** (still one click,
+  for the person at the computer only).
+
+**Messages and files**
+
+- Text up to 4000 characters, sent on the control stream; files on their own
+  stream each (any size, progress and cancel on both sides). Each message
+  shows time and sender; files show name, size, progress, then **Open** and
+  **Save as…**
+- Files are only allowed in both directions while the access level includes
+  files (Full access); the person at the computer can always send.
+
+**Nothing survives the session**
+
+- Messages live only in memory in the two processes; never written to disk,
+  never logged (logs record counts, not text or file names), never via the
+  server (the session is end-to-end encrypted).
+- Received files go to a private per-session folder in the user's temp
+  directory, marked as downloaded from the internet (Mark of the Web, so
+  Office and SmartScreen treat them with care). The folder is deleted when
+  the session ends; leftovers from a crash are deleted at the next start.
+  **Save as…** is the only way to keep a file, and it is the user's choice.
+- Drag-and-drop to `Downloads\Rider` (which kept files) is replaced by chat.
+
+**Protocol (`rider/5`):** `ClientMsg::Chat` / `HostMsg::Chat` (id, text),
+file streams in both directions (the host also opens streams), and
+`FileResult` answers with a reason. Control messages a peer does not know are
+skipped (from `rider/4` on), so later additions cannot break a session.

@@ -81,6 +81,10 @@ cargo build --profile quick -p rider-host -p rider-client -p rider-server
 powershell -ExecutionPolicy Bypass -File test\local-session\banner-click.ps1
 ```
 
+`test\local-session\access-levels.ps1` checks access levels the same way:
+View only, Full access and back during one session, with this build's viewer
+and with an installed (older) one, so the host is shown to enforce them.
+
 Desktop tests in the crates (marked `#[ignore]`) need a signed-in desktop:
 `cargo test -p rider-host -- --ignored --test-threads=1`.
 

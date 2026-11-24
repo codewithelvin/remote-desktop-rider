@@ -7,11 +7,12 @@ use crate::sys::{self, RemoteAccess};
 use crate::tray::{self, Tray};
 use crate::updates::{self, Updater};
 use crate::widgets::{self, ACCENT, AMBER, Bus, GREEN, GREY, Tx, icon};
-use eframe::egui::{self, Align, Id, Key, Layout, Modal, RichText, ScrollArea, TextEdit, TextureHandle, Ui, vec2};
+use eframe::egui::{self, Align, Key, Layout, RichText, ScrollArea, TextEdit, TextureHandle, Ui, vec2};
 use rider_client::PairPrompt;
 use rider_client::config::{ClientConfig, KnownHost};
 use rider_core::i18n::tr;
 use rider_core::identity::{Identity, fp_from_hex};
+use rider_core::proto::Access;
 use rider_core::trf;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -157,6 +158,8 @@ enum SupportStage {
 struct Support {
     id: u64,
     stdin: Option<ChildStdin>,
+    /// What the helper may do: chosen before allowing, changeable during.
+    access: Access,
     code: Option<String>,
     server_error: Option<String>,
     /// A short note under the code, e.g. after declining someone.
@@ -710,6 +713,7 @@ impl ClientApp {
                 self.support = Some(Support {
                     id,
                     stdin: None,
+                    access: Access::Full,
                     code: None,
                     server_error: None,
                     note: None,
@@ -741,8 +745,15 @@ impl ClientApp {
             let _ = child.wait();
             tx.send(Msg::Support { id, event: SupportEvent::Exited(err) });
         });
-        self.support =
-            Some(Support { id, stdin, code: None, server_error: None, note: None, stage: SupportStage::Waiting });
+        self.support = Some(Support {
+            id,
+            stdin,
+            access: Access::Full,
+            code: None,
+            server_error: None,
+            note: None,
+            stage: SupportStage::Waiting,
+        });
     }
 
     fn open_add(&mut self) {
@@ -1788,8 +1799,10 @@ impl ClientApp {
         let Some(s) = &mut self.support else { return };
         let mut close = false;
         let mut answer = None;
+        let mut access_changed = false;
         let mut again = false;
-        Modal::new(Id::unique("support")).show(ctx, |ui| {
+        // Each stage sizes to its own content.
+        widgets::modal(ctx, "support", std::mem::discriminant(&s.stage)).show(ctx, |ui| {
             ui.set_width(480.0);
             ui.label(widgets::title(tr("One-time code", "Birdəfəlik kod"), 19.0));
             ui.add_space(4.0);
@@ -1858,11 +1871,15 @@ impl ClientApp {
                         ),
                     );
                     widgets::big_code(ui, &code);
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tr("What can they do?", "Nə edə bilər?")).strong());
+                    ui.add_space(2.0);
+                    widgets::access_choice(ui, &mut s.access);
                     widgets::hint(
                         ui,
                         tr(
-                            "Allow only if you know who this is. You can end the session at any time by clicking the red bar at the top of the screen.",
-                            "Yalnız kim olduğunu bilirsinizsə icazə verin. Seansı istənilən vaxt ekranın yuxarısındakı qırmızı zolağa klikləməklə bitirə bilərsiniz.",
+                            "Allow only if you know who this is. You can change this or end the session at any time.",
+                            "Yalnız kim olduğunu bilirsinizsə icazə verin. Bunu istənilən vaxt dəyişə və ya seansı bitirə bilərsiniz.",
                         ),
                     );
                     widgets::dialog_buttons(ui, |ui| {
@@ -1877,14 +1894,25 @@ impl ClientApp {
                 SupportStage::Active { device } => {
                     ui.horizontal(|ui| {
                         widgets::dot(ui, Some(GREEN));
-                        ui.add(
-                            egui::Label::new(trf!(
+                        let text = if s.access == Access::ViewOnly {
+                            trf!(
+                                "\"{device}\" is connected and can see this screen.",
+                                "\"{device}\" qoşulub və bu ekranı görə bilər."
+                            )
+                        } else {
+                            trf!(
                                 "\"{device}\" is connected and can control this computer.",
                                 "\"{device}\" qoşulub və bu kompüteri idarə edə bilər."
-                            ))
-                            .wrap(),
-                        );
+                            )
+                        };
+                        ui.add(egui::Label::new(text).wrap());
                     });
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tr("What they can do", "Nə edə bilər")).strong());
+                    ui.add_space(2.0);
+                    if widgets::access_choice(ui, &mut s.access) {
+                        access_changed = true;
+                    }
                     widgets::hint(
                         ui,
                         tr(
@@ -1923,7 +1951,12 @@ impl ClientApp {
             }
         });
         if let Some(yes) = answer {
-            s.send(if yes { "y" } else { "n" });
+            let line = if yes { format!("y {}", s.access.code()) } else { "n".into() };
+            s.send(&line);
+        }
+        if access_changed {
+            let line = format!("access {}", s.access.code());
+            s.send(&line);
         }
         if close || again {
             // Ends the one-time host (and a running session) at once.

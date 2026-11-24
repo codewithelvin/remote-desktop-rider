@@ -37,6 +37,8 @@ struct State {
     /// Keys sent down and not yet up, released when focus moves away.
     down: HashSet<(u16, bool)>,
     ctrl: bool,
+    /// Off while the host does not allow control: system keys act here.
+    enabled: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -49,7 +51,8 @@ pub struct KeyHook {
 
 impl KeyHook {
     pub fn install(window: HWND, out: UnboundedSender<ClientMsg>) -> Option<Self> {
-        *STATE.lock().ok()? = Some(State { window: window.0 as usize, out, down: HashSet::new(), ctrl: false });
+        *STATE.lock().ok()? =
+            Some(State { window: window.0 as usize, out, down: HashSet::new(), ctrl: false, enabled: true });
         let (tx, rx) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("keyhook".into())
@@ -91,6 +94,18 @@ impl KeyHook {
         {
             st.out = out;
             st.down.clear();
+        }
+    }
+
+    /// Send system keys to the host (`true`) or leave them to this computer.
+    pub fn set_enabled(&self, on: bool) {
+        if !on {
+            self.release();
+        }
+        if let Ok(mut s) = STATE.lock()
+            && let Some(st) = s.as_mut()
+        {
+            st.enabled = on;
         }
     }
 
@@ -144,7 +159,7 @@ unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
                 st.ctrl = !up;
             }
             // SAFETY: plain query.
-            if unsafe { GetForegroundWindow() }.0 as usize != st.window {
+            if !st.enabled || unsafe { GetForegroundWindow() }.0 as usize != st.window {
                 return None;
             }
             let alt = k.flags.0 & LLKHF_ALTDOWN.0 != 0;
