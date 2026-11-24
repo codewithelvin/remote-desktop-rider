@@ -96,6 +96,21 @@ the viewer (`test/ubuntu-desktop`, `test/lubuntu`). `test/bad-network/netem.sh`
 turns a Linux machine's link into hotel Wi-Fi, weak 4G or worse, for testing
 how sessions hold up.
 
+Every release is tested on these VMs first, with builds made locally (no
+pushes for test builds):
+
+- `test/vm/access-levels.ps1`: this PC's viewer controls the Windows VM in a
+  one-time session; View only, Full access and back (try `-Client` with an
+  installed older viewer too).
+- `test/vm/paired-session.ps1`: a paired, PIN-protected session to the VM's
+  unattended service.
+- `test/lubuntu/access-levels.sh`: the Linux viewer (`.deb`) controls the
+  Windows VM.
+
+The VM build comes from `target/release` (`rider-host service install`
+inside the VM); switch the VM's automatic updates off first, or it replaces
+the build with the latest release.
+
 ## License
 
 By contributing you agree that your contributions are licensed under the

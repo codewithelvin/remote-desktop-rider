@@ -1,0 +1,5 @@
+# Written by the test scripts while they run (shared with the VM).
+*.out
+*.err
+support.cmd
+support.args

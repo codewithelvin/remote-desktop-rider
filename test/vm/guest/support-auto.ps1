@@ -1,0 +1,35 @@
+# Test VM only: a one-time support host (`rider-host --json support`) in the
+# signed-in user's session, like the app's "Get a one-time code".
+#   C:\rider-test\support.out   its events, as they come (the code, requests...)
+#   C:\rider-test\support.cmd   lines appended here are passed on to it:
+#                               "y view" to allow, "access full", "quit"...
+# Start it with run-as-user.ps1 (support-auto.ps1 <server> <fingerprint>).
+param([string]$Server, [string]$Fingerprint)
+$out = "C:\rider-test\support.out"; $cmd = "C:\rider-test\support.cmd"
+Remove-Item $out, $cmd -ErrorAction SilentlyContinue
+New-Item -ItemType File $cmd | Out-Null
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = "C:\Program Files\RemoteDesktopRider\rider-host.exe"
+$psi.Arguments = "--json support $Server $Fingerprint"
+$psi.UseShellExecute = $false
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.EnvironmentVariables["RIDER_LANG"] = "en"
+$p = [System.Diagnostics.Process]::Start($psi)
+# Events to the file in the background.
+$job = Register-ObjectEvent $p OutputDataReceived -Action { if ($EventArgs.Data) { Add-Content "C:\rider-test\support.out" $EventArgs.Data } }
+$p.BeginOutputReadLine()
+$sent = 0
+$deadline = (Get-Date).AddMinutes(30)
+while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
+    $lines = @(Get-Content $cmd -ErrorAction SilentlyContinue)
+    while ($sent -lt $lines.Count) {
+        $p.StandardInput.WriteLine($lines[$sent]); $p.StandardInput.Flush()
+        Add-Content $out "{""sent"":""$($lines[$sent])""}"
+        $sent++
+    }
+    Start-Sleep -Milliseconds 300
+}
+if (-not $p.HasExited) { $p.StandardInput.WriteLine("quit"); if (-not $p.WaitForExit(5000)) { $p.Kill() } }
+Add-Content $out ("{""exit"":" + $p.ExitCode + "}")
