@@ -9,8 +9,9 @@
 //!
 //! * to the window: JSON events, `{"event":"session","device":"…","files":true}`
 //!   first, then the chat events listed in `chat`;
-//! * from the window: `chat "<text>"`, `send-file "<path>"`, `cancel-file <id>`
-//!   and `end` (end the session).
+//! * from the window: `chat "<text>"`, `send-file "<path>"`, `cancel-file <id>`,
+//!   `end` (end the session), and `accept` / `decline` when the company's
+//!   admin asks to connect (`{"event":"request",...}`, see `session`).
 //!
 //! Closing the window's input (the session ended, or the agent died) closes
 //! the window; a window that does not go is ended after a few seconds.
@@ -90,6 +91,11 @@ impl Panel {
         Ok((panel, cmds))
     }
 
+    /// Ask the person here to accept the company admin (`accept` / `decline` come back).
+    pub fn ask(&self, company: &str, seconds: u64) {
+        self.emit(serde_json::json!({ "event": "request", "company": company, "seconds": seconds }));
+    }
+
     /// Send one event to the window.
     pub fn emit(&self, event: serde_json::Value) {
         let _ = self.lines.send(event.to_string());
@@ -120,6 +126,8 @@ impl Drop for Panel {
 fn parse(line: &str) -> Option<ChatCmd> {
     match ui::split_line(line) {
         ("end", "") => Some(ChatCmd::End),
+        ("accept", "") => Some(ChatCmd::Answer(true)),
+        ("decline", "") => Some(ChatCmd::Answer(false)),
         (word, arg) => ui::parse_chat(word, arg),
     }
 }
@@ -254,5 +262,7 @@ mod tests {
         assert_eq!(parse("cancel-file 3"), Some(ChatCmd::Cancel(3)));
         assert_eq!(parse("end now"), None);
         assert_eq!(parse("quit"), None);
+        assert_eq!(parse("accept\r\n"), Some(ChatCmd::Answer(true)));
+        assert_eq!(parse("decline"), Some(ChatCmd::Answer(false)));
     }
 }

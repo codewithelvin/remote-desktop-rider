@@ -61,6 +61,8 @@ pub struct Extras {
     pub chat: Option<usize>,
     /// The chat panel is open (the button is highlighted).
     pub chat_open: bool,
+    /// The remote monitors' names, as the host sends them.
+    pub monitor_names: Vec<String>,
 }
 
 /// Shown at the start of a session so people learn where it is.
@@ -419,7 +421,10 @@ fn labels(
         v.push((Action::CtrlAltDel, icon('\u{E765}'), "Ctrl+Alt+Del".into()));
     }
     if count > 1 {
-        v.extend((0..count).map(|i| (Action::Monitor(i), icon('\u{E7F4}'), (i + 1).to_string())));
+        v.extend((0..count).map(|i| {
+            let name = extras.monitor_names.get(i as usize).map(String::as_str);
+            (Action::Monitor(i), icon('\u{E7F4}'), monitor_label(i, name))
+        }));
     }
     if let Some(unread) = extras.chat {
         let label = tr("Chat", "Söhbət");
@@ -712,6 +717,19 @@ pub(crate) mod text {
     }
 }
 
+/// "1 DELL U2720Q": the number (Alt+1) and the monitor's own name, cut to fit.
+/// Hosts before 0.5 send only device names ("DISPLAY1"): then the number alone.
+pub(crate) fn monitor_label(i: u32, name: Option<&str>) -> String {
+    const MAX: usize = 18;
+    match name.map(str::trim).filter(|n| !n.is_empty() && !n.starts_with("DISPLAY")) {
+        Some(n) if n.chars().count() > MAX => {
+            format!("{} {}\u{2026}", i + 1, n.chars().take(MAX - 1).collect::<String>())
+        }
+        Some(n) => format!("{} {n}", i + 1),
+        None => (i + 1).to_string(),
+    }
+}
+
 fn render(
     scale: f64,
     fullscreen: bool,
@@ -796,6 +814,16 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_labels() {
+        assert_eq!(monitor_label(0, Some("DELL U2720Q")), "1 DELL U2720Q");
+        assert_eq!(monitor_label(1, Some("Built-in display")), "2 Built-in display");
+        // Older hosts: device names only, then the number alone.
+        assert_eq!(monitor_label(2, Some("DISPLAY3")), "3");
+        assert_eq!(monitor_label(0, None), "1");
+        assert_eq!(monitor_label(0, Some("A very long monitor model name")), "1 A very long monit\u{2026}");
+    }
 
     #[test]
     fn blend_math() {

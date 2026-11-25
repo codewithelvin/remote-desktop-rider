@@ -27,6 +27,17 @@ pub struct ClientConfig {
     /// Session window preferences, remembered between sessions.
     #[serde(default)]
     pub viewer: ViewerPrefs,
+    /// Enterprise mode: this app is the admin of a company on `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise: Option<EnterpriseAdmin>,
+}
+
+/// What the admin's app keeps after signing in with the setup code.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct EnterpriseAdmin {
+    pub company: String,
+    /// Goes into the company installer's join token.
+    pub join_secret: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -46,6 +57,7 @@ impl Default for ClientConfig {
             hosts: Vec::new(),
             server: None,
             viewer: ViewerPrefs::default(),
+            enterprise: None,
         }
     }
 }

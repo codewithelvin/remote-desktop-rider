@@ -38,6 +38,17 @@ enum Cmd {
         /// The code, e.g. SF6-CK6.
         code: String,
     },
+    /// Enterprise mode (the company's admin): connect to a company computer
+    /// by its fingerprint. The person there accepts; no PIN.
+    CompanyConnect {
+        /// The computer's fingerprint (hex), as in the admin's console.
+        fingerprint: String,
+    },
+    /// Enterprise mode (the company's admin), from the command line.
+    Company {
+        #[command(subcommand)]
+        action: CompanyCmd,
+    },
     /// List paired hosts.
     List,
     /// Forget a paired host.
@@ -56,6 +67,71 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["addr", "fingerprint"])]
         off: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum CompanyCmd {
+    /// Become the admin with the server's one-time setup code.
+    SignIn { code: String },
+    /// The join token for the company installer.
+    Token,
+    /// The company's computers (JSON).
+    List,
+    /// The admin's switch for connecting without anyone accepting.
+    Unattended {
+        /// The computer's fingerprint (hex).
+        fingerprint: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+}
+
+fn company(cfg: &mut ClientConfig, identity: &Identity, action: CompanyCmd) -> Result<()> {
+    use rider_core::company::{DirEdit, JoinToken};
+    let server = cfg.server.clone().context("no server: run `rider-client set-server` first")?;
+    let rt = tokio::runtime::Runtime::new()?;
+    match action {
+        CompanyCmd::SignIn { code } => {
+            let (company, join_secret) = rt.block_on(rider_core::rendezvous::admin_claim(identity, &server, &code))?;
+            println!("Signed in: this device is the admin of \"{company}\".");
+            cfg.enterprise = Some(rider_client::config::EnterpriseAdmin { company, join_secret });
+            cfg.save()?;
+        }
+        CompanyCmd::Token => {
+            let admin = cfg.enterprise.as_ref().context("not signed in: `rider-client company sign-in <code>`")?;
+            let token = JoinToken {
+                server: server.addr.clone(),
+                server_fingerprint: fp_from_hex(&server.fingerprint)?,
+                admin: identity.fingerprint(),
+                secret: admin.join_secret.clone(),
+            };
+            println!("{}", token.encode());
+        }
+        CompanyCmd::List => {
+            let dir = rt.block_on(rider_core::rendezvous::directory(identity, &server, None))?;
+            let list: Vec<_> = dir
+                .computers
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "fingerprint": rider_core::identity::fp_hex(&c.fingerprint),
+                        "name": c.info.name,
+                        "user": c.info.user,
+                        "online": c.online,
+                        "room": c.room,
+                        "unattended": c.unattended(),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::Value::Array(list));
+        }
+        CompanyCmd::Unattended { fingerprint, state } => {
+            let edit = DirEdit::Unattended { computer: fp_from_hex(&fingerprint)?, on: state == "on" };
+            rt.block_on(rider_core::rendezvous::directory(identity, &server, Some(edit)))?;
+            println!("Unattended {state}.");
+        }
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -144,6 +220,43 @@ fn main() -> Result<()> {
             let report_to =
                 cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
             // A new session would need the person there to allow it again.
+            rider_client::app::run(rt, session, host_name, report_to, None)?;
+        }
+        Cmd::Company { action } => company(&mut cfg, &identity, action)?,
+        Cmd::CompanyConnect { fingerprint } => {
+            let host = fp_from_hex(&fingerprint)?;
+            let rt = tokio::runtime::Runtime::new()?;
+            // The desktop app writes "cancel" here when the admin gives up
+            // while the person there is still being asked.
+            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+            std::thread::spawn(move || {
+                for line in std::io::stdin().lines() {
+                    if line.is_ok_and(|l| l.trim() == "cancel") {
+                        let _ = cancel_tx.send(());
+                        return;
+                    }
+                }
+            });
+            let cancel = async move {
+                // End of input (none given) without "cancel": never cancels.
+                if cancel_rx.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            let (session, route, host_name) = rt.block_on(rider_client::company_connect(
+                &cfg,
+                &identity,
+                host,
+                |name| {
+                    // The desktop app reads these lines.
+                    println!("Waiting for \"{name}\" to accept.");
+                },
+                cancel,
+            ))?;
+            println!("Connected to \"{host_name}\" ({route}).");
+            let report_to =
+                cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
+            // A new session would need the person there to accept again.
             rider_client::app::run(rt, session, host_name, report_to, None)?;
         }
         Cmd::Connect { host, pin_stdin } => {

@@ -4,6 +4,13 @@
 ; All three programs go to "Program Files\RemoteDesktopRider": rider-host's
 ; service expects its binary there (only administrators can change it, so it
 ; is safe to run as SYSTEM), and the firewall rules are per program path.
+;
+; Company computers (Enterprise mode, docs/ENTERPRISE.md):
+;   rdr-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /ENROLL=<join token> [/UNATTENDED]
+; also turns remote access on and joins the company (`rider-host enroll`);
+; the result is in %ProgramData%\RemoteDesktopRider\host\enroll.log. A server
+; that cannot be reached does not fail the installation (the startup script
+; tries again at the next start).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -119,6 +126,63 @@ end;
 function ServiceWasRunning: Boolean;
 begin
   Result := ServiceRunning;
+end;
+
+{ /NAME on the command line (any case), without a value. }
+function HasSwitch(Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/' + Name) = 0 then
+      Result := True;
+end;
+
+{ A join token is "rdr1." and hex digits: nothing a command line could misread. }
+function ValidToken(T: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := (Length(T) > 5) and (Length(T) < 4096) and (Copy(T, 1, 5) = 'rdr1.');
+  if Result then
+    for I := 6 to Length(T) do
+      if Pos(T[I], '0123456789abcdefABCDEF') = 0 then
+        Result := False;
+end;
+
+{ Enterprise mode: remote access on, then join the company. }
+procedure Enroll;
+var
+  Token, Host, Args, Log: String;
+  Code: Integer;
+begin
+  Token := Trim(ExpandConstant('{param:ENROLL|}'));
+  if Token = '' then
+    Exit;
+  Host := ExpandConstant('{app}\rider-host.exe');
+  Log := ExpandConstant('{commonappdata}\RemoteDesktopRider\host\enroll.log');
+  { Creates the host's folder for the log (only SYSTEM and Administrators may write it). }
+  Exec(Host, 'info', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  if not ValidToken(Token) then
+  begin
+    SaveStringToFile(Log, 'not a join token: /ENROLL=' + Copy(Token, 1, 12) + '...' + #13#10, False);
+    Exit;
+  end;
+  Args := 'enroll ' + Token;
+  if HasSwitch('UNATTENDED') then
+    Args := Args + ' --unattended';
+  Exec(ExpandConstant('{cmd}'), '/c ""' + Host + '" ' + Args + ' > "' + Log + '" 2>&1"', '', SW_HIDE,
+    ewWaitUntilTerminated, Code);
+  { Remote access on: after joining, because a company computer has no PIN
+    (the admin needs none) and the service runs only once it can be reached. }
+  Exec(Host, 'service install', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    Enroll;
 end;
 
 { Closes every running part so its files can be replaced or removed. }

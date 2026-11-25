@@ -17,6 +17,7 @@
 #![windows_subsystem = "windows"]
 
 mod client;
+mod enterprise;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]

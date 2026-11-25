@@ -9,3 +9,8 @@ from-viewer.txt
 shot-*.png
 agent/
 paired-chat.args
+ent-token.txt
+gpo/
+host-override.exe
+ent-probe/
+ent-srv/

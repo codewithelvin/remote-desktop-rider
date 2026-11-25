@@ -29,6 +29,8 @@ pub enum ChatCmd {
     Cancel(u64),
     /// End the session (the chat window of a paired session, see `panel`).
     End,
+    /// The answer to the company admin's request (`accept` / `decline`).
+    Answer(bool),
 }
 
 /// A chat command line: `chat "<text>"`, `send-file "<path>"`, `cancel-file <id>`.

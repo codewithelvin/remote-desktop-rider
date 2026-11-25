@@ -33,7 +33,8 @@ pub enum Route {
 /// One [`SAMPLE_EVERY`] interval. Host: `frame_ms` is encode time, `kbps` the
 /// video actually sent, `target_kbps` the adaptive bitrate, `dropped` frames
 /// skipped or expired by congestion. Client: `frame_ms` is decode time,
-/// `latency_ms` capture-to-display, `fps` frames shown.
+/// `latency_ms` capture-to-display (0: no frame shown in this sample), `fps`
+/// frames shown.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
 pub struct Sample {
     /// Seconds since the session started.
@@ -157,6 +158,13 @@ impl Recorder {
 }
 
 /// Clamp to a u16 field.
+/// Lost packets in thousandths of those sent in one sample. Packets sent in
+/// the sample before can be declared lost in this one, so when sending all
+/// but stops, `lost` can exceed `sent`: never more than 1000.
+pub fn loss_permille(lost: u64, sent: u64) -> u16 {
+    u16_of(lost * 1000 / sent.max(lost).max(1))
+}
+
 pub fn u16_of(v: impl TryInto<u16>) -> u16 {
     v.try_into().unwrap_or(u16::MAX)
 }
@@ -164,6 +172,14 @@ pub fn u16_of(v: impl TryInto<u16>) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loss_never_passes_all_of_it() {
+        assert_eq!(loss_permille(0, 0), 0);
+        assert_eq!(loss_permille(5, 1000), 5);
+        // Late losses of the sample before, with sending all but stopped.
+        assert_eq!(loss_permille(11, 3), 1000);
+    }
 
     #[test]
     fn recorder_cuts_reports() {

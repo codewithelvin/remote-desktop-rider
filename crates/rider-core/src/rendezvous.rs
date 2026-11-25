@@ -134,6 +134,18 @@ pub enum PeerMsg {
     Join { version: u32, code: String },
     /// A member computer asks for an invite code for another one.
     Invite { version: u32 },
+    // Enterprise mode (`company`). Older servers close the connection on these.
+    /// An app becomes the company's admin with the one-time setup code.
+    AdminClaim { version: u32, code: String },
+    /// The admin: the company directory, please.
+    Directory { version: u32 },
+    /// The admin changes the directory; answered with the new directory.
+    DirectoryEdit { version: u32, edit: crate::company::DirEdit },
+    /// A computer joins the company with the join token's secret.
+    Enroll { version: u32, secret: String, info: crate::company::HostInfo },
+    /// A company computer, on its `Register` connection: what the admin's
+    /// console shows about it (sent again when it changes).
+    HostInfo { version: u32, info: crate::company::HostInfo },
 }
 
 /// Server → peer.
@@ -169,6 +181,23 @@ pub enum ServerMsg {
     InviteCode {
         code: String,
         minutes: u32,
+    },
+    /// Answer to `AdminClaim`: this app is now the admin of `company`;
+    /// `join_secret` goes into the company installer's join token.
+    Company {
+        company: String,
+        join_secret: String,
+    },
+    /// Answer to `Directory` / `DirectoryEdit`.
+    Directory(crate::company::Directory),
+    /// Answer to `Enroll`: the computer is on the company's list.
+    Enrolled {
+        company: String,
+    },
+    /// To a company computer (on its `Register` connection): the admin's
+    /// switch for connecting without anyone accepting.
+    CompanyPolicy {
+        unattended: bool,
     },
 }
 
@@ -270,7 +299,7 @@ async fn ask(identity: &Identity, server: &ServerRef, msg: &PeerMsg) -> Result<S
         Some(ServerMsg::Error { message }) => bail!("{}", explain(&message)),
         Some(r) => Ok(r),
         // An older server closes on messages it does not know.
-        None => bail!("the server does not know invites yet: update rider-server"),
+        None => bail!("the server is too old for this: update rider-server"),
     }
 }
 
@@ -290,6 +319,45 @@ pub async fn join(identity: &Identity, server: &ServerRef, code: &str) -> Result
 pub async fn invite(identity: &Identity, server: &ServerRef) -> Result<(String, u32)> {
     match ask(identity, server, &PeerMsg::Invite { version: VERSION }).await? {
         ServerMsg::InviteCode { code, minutes } => Ok((code, minutes)),
+        _ => bail!("unexpected reply from the rendezvous server"),
+    }
+}
+
+/// Enterprise mode: claim the company with the server's one-time setup code
+/// (`rider-server company init`). Returns (company name, join secret).
+pub async fn admin_claim(identity: &Identity, server: &ServerRef, code: &str) -> Result<(String, String)> {
+    let code = code.trim().to_ascii_uppercase();
+    match ask(identity, server, &PeerMsg::AdminClaim { version: VERSION, code }).await? {
+        ServerMsg::Company { company, join_secret } => Ok((company, join_secret)),
+        _ => bail!("unexpected reply from the rendezvous server"),
+    }
+}
+
+/// Enterprise mode, admin only: the company directory, after `edit` if given.
+pub async fn directory(
+    identity: &Identity,
+    server: &ServerRef,
+    edit: Option<crate::company::DirEdit>,
+) -> Result<crate::company::Directory> {
+    let msg = match edit {
+        Some(edit) => PeerMsg::DirectoryEdit { version: VERSION, edit },
+        None => PeerMsg::Directory { version: VERSION },
+    };
+    match ask(identity, server, &msg).await? {
+        ServerMsg::Directory(d) => Ok(d),
+        _ => bail!("unexpected reply from the rendezvous server"),
+    }
+}
+
+/// Enterprise mode: this computer joins the company. Returns its name.
+pub async fn enroll(
+    identity: &Identity,
+    server: &ServerRef,
+    secret: &str,
+    info: crate::company::HostInfo,
+) -> Result<String> {
+    match ask(identity, server, &PeerMsg::Enroll { version: VERSION, secret: secret.into(), info }).await? {
+        ServerMsg::Enrolled { company } => Ok(company),
         _ => bail!("unexpected reply from the rendezvous server"),
     }
 }

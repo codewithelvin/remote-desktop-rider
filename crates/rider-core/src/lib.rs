@@ -2,6 +2,7 @@
 //! pinned mutual-TLS over QUIC, the wire protocol and pixel conversion.
 
 pub mod clipboard;
+pub mod company;
 pub mod diag;
 #[cfg(windows)]
 pub mod dpi;

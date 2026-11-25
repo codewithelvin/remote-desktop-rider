@@ -73,7 +73,10 @@ function Attach($window, $file) {
     [Win]::Front($window) | Out-Null
     Keys "+{TAB}"
     Keys " "
-    Start-Sleep 2
+    # Type only once the file dialog has the keys: in a slow VM the first
+    # characters typed earlier are lost ("\rider-test" became "er-test").
+    Until { [Win]::Title([Win]::GetForegroundWindow()) -match '^(Open|Choose|Select)' } 15 | Out-Null
+    Start-Sleep 1
     # Without the drive: typing ':' needs Shift, which can get lost here.
     Keys (Literal ($file -replace '^[A-Za-z]:', ''))
     Keys "{ENTER}"
@@ -102,7 +105,6 @@ if (-not $h) { throw "no viewer window" }
 Log "window"
 [Win]::ShowWindow($h, 3) | Out-Null   # maximized: room for the chat panel
 Start-Sleep 3
-
 # The service opened the chat window for vagrant, waiting in the taskbar.
 $pp = Until { Panel-Process } 20
 if (-not $pp) { throw "no chat window process" }

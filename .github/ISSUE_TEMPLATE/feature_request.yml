@@ -1,0 +1,26 @@
+name: Feature request
+description: An idea that would make Remote Desktop Rider better.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [roadmap](https://github.com/codewithelvin/remote-desktop-rider/blob/main/docs/ROADMAP.md)
+        first: it may be planned already. Open-ended ideas fit [Discussions](https://github.com/codewithelvin/remote-desktop-rider/discussions) too.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The situation and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you'd like it to work.
+  - type: textarea
+    id: else
+    attributes:
+      label: Anything else
+      description: Workarounds you use now, how other tools do it, screenshots.

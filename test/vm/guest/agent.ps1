@@ -12,7 +12,10 @@
 $dir = "C:\rider-test\agent"
 New-Item -ItemType Directory -Force $dir | Out-Null
 # Leftovers of earlier runs, but not a request that is already waiting.
+# Requests older than 30 s are leftovers too: their test is long gone.
 Get-ChildItem $dir -File -Exclude *.run | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem $dir -Filter *.run -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddSeconds(-30) } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 while ($true) {
     Set-Content "$dir\alive" (Get-Date -Format o)
     foreach ($req in Get-ChildItem $dir -Filter *.run -File -ErrorAction SilentlyContinue) {

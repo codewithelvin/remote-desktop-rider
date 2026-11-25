@@ -43,6 +43,8 @@ fn host_side() -> bool {
 enum Tab {
     Computers,
     ThisComputer,
+    /// Enterprise mode (the company's admin).
+    Enterprise,
     Settings,
 }
 
@@ -267,6 +269,7 @@ pub struct ClientApp {
     /// Checking a server in the background: the result, and whether its
     /// name was verified over HTTPS (rather than a typed fingerprint).
     server_check: Option<std::sync::mpsc::Receiver<(Result<rider_core::rendezvous::ServerRef, String>, bool)>>,
+    enterprise: crate::enterprise::Enterprise,
 }
 
 impl ClientApp {
@@ -322,18 +325,39 @@ impl ClientApp {
             server_edit: None,
             server_msg: None,
             server_check: None,
+            enterprise: crate::enterprise::Enterprise::new(ctx),
         };
         app.refresh_saved_pins();
         app.preview();
         app
     }
 
-    /// `RIDER_PREVIEW=this|settings|add|quick|connect|update-<stage>`: start on
+    /// `RIDER_PREVIEW=this|settings|enterprise[-many|-selected|-empty|-prompt]|enterprise-sign-in[-server]|add|quick|connect|update-<stage>`: start on
     /// that page or dialog, to look at every view (both themes and languages).
     fn preview(&mut self) {
         match std::env::var("RIDER_PREVIEW").as_deref() {
             Ok("this") => self.tab = Tab::ThisComputer,
             Ok("settings") => self.tab = Tab::Settings,
+            Ok("enterprise-sign-in") => self.tab = Tab::Enterprise,
+            Ok("enterprise-sign-in-server") => {
+                self.tab = Tab::Enterprise;
+                // In memory only: nothing is saved in preview.
+                self.cfg.server = rider_core::rendezvous::ServerRef::new("rdr.example.com", &"ab".repeat(32)).ok();
+            }
+            Ok(which) if which.starts_with("enterprise") => {
+                self.tab = Tab::Enterprise;
+                // In memory only: nothing is saved in preview.
+                self.cfg.enterprise = Some(rider_client::config::EnterpriseAdmin {
+                    company: "Northwind".into(),
+                    join_secret: String::new(),
+                });
+                match which {
+                    "enterprise-many" => self.enterprise.preview_many(1500),
+                    other => {
+                        self.enterprise.preview_state(other.trim_start_matches("enterprise").trim_start_matches('-'))
+                    }
+                }
+            }
             Ok("add") => self.open_add(),
             Ok("quick") => self.open_quick(),
             Ok(s) if s.starts_with("update-") => self.updater.preview(&s["update-".len()..]),
@@ -876,9 +900,14 @@ impl ClientApp {
         for (tab, ic, text) in [
             (Tab::Computers, icon::PC, tr("Computers", "Kompüterlər")),
             (Tab::ThisComputer, icon::HOME, tr("This computer", "Bu kompüter")),
+            (Tab::Enterprise, icon::COMPANY, tr("Enterprise", "Müəssisə")),
             (Tab::Settings, icon::SETTINGS, tr("Settings", "Parametrlər")),
         ] {
             if tab == Tab::ThisComputer && !host_side() {
+                continue;
+            }
+            // Only for the company's admin (signed in, or signing in now).
+            if tab == Tab::Enterprise && self.cfg.enterprise.is_none() && self.tab != Tab::Enterprise {
                 continue;
             }
             if widgets::nav_item(ui, ic, text, self.tab == tab) && self.tab != tab {
@@ -1270,6 +1299,23 @@ impl ClientApp {
             self.server_card(ui);
             ui.add_space(10.0);
             self.updates_card(ui);
+            if self.cfg.enterprise.is_none() {
+                ui.add_space(10.0);
+                widgets::card(ui, |ui| {
+                    widgets::section(ui, icon::COMPANY, tr("Enterprise mode", "Müəssisə rejimi"));
+                    widgets::hint(
+                        ui,
+                        tr(
+                            "For the company's admin: look after all company computers from this app.",
+                            "Şirkətin admini üçün: bütün şirkət kompüterlərinə bu proqramdan baxın.",
+                        ),
+                    );
+                    if ui.button(tr("Sign in…", "Daxil ol…")).clicked() {
+                        self.tab = Tab::Enterprise;
+                        self.page_since = ui.input(|i| i.time);
+                    }
+                });
+            }
             if !host_side() {
                 return; // no tray to start into (yet)
             }
@@ -1299,6 +1345,29 @@ impl ClientApp {
                 }
             });
         });
+    }
+
+    fn enterprise_page(&mut self, ui: &mut Ui) {
+        let handle = self.rt.handle().clone();
+        let env = crate::enterprise::Env {
+            rt: &handle,
+            identity: self.identity.as_ref(),
+            server: self.cfg.server.as_ref(),
+            admin: self.cfg.enterprise.as_ref(),
+        };
+        let outcome = self.enterprise.show(ui, &env);
+        let saved = match outcome {
+            Some(crate::enterprise::Outcome::SignedIn(admin)) => self.edit(|c| c.enterprise = Some(admin)),
+            Some(crate::enterprise::Outcome::SignedOut) => self.edit(|c| c.enterprise = None),
+            Some(crate::enterprise::Outcome::OpenSettings) => {
+                self.tab = Tab::Settings;
+                Ok(())
+            }
+            None => Ok(()),
+        };
+        if let Err(e) = saved {
+            self.settings_msg = Some(Err(e));
+        }
     }
 
     /// "Version x is available" above every page while there is one. The
@@ -2263,6 +2332,7 @@ impl eframe::App for ClientApp {
                 match self.tab {
                     Tab::Computers => self.computers(ui),
                     Tab::ThisComputer => self.this_computer(ui),
+                    Tab::Enterprise => self.enterprise_page(ui),
                     Tab::Settings => self.settings(ui),
                 }
             });

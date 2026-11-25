@@ -1,0 +1,66 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time! **Security problems:** please don't post them here, report them privately
+        ([Security → Report a vulnerability](https://github.com/codewithelvin/remote-desktop-rider/security/advisories/new)).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. On the controlling computer, ...
+        2. On the controlled computer, ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: In the app under Settings, or `rider-host.exe info`.
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Where it happens
+      multiple: true
+      options:
+        - The controlling computer (viewer)
+        - The controlled computer (host)
+        - The server (rider-server)
+        - The installer or updates
+        - Enterprise mode
+  - type: input
+    id: os
+    attributes:
+      label: Operating systems
+      placeholder: "Viewer: macOS 15. Host: Windows 11 24H2."
+  - type: dropdown
+    id: route
+    attributes:
+      label: How it connects
+      description: Shown in the session toolbar while connected.
+      options:
+        - Don't know
+        - Direct (LAN)
+        - Direct (hole punching)
+        - Relay
+        - HTTPS tunnel
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Controlled Windows PC: `%ProgramData%\RemoteDesktopRider\host\logs` (`service.log`, `agent.log`).
+        Remove anything private (names, addresses) before pasting.
+      render: text

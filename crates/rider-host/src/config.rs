@@ -35,6 +35,20 @@ pub struct HostConfig {
     /// language of its own. Set by Manage.
     #[serde(default)]
     pub language: Option<String>,
+    /// Enterprise mode: this computer belongs to a company (`rider-host enroll`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company: Option<CompanyLink>,
+}
+
+/// The company this computer joined.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct CompanyLink {
+    pub name: String,
+    /// The admin app's key (hex), pinned from the join token.
+    pub admin: String,
+    /// Installed as unattended-capable (the admin must also switch it on).
+    #[serde(default)]
+    pub unattended: bool,
 }
 
 fn yes() -> bool {
@@ -54,6 +68,7 @@ impl Default for HostConfig {
             server: None,
             auto_update: true,
             language: None,
+            company: None,
         }
     }
 }
@@ -102,6 +117,13 @@ impl HostConfig {
         !self.pin_hash.is_empty()
     }
 
+    /// Whether anyone could connect: a PIN for paired devices, or the
+    /// company's admin (no PIN: the person here accepts). A company computer
+    /// installed by Group Policy has no PIN, and needs none.
+    pub fn can_accept(&self) -> bool {
+        self.has_pin() || self.company.is_some()
+    }
+
     pub fn set_pin(&mut self, pin: &str) -> Result<()> {
         let mut salt = [0u8; 16];
         getrandom::fill(&mut salt).map_err(|e| anyhow::anyhow!("rng: {e}"))?;
@@ -120,8 +142,16 @@ impl HostConfig {
         }
     }
 
+    /// Devices that may connect: the paired ones and the company's admin
+    /// (who is asked for no PIN; the person here accepts instead).
     pub fn trusted(&self) -> Vec<Fingerprint> {
-        self.trusted_clients.iter().filter_map(|c| fp_from_hex(&c.fingerprint).ok()).collect()
+        let paired = self.trusted_clients.iter().filter_map(|c| fp_from_hex(&c.fingerprint).ok());
+        paired.chain(self.company_admin()).collect()
+    }
+
+    /// The company's admin, pinned when this computer joined.
+    pub fn company_admin(&self) -> Option<Fingerprint> {
+        self.company.as_ref().and_then(|c| fp_from_hex(&c.admin).ok())
     }
 
     pub fn client_name(&self, fp: &Fingerprint) -> Option<String> {

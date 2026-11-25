@@ -55,15 +55,18 @@ impl Diag {
         let sent = stats.path.sent_packets.saturating_sub(self.sent);
         let lost = stats.path.lost_packets.saturating_sub(self.lost);
         let rx = stats.udp_rx.bytes.saturating_sub(self.rx_bytes);
+        let shown = frames.wrapping_sub(self.frames);
         let sample = Sample {
             rtt_ms: u16_of(shared.rtt_us.load(Ordering::Relaxed) / 1000),
             min_rtt_ms: u16_of(stats.path.min_rtt.as_millis()),
-            loss_permille: u16_of(lost * 1000 / sent.max(1)),
+            loss_permille: diag::loss_permille(lost, sent),
             cwnd_kb: u32::try_from(stats.path.cwnd / 1024).unwrap_or(u32::MAX),
-            fps: u16_of(u64::from(frames.wrapping_sub(self.frames)) / secs),
+            fps: u16_of(u64::from(shown) / secs),
             kbps: u32::try_from(rx * 8 / 1000 / secs).unwrap_or(u32::MAX),
-            frame_ms: shared.decode_us.load(Ordering::Relaxed) as f32 / 1000.0,
-            latency_ms: u16_of(shared.latency_us.load(Ordering::Relaxed) / 1000),
+            frame_ms: if shown > 0 { shared.decode_us.load(Ordering::Relaxed) as f32 / 1000.0 } else { 0.0 },
+            // Only for frames shown in this sample: a still screen sends
+            // none, and the last frame's value would repeat for hours.
+            latency_ms: if shown > 0 { u16_of(shared.latency_us.load(Ordering::Relaxed) / 1000) } else { 0 },
             ..Sample::default()
         };
         (self.frames, self.sent, self.lost, self.rx_bytes) =

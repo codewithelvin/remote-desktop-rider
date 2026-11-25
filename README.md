@@ -12,6 +12,8 @@
   <img alt="Windows, macOS, Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4">
   <img alt="Server: Linux" src="https://img.shields.io/badge/server-Linux%20x86__64-555">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2ea44f"></a>
+  <a href="https://github.com/codewithelvin/remote-desktop-rider/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/codewithelvin/remote-desktop-rider/total?color=555"></a>
 </p>
 
 <p align="center">
@@ -20,6 +22,7 @@
   <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#security"><b>Security</b></a> ·
   <a href="#self-hosting-the-server"><b>Self-hosting</b></a> ·
+  <a href="docs/ENTERPRISE.md"><b>Enterprise</b></a> ·
   <a href="#troubleshooting"><b>Troubleshooting</b></a> ·
   <a href="#code-signing"><b>Code signing</b></a>
 </p>
@@ -41,6 +44,7 @@
 | **Self-hosted** | The optional `rider-server` runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions. |
 | **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
 | **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow** with an access level (Full access, Standard or View only) they can change at any time. The code works once and expires after 10 minutes. |
+| **Enterprise mode** | One admin looks after a company's computers by floor and room; each employee accepts or declines the admin's request. Rolled out by Group Policy with the company installer. See [the guide for IT](docs/ENTERPRISE.md). |
 | **English and Azerbaijani** | The whole interface in either language, switched with a click on the flag. |
 | **Windows, macOS and Linux** | Control computers from Windows, a Mac (Apple Silicon and Intel) or Debian/Ubuntu. Being controlled is Windows-only for now. |
 | **Small and native** | One ~8 MB installer. Rust end to end. |
@@ -162,7 +166,7 @@ Click the small tab at the top centre of the session window to open the toolbar:
 | Session timer | How long you have been connected |
 | **Full screen** | Toggle full screen |
 | **Ctrl+Alt+Del** | Send Ctrl+Alt+Del to the remote computer |
-| **1, 2, …** | Switch between remote monitors (shown when there are several) |
+| **1 DELL U2720Q, 2 …** | Switch between remote monitors, by their own names (shown when there are several; the one on screen is also named in the top-left corner) |
 | **Quality ▾** | Auto / 1080p / 720p / 480p |
 | Pin | Keep the toolbar open instead of hiding it |
 | **Disconnect** | End the session (click it twice: the first click asks "Click again to disconnect") |
@@ -175,6 +179,7 @@ Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.
 | `Ctrl+Alt+End` | Ctrl+Alt+Del on the remote computer (login / lock screen) |
 | `Ctrl+Alt+Shift+L` | Lock the remote computer |
 | `Ctrl+Alt+Shift+F` | Toggle full screen |
+| `Alt+1` … `Alt+9` | Show that remote monitor |
 | `Ctrl+Alt+Shift+M` | Next monitor |
 | `Ctrl+Alt+Shift+Q` | Disconnect |
 | `Ctrl+Alt+Shift+C` | Open or close the chat |
@@ -182,6 +187,28 @@ Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.
 
 The text clipboard syncs both ways. The title bar shows fps, round-trip time,
 estimated latency and the encoder in use.
+
+## Enterprise mode
+
+For companies: one IT admin looks after every Windows PC from the app, on
+your own `rider-server`.
+
+<p align="center">
+  <img src="docs/screenshots/enterprise.png" alt="The Enterprise screen: floors and rooms on the left, the computers of the selected room as tiles on the right" width="820">
+</p>
+
+- **Rolled out by Group Policy.** A startup script installs Rider on every
+  domain PC and joins it with a token. New PCs wait under *Unassigned*; drag
+  them to their floor and room (many at once with Ctrl or Shift).
+- **The employee decides.** Each connection asks the person at the PC to
+  *Accept* or *Decline*. No answer within a minute, a locked screen or nobody
+  signed in: no session.
+- **Unattended only when both agree:** the installer's `/UNATTENDED` switch
+  *and* the admin's switch for that PC.
+- **One admin, pinned.** Company PCs trust only the admin's device key; other
+  devices can't list or reach them. Tested with 5,000 computers.
+
+Setting it up: [the guide for IT](docs/ENTERPRISE.md).
 
 ## How it connects
 
@@ -572,6 +599,18 @@ It only connects to:
 
 The website's download buttons ask GitHub's public API for the latest release
 files; see [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome.
+
+- **Questions and ideas:** [Discussions](https://github.com/codewithelvin/remote-desktop-rider/discussions).
+- **Bugs and feature requests:** [Issues](https://github.com/codewithelvin/remote-desktop-rider/issues/new/choose).
+- **Code:** [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build, test (unit tests and the VM tests
+  for Windows, Linux and macOS) and what a pull request needs.
+- **Security problems:** please report them privately, see [SECURITY.md](SECURITY.md).
+
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

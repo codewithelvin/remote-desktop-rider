@@ -8,8 +8,8 @@
 //! `chat "<text>"`, `send-file "<path>"`, `cancel-file <id>`, `end`. When the
 //! input closes the session is over and the window goes.
 
-use crate::widgets::{self, GREEN};
-use eframe::egui::{self, Align, Layout, Ui};
+use crate::widgets::{self, GREEN, icon};
+use eframe::egui::{self, Align, Layout, RichText, Ui};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rider_core::i18n::tr;
 use rider_core::trf;
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SHOW_WINDOW_CMD, SW_MINIMIZE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, ShowWindow,
+    SHOW_WINDOW_CMD, SW_MINIMIZE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, ShowWindow,
 };
 
 pub const TITLE: &str = "Chat - Remote Desktop Rider";
@@ -31,6 +31,11 @@ enum Event {
     Session {
         device: String,
         files: bool,
+    },
+    /// The company's admin asks to connect: accept or decline within `seconds`.
+    Request {
+        company: String,
+        seconds: u64,
     },
     Chat(String),
     File {
@@ -62,6 +67,8 @@ pub struct Panel {
     chat: Chat,
     /// Where each received file is.
     files: HashMap<u64, PathBuf>,
+    /// The company's admin waits for an answer (company, until when, how long in all).
+    request: Option<(String, std::time::Instant, f32)>,
 }
 
 impl Panel {
@@ -92,6 +99,10 @@ impl Panel {
                             if matches!(ev, Event::Chat(_) | Event::File { mine: false, .. }) {
                                 show(SW_SHOWNOACTIVATE);
                             }
+                            // A question needs the person: up front, with the keyboard.
+                            if matches!(ev, Event::Request { .. }) {
+                                show(if quiet() { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL });
+                            }
                             let _ = input_tx.send(ev);
                             ctx2.request_repaint();
                         }
@@ -105,7 +116,7 @@ impl Panel {
         let mut chat = Chat::new("");
         chat.closable = false;
         chat.heading = false;
-        Self { events, tx, device: None, chat, files: HashMap::new() }
+        Self { events, tx, device: None, chat, files: HashMap::new(), request: None }
     }
 
     /// One line to the host.
@@ -150,6 +161,17 @@ impl Panel {
                 }
                 Event::FileFailed { id, reason } => self.chat.file_failed(id, reason),
                 Event::Notice(text) => self.chat.notice(text),
+                Event::Request { company, seconds } => {
+                    let seconds = seconds.clamp(5, 300);
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+                    self.request = Some((company, until, seconds as f32));
+                    if !quiet() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                            egui::UserAttentionType::Critical,
+                        ));
+                    }
+                }
             }
         }
     }
@@ -226,6 +248,95 @@ impl Panel {
     }
 }
 
+impl Panel {
+    /// Accept or decline the company's admin. After Accept the window is
+    /// the session's chat, waiting in the taskbar like any other.
+    fn answer(&mut self, yes: bool) {
+        self.request = None;
+        Self::send(if yes { "accept" } else { "decline" });
+        if yes {
+            show(SW_MINIMIZE);
+        }
+    }
+
+    /// Who asks, and Accept / Decline, with the time left.
+    fn request_page(&mut self, ui: &mut Ui) {
+        let Some((company, until, total)) = self.request.clone() else { return };
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            self.answer(false);
+            return;
+        }
+        // Smooth enough for the bar, cheap enough for a minute.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        let device = self.device.clone().unwrap_or_default();
+        let mut choice = None;
+        egui::CentralPanel::default().show(ui, |ui| {
+            // The content in the middle of the window, whatever its height.
+            const CONTENT_H: f32 = 330.0;
+            ui.add_space(((ui.available_height() - CONTENT_H) / 2.0).max(12.0));
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(320.0);
+                widgets::avatar(ui, icon::COMPANY, None);
+                ui.add_space(14.0);
+                ui.label(widgets::title(tr("Remote access request", "Uzaqdan giriş sorğusu"), 17.0));
+                ui.add_space(14.0);
+                ui.label(widgets::title(&device, 15.0));
+                ui.label(RichText::new(trf!("Admin of {company}", "{company} admini")).weak());
+                ui.add_space(12.0);
+                ui.label(tr("wants to see and control this computer.", "bu kompüteri görmək və idarə etmək istəyir."));
+                ui.add_space(6.0);
+                widgets::hint(
+                    ui,
+                    tr(
+                        "Nothing happens unless you accept. You can end the session at any time.",
+                        "Siz qəbul etməsəniz, heç nə baş vermir. Seansı istənilən vaxt bitirə bilərsiniz.",
+                    ),
+                );
+                ui.add_space(18.0);
+                // Two equal buttons, centred; Accept first (Tab order too).
+                const BUTTON: egui::Vec2 = egui::vec2(124.0, 34.0);
+                const GAP: f32 = 10.0;
+                let row = egui::vec2(BUTTON.x * 2.0 + GAP, BUTTON.y);
+                ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = GAP;
+                    let accept = egui::Button::new(
+                        RichText::new(tr("Accept", "Qəbul et")).family(widgets::semibold()).color(egui::Color32::WHITE),
+                    )
+                    .fill(widgets::ACCENT);
+                    if ui.add_sized(BUTTON, accept).clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.add_sized(BUTTON, egui::Button::new(tr("Decline", "Rədd et"))).clicked() {
+                        choice = Some(false);
+                    }
+                });
+                ui.add_space(18.0);
+                // The time left: a thin bar running down, and the seconds.
+                let (bar, _) = ui.allocate_exact_size(egui::vec2(row.x, 4.0), egui::Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(bar, 2.0, ui.visuals().widgets.noninteractive.bg_stroke.color);
+                let part = (left.as_secs_f32() / total).clamp(0.0, 1.0);
+                let done = egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * part, bar.height()));
+                let color = if left.as_secs() <= 10 { widgets::AMBER } else { widgets::ACCENT };
+                p.rect_filled(done, 2.0, color);
+                ui.add_space(6.0);
+                let secs = left.as_secs() + 1;
+                widgets::hint(ui, &trf!("Declines by itself in {secs} s", "{secs} san. sonra avtomatik rədd ediləcək"));
+            });
+        });
+        if let Some(yes) = choice {
+            self.answer(yes);
+        }
+    }
+}
+
+/// Screenshots on a developer's own desktop (`RIDER_PREVIEW` set): the
+/// request comes up without taking the keyboard from what they are doing.
+fn quiet() -> bool {
+    std::env::var_os("RIDER_PREVIEW").is_some()
+}
+
 /// Something new from the viewer: flash the window (the input thread has
 /// already brought it up, without taking the keyboard).
 fn attention(ctx: &egui::Context) {
@@ -252,6 +363,15 @@ impl eframe::App for Panel {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
+        if self.request.is_some() {
+            // Closing the window while asked counts as Decline.
+            if ctx.input(|i| i.viewport().close_requested()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.answer(false);
+            }
+            self.request_page(ui);
+            return;
+        }
         // The chat stays for the whole session: closing only puts it away.
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -276,6 +396,7 @@ fn parse(line: &str) -> Option<Event> {
             files: v.get("files").and_then(serde_json::Value::as_bool).unwrap_or(false),
         },
         "chat" => Event::Chat(s("text")),
+        "request" => Event::Request { company: s("company"), seconds: n("seconds") },
         "file" => Event::File {
             id: n("id"),
             mine: v.get("dir").and_then(|d| d.as_str()) == Some("out"),
@@ -307,6 +428,10 @@ mod tests {
         assert_eq!(
             parse(r#"{"event":"file_done","id":2,"path":"C:\\x\\a.txt"}"#),
             Some(Event::FileDone { id: 2, path: Some(PathBuf::from(r"C:\x\a.txt")) })
+        );
+        assert_eq!(
+            parse(r#"{"event":"request","company":"Northwind","seconds":60}"#),
+            Some(Event::Request { company: "Northwind".into(), seconds: 60 })
         );
         assert_eq!(parse("garbage"), None);
     }

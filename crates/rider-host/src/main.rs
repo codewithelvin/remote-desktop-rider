@@ -9,6 +9,7 @@ mod autoupdate;
 mod banner;
 mod capture;
 mod chat;
+mod company;
 mod config;
 mod cursor;
 mod input;
@@ -77,6 +78,18 @@ enum Cmd {
     },
     /// An invite code for another computer to join this computer's server.
     Invite,
+    /// Enterprise mode: join a company with the join token from its admin
+    /// (the company installer runs this).
+    Enroll {
+        /// The join token (rdr1.…).
+        token: String,
+        /// The admin may connect without anyone accepting, once the admin
+        /// also switches it on for this computer (servers, kiosks).
+        #[arg(long)]
+        unattended: bool,
+    },
+    /// Enterprise mode: leave the company (its admin can no longer connect).
+    LeaveCompany,
     /// One-time support session: get a short code from the server, wait for
     /// a helper to enter it, ask here before letting them in. No admin rights,
     /// PIN or pairing; nothing is kept afterwards.
@@ -166,7 +179,7 @@ fn main() -> Result<()> {
         Cmd::Service { action } => match action {
             ServiceCmd::Run => service::dispatch()?,
             ServiceCmd::Install => {
-                if !cfg.has_pin() {
+                if !cfg.can_accept() {
                     bail!("set a PIN first: `rider-host set-pin`");
                 }
                 Identity::load_or_create(&dir)?;
@@ -255,6 +268,18 @@ fn main() -> Result<()> {
                 println!("Invite code: {code} (valid {minutes} minutes, for one computer)");
             }
         }
+        Cmd::Enroll { token, unattended } => {
+            let identity = Identity::load_or_create(&dir)?;
+            let company = company::enroll(&mut cfg, &identity, &token, unattended)?;
+            println!("Joined \"{company}\": the admin sees this computer under Unassigned.");
+        }
+        Cmd::LeaveCompany => match cfg.company.take() {
+            Some(c) => {
+                cfg.save()?;
+                println!("Left \"{}\": its admin can no longer connect.", c.name);
+            }
+            None => println!("This computer is not in a company."),
+        },
         Cmd::Support { .. } => unreachable!("handled above"),
         Cmd::Language { lang } => {
             cfg.language = Some(lang);
@@ -289,11 +314,31 @@ fn main() -> Result<()> {
             println!("Host name:    {}", cfg.name);
             println!("Fingerprint:  {}", fp_short(&identity.fingerprint()));
             println!("Port (UDP):   {}", cfg.port);
-            println!("PIN set:      {}", if cfg.has_pin() { "yes" } else { "NO - run `rider-host set-pin`" });
+            let pin = match (cfg.has_pin(), cfg.company.is_some()) {
+                (true, _) => "yes",
+                (false, true) => "no (not needed: the company's admin is accepted, not a PIN)",
+                (false, false) => "NO - run `rider-host set-pin`",
+            };
+            println!("PIN set:      {pin}");
             println!("Paired:       {} device(s)", cfg.trusted_clients.len());
             println!("Server:       {}", cfg.server.as_ref().map_or("none (direct/LAN only)", |s| s.addr.as_str()));
+            if let Some(c) = &cfg.company {
+                let unattended = if c.unattended { ", unattended-capable" } else { "" };
+                println!("Company:      {}{unattended}", c.name);
+            }
             println!("Service:      {}", service_status());
             println!("State dir:    {}", dir.display());
+            // As the viewer will name them (only from a signed-in desktop).
+            for m in capture::monitors().unwrap_or_default() {
+                let primary = if m.info.primary { ", primary" } else { "" };
+                println!(
+                    "Monitor {}:    {} ({}x{}{primary})",
+                    m.info.index + 1,
+                    m.info.name,
+                    m.info.width,
+                    m.info.height
+                );
+            }
         }
         Cmd::Pair => {
             let _paused = service::Paused::service()?;
@@ -310,7 +355,7 @@ fn main() -> Result<()> {
             serve(cfg, Identity::load_or_create(&dir)?, mode)?;
         }
         Cmd::Agent => {
-            if !cfg.has_pin() {
+            if !cfg.can_accept() {
                 tracing::error!("no PIN set; the agent will not accept connections. Run `rider-host set-pin`.");
                 // Avoid a tight restart loop in the supervisor.
                 std::thread::sleep(std::time::Duration::from_secs(30));
@@ -384,7 +429,7 @@ enum Mode {
 
 fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
     let support = mode == Mode::Support;
-    if !cfg.has_pin() && !support {
+    if !cfg.can_accept() && !support {
         bail!("no PIN set. Run `rider-host set-pin` first - every session must provide it.");
     }
     let pairing = matches!(mode, Mode::PairOnce | Mode::Interactive { pairing: true } | Mode::Support);

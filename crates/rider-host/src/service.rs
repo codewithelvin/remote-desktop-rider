@@ -361,6 +361,10 @@ fn run_service() -> Result<()> {
 struct Agent {
     process: HANDLE,
     session: u32,
+    /// Kill-on-close job holding the agent: one per agent, because Windows
+    /// ties a job to the session of its first process (a job of an earlier
+    /// session refuses the agent of a new one, "access denied", for good).
+    job: HANDLE,
 }
 
 impl Agent {
@@ -379,12 +383,12 @@ impl Drop for Agent {
             // by the time the service reports Stopped (upgrades replace it).
             let _ = WaitForSingleObject(self.process, 5000);
             let _ = CloseHandle(self.process);
+            let _ = CloseHandle(self.job);
         }
     }
 }
 
 fn supervise(stop: &mpsc::Receiver<()>, updater: Option<&crate::autoupdate::Updater>) -> Result<()> {
-    let job = kill_on_close_job()?;
     // Auto-reset; the default DACL of a SYSTEM process admits only SYSTEM and Administrators.
     // SAFETY: valid name, no security attributes.
     let sas = unsafe { CreateEventW(None, false, false, system::SAS_EVENT)? };
@@ -403,10 +407,10 @@ fn supervise(stop: &mpsc::Receiver<()>, updater: Option<&crate::autoupdate::Upda
             if let Some(u) = updater {
                 u.reset_session();
             }
-            match spawn_agent(&exe, session, job) {
-                Ok(process) => {
+            match spawn_agent(&exe, session) {
+                Ok((process, job)) => {
                     tracing::info!("agent started in session {session}");
-                    agent = Some(Agent { process, session });
+                    agent = Some(Agent { process, session, job });
                 }
                 Err(e) => tracing::error!("cannot start agent in session {session}: {e:#}"),
             }
@@ -428,7 +432,6 @@ fn supervise(stop: &mpsc::Receiver<()>, updater: Option<&crate::autoupdate::Upda
     // SAFETY: handles created above, closed once.
     unsafe {
         let _ = CloseHandle(sas);
-        let _ = CloseHandle(job);
     }
     Ok(())
 }
@@ -450,18 +453,44 @@ fn kill_on_close_job() -> Result<HANDLE> {
 }
 
 /// Launch `exe agent` as SYSTEM in `session` on the interactive window station.
-fn spawn_agent(exe: &Path, session: u32, job: HANDLE) -> Result<HANDLE> {
-    // SAFETY: every handle is closed on all paths; the wide strings outlive
-    // the CreateProcessAsUserW call.
+fn spawn_agent(exe: &Path, session: u32) -> Result<(HANDLE, HANDLE)> {
+    let job = kill_on_close_job().context("job")?;
+    match own_token_in(session).and_then(|token| start_agent(exe, token, job)) {
+        Ok(process) => Ok((process, job)),
+        Err(e) => {
+            // SAFETY: the job created above, not used elsewhere.
+            unsafe {
+                let _ = CloseHandle(job);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// A primary copy of this process's token (SYSTEM), moved into `session`.
+fn own_token_in(session: u32) -> Result<HANDLE> {
+    // SAFETY: handles closed on every path; `session` outlives the call.
     unsafe {
         let mut own = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut own)?;
+        OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut own).context("own token")?;
         let mut token = HANDLE::default();
         let dup = DuplicateTokenEx(own, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut token);
         let _ = CloseHandle(own);
-        dup?;
+        dup.context("copy of own token")?;
+        if let Err(e) = SetTokenInformation(token, TokenSessionId, &session as *const u32 as _, 4) {
+            let _ = CloseHandle(token);
+            return Err(anyhow::Error::from(e).context("token into the session"));
+        }
+        Ok(token)
+    }
+}
+
+/// Start `exe agent` with `token` (closed here) on the interactive desktop,
+/// inside `job`.
+fn start_agent(exe: &Path, token: HANDLE, job: HANDLE) -> Result<HANDLE> {
+    // SAFETY: the wide strings outlive the call; handles closed on every path.
+    unsafe {
         let result = (|| {
-            SetTokenInformation(token, TokenSessionId, &session as *const u32 as _, 4)?;
             let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
             let si = STARTUPINFOW {
                 cb: std::mem::size_of::<STARTUPINFOW>() as u32,
@@ -482,12 +511,13 @@ fn spawn_agent(exe: &Path, session: u32, job: HANDLE) -> Result<HANDLE> {
                 PCWSTR::null(),
                 &si,
                 &mut pi,
-            )?;
+            )
+            .context("start the agent")?;
             let _ = CloseHandle(pi.hThread);
             if let Err(e) = AssignProcessToJobObject(job, pi.hProcess) {
                 let _ = TerminateProcess(pi.hProcess, 1);
                 let _ = CloseHandle(pi.hProcess);
-                return Err(e.into());
+                return Err(anyhow::Error::from(e).context("into the job"));
             }
             anyhow::Ok(pi.hProcess)
         })();

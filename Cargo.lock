@@ -3429,7 +3429,7 @@ dependencies = [
 
 [[package]]
 name = "rider-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3449,7 +3449,7 @@ dependencies = [
 
 [[package]]
 name = "rider-client"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -3464,6 +3464,7 @@ dependencies = [
  "rider-ui",
  "rpassword",
  "serde",
+ "serde_json",
  "softbuffer",
  "tokio",
  "toml",
@@ -3475,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "rider-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3498,7 +3499,7 @@ dependencies = [
 
 [[package]]
 name = "rider-host"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3522,7 +3523,7 @@ dependencies = [
 
 [[package]]
 name = "rider-media"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "openh264",
@@ -3533,14 +3534,17 @@ dependencies = [
 
 [[package]]
 name = "rider-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
  "futures-util",
  "getrandom 0.3.4",
+ "hex",
+ "postcard",
  "quinn",
  "rider-core",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -3550,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "rider-ui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "egui",

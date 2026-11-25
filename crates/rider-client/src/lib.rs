@@ -3,6 +3,7 @@
 //! `rider-client` CLI and the desktop app.
 
 pub mod app;
+mod badge;
 mod chat;
 pub mod config;
 pub mod diag;
@@ -310,6 +311,62 @@ pub async fn quick(
         // The host's text is protocol English; this one the helper should read in their language.
         Some(HostMsg::AuthResult { ok: false, message }) if message.contains("declined") => {
             bail!(tr("the person at that computer declined", "həmin kompüterdəki şəxs imtina etdi"))
+        }
+        Some(HostMsg::AuthResult { ok: false, message }) => bail!("{message}"),
+        Some(HostMsg::Bye { reason }) => bail!("{reason}"),
+        _ => bail!(tr("the other computer closed the connection", "digər kompüter bağlantını bağladı")),
+    }
+    let relayed = matches!(path, Path::Relay(_));
+    Ok((net::Session { conn, send, recv, relayed }, path.to_string(), host_name))
+}
+
+/// Enterprise mode: the company's admin connects to one of its computers.
+/// No PIN: the person there accepts or declines (unless the computer is
+/// unattended). `waiting(host name)` once it is reached and asking.
+/// Returns the session, its route and the computer's name.
+/// `cancel`: the admin gave up while the person there is still being asked;
+/// the connection is closed properly, so their window goes away at once.
+pub async fn company_connect(
+    cfg: &ClientConfig,
+    identity: &Identity,
+    host: Fingerprint,
+    waiting: impl FnOnce(&str),
+    cancel: impl std::future::Future<Output = ()>,
+) -> Result<(net::Session, String, String)> {
+    let Some(server) = &cfg.server else {
+        bail!(tr("Enterprise mode needs the company's server", "Müəssisə rejimi üçün şirkətin serveri lazımdır"));
+    };
+    let (conn, path) = via_server(identity, server, Target::Host(host), Some(host), None, false).await?;
+    let (send, mut recv, host_name) = hello(&conn, &cfg.device_name, false).await?;
+    waiting(&host_name);
+    let answer = tokio::select! {
+        answer = read_msg::<HostMsg>(&mut recv) => answer?,
+        () = cancel => {
+            conn.close(0u32.into(), b"cancelled");
+            // Time for the close to go out before this process ends.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            bail!(tr("cancelled", "ləğv edildi"));
+        }
+    };
+    match answer {
+        Some(HostMsg::AuthResult { ok: true, .. }) => {}
+        Some(HostMsg::AuthResult { ok: false, message }) if message.contains("declined") => {
+            bail!(tr("the person at that computer declined", "həmin kompüterdəki şəxs imtina etdi"))
+        }
+        Some(HostMsg::AuthResult { ok: false, message }) if message.contains("did not answer") => {
+            bail!(tr("nobody answered at that computer", "həmin kompüterdə heç kim cavab vermədi"))
+        }
+        Some(HostMsg::AuthResult { ok: false, message }) if message.contains("is locked") => {
+            bail!(tr(
+                "that computer is locked: the person there is away",
+                "həmin kompüter kilidlidir: oradakı şəxs yerində deyil"
+            ))
+        }
+        Some(HostMsg::AuthResult { ok: false, message }) if message.contains("nobody is signed in") => {
+            bail!(tr(
+                "nobody is signed in at that computer to accept",
+                "həmin kompüterdə qəbul etmək üçün heç kim daxil olmayıb"
+            ))
         }
         Some(HostMsg::AuthResult { ok: false, message }) => bail!("{message}"),
         Some(HostMsg::Bye { reason }) => bail!("{reason}"),

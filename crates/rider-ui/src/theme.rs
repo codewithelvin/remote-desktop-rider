@@ -35,6 +35,9 @@ pub mod icon {
     pub const SEND: &str = "\u{E724}";
     pub const FILE: &str = "\u{E8A5}";
     pub const CHAT: &str = "\u{E8BD}";
+    pub const COMPANY: &str = "\u{E716}";
+    pub const SEARCH: &str = "\u{E721}";
+    pub const REFRESH: &str = "\u{E72C}";
 }
 
 /// macOS and Linux: the same icons from egui's bundled emoji fonts.
@@ -62,6 +65,9 @@ pub mod icon {
     pub const SEND: &str = "➤";
     pub const FILE: &str = "📄";
     pub const CHAT: &str = "💬";
+    pub const COMPANY: &str = "👥";
+    pub const SEARCH: &str = "🔍";
+    pub const REFRESH: &str = "🔄";
 }
 
 pub fn semibold() -> FontFamily {

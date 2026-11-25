@@ -10,6 +10,8 @@ Remove-Item $out, $cmd -ErrorAction SilentlyContinue
 New-Item -ItemType File $cmd | Out-Null
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = "C:\Program Files\RemoteDesktopRider\rider-host.exe"
+# Compatibility runs: an older host build dropped in as host-override.exe.
+if (Test-Path C:\rider-test\host-override.exe) { $psi.FileName = "C:\rider-test\host-override.exe" }
 $psi.Arguments = "--json support $Server $Fingerprint"
 $psi.UseShellExecute = $false
 $psi.RedirectStandardInput = $true

@@ -13,7 +13,10 @@
 #   vagrant winrm -c 'powershell -ExecutionPolicy Bypass -File C:\rider-test\check.ps1'
 #
 # Provisioning runs elevated over WinRM, as an administrator would.
-# The VM shows a GUI so you can watch the login screen, lock screen and UAC.
+# Kept small so it runs beside builds and Docker: 3 GB, 4 cores at 80%, no window
+# (the desktop is there all the same; the tests capture it). To watch the
+# login screen, lock screen and UAC: RIDER_VM_GUI=1 vagrant up. Inside,
+# guest/slim.ps1 turns off what the tests never use (on every `vagrant up`).
 
 TEST_PIN = ENV.fetch("RIDER_TEST_PIN", "rider-test-pin")
 HOST_IP = "192.168.56.50"
@@ -23,7 +26,13 @@ Vagrant.configure("2") do |config|
   config.vm.hostname = "rider-vm"
   config.vm.communicator = "winrm"
   config.vm.boot_timeout = 900
-  config.vm.network "private_network", ip: HOST_IP
+  # `vagrant halt`: power off after 20 s instead of waiting 5 min for
+  # Windows to finish shutting down (nothing in the VM needs saving).
+  config.vm.graceful_halt_timeout = 20
+  # Windows keeps the fixed address it got on the first `vagrant up`; setting
+  # it again over WinRM took 2 minutes of every boot. (A new VM: comment
+  # auto_config out for its first `vagrant up`.)
+  config.vm.network "private_network", ip: HOST_IP, auto_config: false
 
   # Only the release binaries are shared; the service copies its own to Program Files.
   config.vm.synced_folder ".", "/vagrant", disabled: true
@@ -34,11 +43,15 @@ Vagrant.configure("2") do |config|
 
   config.vm.provider "virtualbox" do |vb|
     vb.name = "rider-test-host"
-    vb.gui = true
-    vb.memory = 6144
+    vb.gui = ENV["RIDER_VM_GUI"] == "1"
+    vb.memory = 3072
+    # 4 cores capped at 80% of their time (at 50% the video tests time out; with
+    # fewer cores the firmware hangs under Hyper-V, VirtualBox NEM mode).
     vb.cpus = 4
-    vb.customize ["modifyvm", :id, "--graphicscontroller", "vboxsvga", "--vram", "128"]
+    vb.customize ["modifyvm", :id, "--cpu-execution-cap", "80"]
+    vb.customize ["modifyvm", :id, "--graphicscontroller", "vboxsvga", "--vram", "64"]
     vb.customize ["modifyvm", :id, "--clipboard-mode", "disabled"]
+    vb.customize ["modifyvm", :id, "--audio-enabled", "off", "--usb-ohci", "off", "--usb-ehci", "off", "--usb-xhci", "off"]
   end
 
   config.vm.provision "rider", type: "shell", privileged: true, env: { "RIDER_PIN" => TEST_PIN }, inline: <<~'PS1'
@@ -53,8 +66,10 @@ Vagrant.configure("2") do |config|
     Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name EnableLUA -Value 1
   PS1
 
-  # The tests' helper in the VM (guest/agent.ps1): on every `vagrant up`, so
-  # an existing VM gets it too.
-  config.vm.provision "agent", type: "shell", privileged: true, run: "always",
-    inline: 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\rider-test\install-agent.ps1'
+  # Once, in one elevated WinRM call (each one costs a minute or two in this
+  # VM): Windows as light as it can be (guest/slim.ps1), then the tests'
+  # helper (guest/agent.ps1), which from then on starts by itself at every
+  # boot. After changing either: vagrant provision --provision-with setup
+  config.vm.provision "setup", type: "shell", privileged: true,
+    inline: '& C:\rider-test\slim.ps1; & C:\rider-test\install-agent.ps1'
 end

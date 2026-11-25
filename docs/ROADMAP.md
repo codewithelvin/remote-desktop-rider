@@ -305,7 +305,7 @@ a reason. Without someone at the host (unattended, until the session panel),
 files dropped on the window still go to `Downloads\Rider`. Control messages a peer does not know are
 skipped (from `rider/4` on), so later additions cannot break a session.
 
-## Milestone 7: Enterprise mode (design agreed 2026-11-25, not started)
+## Milestone 7: Enterprise mode (design agreed 2026-11-25; phases 1-5 built, not released)
 
 One admin looks after a company's computers (1000+) from the same app.
 The core (sessions, video, chat, security) is unchanged; what is new is a
@@ -315,14 +315,18 @@ company list on the server and a console for it.
 
 - Employee computers stay **plain clients**: no console, nothing new to learn.
 - The admin turns on **Enterprise mode** in the app by **signing in to the
-  company server** (server + admin account; no license key). The server
-  confirms the account is the admin and the Enterprise section appears.
+  company server** with a **one-time setup code** (printed by
+  `rider-server company init` on the server; no password, no license key).
+  That app's own key becomes the admin; the Enterprise section appears.
 - **One admin** to start with (no roles or scopes yet).
 
 **How computers join**
 
 - The company's computers are domain-joined, so IT pushes RDR to them with
-  Group Policy (or Intune), which also keeps them updated.
+  Group Policy: a ready **startup script** runs the normal installer
+  silently with the company's join token
+  (`rdr-setup.exe /VERYSILENT /ENROLL=<token>`); no MSI. Updates then come
+  through the app's own updater.
 - The admin downloads a **company installer** from Enterprise mode: the
   normal installer with the company's join token inside. Pushed by Group
   Policy or run by hand, it installs RDR and the PC joins the company list
@@ -350,6 +354,34 @@ company list on the server and a console for it.
   **both** agree: the computer was installed as unattended-capable (a
   separate company installer / policy value) **and** the admin turns it on
   for that computer in the console.
+
+**Trust:** the join token carries the server's fingerprint and the admin
+app's key fingerprint, so a computer pins its admin at install time: a
+compromised server cannot swap in another admin.
+
+**Phases**
+
+1. **Built.** Company on the server (`rider-server company init`,
+   `company setup-code`), admin sign-in with the setup code, Enterprise
+   section in the app (Settings > Enterprise mode > Sign in).
+2. **Built.** Joining: join token (`rdr1.…`), `rider-host enroll <token>
+   [--unattended]` / `leave-company`; computers appear in Unassigned with
+   name, signed-in user, locked, version, online / last seen.
+3. **Built** (Problems list still to do). Console: floors and rooms with
+   counts, tiles, search, drag a tile onto a room, right-click menu.
+4. **Built.** Connect: double-click a tile (`rider-client company-connect`).
+   The host skips the PIN for the pinned admin and asks the signed-in user
+   in the chat window (Accept / Decline, 60 s, closing = Decline); after
+   Accept the window is the session's chat. Nobody signed in: refused.
+   Unattended only when the installer flag AND the admin's switch (sent by
+   the server to the computer at once) agree. Admin commands without the
+   app: `rider-client company sign-in|token|list|unattended`.
+5. **Built.** Company installer and Group Policy: `rdr-setup.exe
+   /VERYSILENT /ENROLL=<token> [/UNATTENDED]` joins and turns remote access
+   on (a company computer needs no PIN);
+   `packaging/windows/enterprise/rdr-startup.ps1` as a GPO startup script
+   installs, updates (never downgrades) and joins, and does nothing once
+   all is in place. Guide for IT: `docs/ENTERPRISE.md`.
 
 **Open questions for later:** audit log of connections, floor-plan view,
 bulk actions (message a room, push an update), more admins with scopes.

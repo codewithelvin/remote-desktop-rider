@@ -17,7 +17,14 @@ function Agent-Alive {
 
 # Guest "start-tests.ps1" / Guest "run-as-user.ps1 target.ps1"
 function Guest([string]$script, [int]$seconds = 120) {
-    if (Agent-Alive) {
+    # The agent writes its heartbeat between scripts only: right after a long
+    # one it is a little old, which does not mean the agent is gone.
+    $alive = Agent-Alive
+    for ($i = 0; -not $alive -and $i -lt 16 -and (Test-Path (Join-Path $guestDir "agent\alive")); $i++) {
+        Start-Sleep -Milliseconds 500
+        $alive = Agent-Alive
+    }
+    if ($alive) {
         $id = [guid]::NewGuid().ToString("N").Substring(0, 8)
         $agent = Join-Path $guestDir "agent"
         Set-Content -Path (Join-Path $agent "$id.tmp") -Value $script -NoNewline
@@ -25,7 +32,12 @@ function Guest([string]$script, [int]$seconds = 120) {
         $done = Join-Path $agent "$id.done"
         $end = (Get-Date).AddSeconds($seconds)
         while (-not (Test-Path $done)) {
-            if ((Get-Date) -gt $end) { throw "the VM did not finish '$script' in $seconds s" }
+            if ((Get-Date) -gt $end) {
+                # Withdrawn if not started yet: a late run (an old "click
+                # Accept" during a later step) would break that step.
+                Remove-Item (Join-Path $agent "$id.run") -ErrorAction SilentlyContinue
+                throw "the VM did not finish '$script' in $seconds s"
+            }
             Start-Sleep -Milliseconds 100
         }
         Remove-Item (Join-Path $agent "$id.*") -ErrorAction SilentlyContinue

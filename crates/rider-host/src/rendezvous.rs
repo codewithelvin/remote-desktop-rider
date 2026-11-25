@@ -177,6 +177,15 @@ async fn session(
         pairing: r.pairing,
     };
     write_msg(&mut send, &register(&reg)).await?;
+    // A company computer keeps its admin's console up to date.
+    let host_info = || {
+        let cfg = state.config.lock().unwrap();
+        cfg.company.as_ref().map(|c| crate::company::info(&cfg, Some(c)))
+    };
+    let mut info = host_info();
+    if let Some(i) = &info {
+        write_msg(&mut send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
+    }
     let mut shown_code: Option<String> = None;
     let mut tick = tokio::time::interval(UPDATE_INTERVAL);
     loop {
@@ -204,9 +213,19 @@ async fn session(
                     let socket = socket.clone();
                     tokio::spawn(async move { socket.punch(&candidates, relay.as_ref()).await });
                 }
+                Some(ServerMsg::CompanyPolicy { unattended }) => {
+                    tracing::info!("the company admin's unattended switch: {}", if unattended { "on" } else { "off" });
+                    state.company_unattended.store(unattended, std::sync::atomic::Ordering::Relaxed);
+                }
                 Some(ServerMsg::Error { message }) => bail!("{message}"),
                 Some(
-                    ServerMsg::Ready { .. } | ServerMsg::Online { .. } | ServerMsg::Joined | ServerMsg::InviteCode { .. },
+                    ServerMsg::Ready { .. }
+                    | ServerMsg::Online { .. }
+                    | ServerMsg::Joined
+                    | ServerMsg::InviteCode { .. }
+                    | ServerMsg::Company { .. }
+                    | ServerMsg::Directory(_)
+                    | ServerMsg::Enrolled { .. },
                 ) => {}
                 None => bail!("server closed the connection"),
             },
@@ -219,6 +238,13 @@ async fn session(
                 if now != reg {
                     write_msg(&mut send, &register(&now)).await?;
                     reg = now;
+                }
+                let now = host_info();
+                if now != info {
+                    if let Some(i) = &now {
+                        write_msg(&mut send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
+                    }
+                    info = now;
                 }
             }
             e = conn.closed() => bail!("{e}"),

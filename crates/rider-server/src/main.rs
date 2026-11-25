@@ -6,6 +6,7 @@
 //! opens a relay port as a fallback. It never sees screen or keyboard data:
 //! sessions are end-to-end encrypted with keys pinned at pairing.
 
+mod company;
 mod members;
 mod relay;
 mod tunnel;
@@ -14,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use members::Members;
 use relay::RelayPool;
+use rider_core::company::DirEdit;
 use rider_core::identity::{Fingerprint, Identity, fp_hex, fp_short};
 use rider_core::proto::{read_msg, write_msg};
 use rider_core::rendezvous::{CODE_ALPHABET, PeerMsg, Relay, ServerInfo, ServerMsg, Target, VERSION, refusal};
@@ -73,6 +75,22 @@ enum Cmd {
         #[arg(long)]
         remove: Option<String>,
     },
+    /// Enterprise mode: this server's company (without a subcommand: show it).
+    Company {
+        #[command(subcommand)]
+        action: Option<CompanyCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompanyCmd {
+    /// Create the company and print the admin's one-time setup code.
+    Init {
+        #[arg(long)]
+        name: String,
+    },
+    /// A new setup code: the app that enters it becomes the admin (replacing the current one).
+    SetupCode,
 }
 
 fn parse_range(s: &str) -> Result<std::ops::RangeInclusive<u16>, String> {
@@ -115,8 +133,10 @@ fn main() -> Result<()> {
                 println!("{}  member since {since} (unix time)", fp_hex(&fp));
             }
         }
+        Cmd::Company { action } => company_command(&cli.state_dir, action)?,
         Cmd::Run { listen, public_ip, relay_ports, tunnel_listen, invite_only } => {
             let members = Members::new(&cli.state_dir, invite_only);
+            let company = company::Company::load(&cli.state_dir)?;
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(serve(
                 identity,
                 listen,
@@ -124,8 +144,33 @@ fn main() -> Result<()> {
                 relay_ports,
                 tunnel_listen,
                 members,
+                company,
             ))?
         }
+    }
+    Ok(())
+}
+
+fn company_command(dir: &std::path::Path, action: Option<CompanyCmd>) -> Result<()> {
+    let print_code = |code: &str| {
+        println!("Admin setup code: {code}");
+        println!("Valid 24 hours, once: in the app, Enterprise mode > Sign in, with this server's address.");
+    };
+    match action {
+        Some(CompanyCmd::Init { name }) => {
+            let code = company::Company::init(dir, &name)?;
+            println!("Company \"{}\" created.", name.trim());
+            print_code(&code);
+        }
+        Some(CompanyCmd::SetupCode) => print_code(&company::Company::new_setup_code(dir)?),
+        None => match company::Company::load(dir)?.summary() {
+            None => println!("No company on this server. Create one: rider-server company init --name <name>"),
+            Some((name, admin, computers)) => {
+                println!("Company:   {name}");
+                println!("Admin:     {}", admin.as_deref().unwrap_or("none yet (rider-server company setup-code)"));
+                println!("Computers: {computers}");
+            }
+        },
     }
     Ok(())
 }
@@ -156,6 +201,7 @@ struct Server {
     relays: Arc<RelayPool>,
     tunnels: Arc<tunnel::Peers>,
     members: Members,
+    company: company::Company,
 }
 
 async fn serve(
@@ -165,6 +211,7 @@ async fn serve(
     relay_ports: std::ops::RangeInclusive<u16>,
     tunnel_listen: Option<SocketAddr>,
     members: Members,
+    company: company::Company,
 ) -> Result<()> {
     let cfg = rider_core::tls::server_config_alpn(
         &identity,
@@ -180,7 +227,11 @@ async fn serve(
         relays: RelayPool::new(public_ip, relay_ports.clone()),
         tunnels: Arc::default(),
         members,
+        company,
     });
+    if let Some((name, _, n)) = server.company.summary() {
+        tracing::info!("company \"{name}\": {n} computer(s)");
+    }
     if server.members.invite_only {
         tracing::info!("invite only: {} member computer(s)", server.members.list().len());
     }
@@ -201,6 +252,22 @@ async fn serve(
         tokio::spawn(tunnel::serve(tunnel::bind(addr).await?, server.tunnels.clone(), info));
     }
 
+    // Computers' details and last-seen times, written in batches.
+    {
+        let server = server.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(3));
+            loop {
+                tick.tick().await;
+                let company = server.clone();
+                let saved = tokio::task::spawn_blocking(move || company.company.flush()).await;
+                if let Ok(Err(e)) = saved {
+                    tracing::warn!("cannot save the company: {e:#}");
+                }
+            }
+        });
+    }
+
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -218,11 +285,31 @@ async fn serve(
                     }
                 });
             }
-            _ = tokio::signal::ctrl_c() => break,
+            _ = stop_signal() => break,
         }
     }
     endpoint.close(0u32.into(), b"server shutting down");
+    if let Err(e) = server.company.flush() {
+        tracing::warn!("cannot save the company: {e:#}");
+    }
     Ok(())
+}
+
+/// Ctrl+C, or (Linux) systemd stopping the service.
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
@@ -303,7 +390,87 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             conn.close(0u32.into(), b"ok");
             Ok(())
         }
-        None => Ok(()),
+        Some(
+            msg @ (PeerMsg::AdminClaim { .. }
+            | PeerMsg::Directory { .. }
+            | PeerMsg::DirectoryEdit { .. }
+            | PeerMsg::Enroll { .. }),
+        ) => {
+            let reply = company_request(server, conn, fp, msg);
+            write_msg(&mut send, &reply).await?;
+            let _ = send.finish();
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+            Ok(())
+        }
+        // Only on a host's Register connection.
+        Some(PeerMsg::HostInfo { .. }) | None => Ok(()),
+    }
+}
+
+/// Enterprise mode requests (one question, one answer).
+fn company_request(server: &Server, conn: &quinn::Connection, fp: Fingerprint, msg: PeerMsg) -> ServerMsg {
+    let error = |message: String| ServerMsg::Error { message };
+    let version = match &msg {
+        PeerMsg::AdminClaim { version, .. }
+        | PeerMsg::Directory { version }
+        | PeerMsg::DirectoryEdit { version, .. }
+        | PeerMsg::Enroll { version, .. } => *version,
+        _ => return error("unexpected request".into()),
+    };
+    if version != VERSION {
+        return error(format!("server speaks rendezvous protocol {VERSION}, you speak {version}; update"));
+    }
+    let directory = |server: &Server| {
+        let online: HashSet<Fingerprint> = server.hosts.lock().unwrap().keys().copied().collect();
+        server
+            .company
+            .directory(&online)
+            .map_or_else(|| error("this server has no company".into()), ServerMsg::Directory)
+    };
+    match msg {
+        // Guessing codes or secrets: limited like connection attempts.
+        PeerMsg::AdminClaim { .. } | PeerMsg::Enroll { .. } if server.rate_limited(conn.remote_address()) => {
+            error(refusal::BUSY.into())
+        }
+        PeerMsg::AdminClaim { code, .. } => match server.company.claim(&fp, &code) {
+            Ok((company, join_secret)) => {
+                tracing::info!("{} is now the admin of \"{company}\"", fp_short(&fp));
+                ServerMsg::Company { company, join_secret }
+            }
+            Err(e) => error(format!("{e:#}")),
+        },
+        PeerMsg::Enroll { secret, info, .. } => match server.company.enroll(&fp, &secret, info) {
+            Ok(company) => {
+                tracing::info!("{} joined the company", fp_short(&fp));
+                // On an invite-only server the company's computers are members.
+                if let Err(e) = server.members.add(fp) {
+                    tracing::warn!("cannot record member: {e:#}");
+                }
+                ServerMsg::Enrolled { company }
+            }
+            Err(e) => error(format!("{e:#}")),
+        },
+        _ if !server.company.is_admin(&fp) => error("only the company's admin can see its computers".into()),
+        PeerMsg::Directory { .. } => directory(server),
+        PeerMsg::DirectoryEdit { edit, .. } => {
+            let policy = match &edit {
+                DirEdit::Unattended { computer, on } => Some((*computer, *on)),
+                _ => None,
+            };
+            match server.company.edit(edit) {
+                Ok(()) => {
+                    // The computer learns of its new switch at once.
+                    if let Some((computer, unattended)) = policy
+                        && let Some(h) = server.hosts.lock().unwrap().get(&computer)
+                    {
+                        let _ = h.tx.send(ServerMsg::CompanyPolicy { unattended });
+                    }
+                    directory(server)
+                }
+                Err(e) => error(format!("{e:#}")),
+            }
+        }
+        _ => error("unexpected request".into()),
     }
 }
 
@@ -353,13 +520,20 @@ async fn serve_host(
     // Further Register messages update the allow-list / pairing state.
     let result = async {
         while let Some(msg) = read_msg::<PeerMsg>(&mut recv).await? {
-            if let PeerMsg::Register { local, allowed, pairing, .. } = msg {
-                if let Some(h) = server.hosts.lock().unwrap().get_mut(&fp).filter(|h| h.conn_id == conn_id) {
-                    h.local = local;
-                    h.allowed = allowed.into_iter().collect();
-                    h.pairing = pairing;
+            match msg {
+                PeerMsg::Register { local, allowed, pairing, .. } => {
+                    if let Some(h) = server.hosts.lock().unwrap().get_mut(&fp).filter(|h| h.conn_id == conn_id) {
+                        h.local = local;
+                        h.allowed = allowed.into_iter().collect();
+                        h.pairing = pairing;
+                    }
+                    let _ = tx.send(ServerMsg::Registered { public, pairing_code: server.update_code(fp, pairing) });
                 }
-                let _ = tx.send(ServerMsg::Registered { public, pairing_code: server.update_code(fp, pairing) });
+                PeerMsg::HostInfo { info, .. } => {
+                    server.company.update_info(&fp, info);
+                    let _ = tx.send(ServerMsg::CompanyPolicy { unattended: server.company.unattended_on(&fp) });
+                }
+                _ => {}
             }
         }
         anyhow::Ok(())
@@ -374,6 +548,7 @@ async fn serve_host(
         tracing::info!("host {} offline", fp_short(&fp));
     }
     drop(hosts);
+    server.company.seen(&fp);
     writer.abort();
     result
 }
@@ -553,6 +728,7 @@ mod tests {
             relays: RelayPool::new(None, 1..=1),
             tunnels: Arc::default(),
             members: Members::new(&std::env::temp_dir(), false),
+            company: company::Company::none(),
         };
         let from: SocketAddr = "198.51.100.1:5000".parse().unwrap();
         assert!((0..CONNECTS_PER_MINUTE).all(|_| !s.rate_limited(from)));
@@ -577,6 +753,7 @@ mod tests {
             relays: RelayPool::new(None, 1..=1),
             tunnels: Arc::default(),
             members: Members::new(&dir, true),
+            company: company::Company::none(),
         };
         let (member, laptop, stranger_host, stranger_pc, support) =
             ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32], [5u8; 32]);
@@ -614,11 +791,132 @@ mod tests {
             relays: RelayPool::new(None, 1..=1),
             tunnels: Arc::default(),
             members: Members::new(&std::env::temp_dir(), false),
+            company: company::Company::none(),
         };
         let fp = [1u8; 32];
         let code = s.update_code(fp, true).unwrap();
         assert_eq!(s.update_code(fp, true).as_deref(), Some(code.as_str()), "stable while pairing");
         assert_eq!(s.update_code(fp, false), None);
         assert!(s.codes.lock().unwrap().is_empty(), "revoked when pairing ends");
+    }
+
+    /// Enterprise mode end to end over real QUIC on loopback: the admin app
+    /// claims the company, a computer joins, the admin places it.
+    #[test]
+    fn enterprise_over_the_wire() {
+        use rider_core::company::{DirEdit, HostInfo};
+        use rider_core::rendezvous::{ServerRef, admin_claim, directory, enroll};
+        let dir = std::env::temp_dir().join(format!("rider-enterprise-wire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::load_or_create(&dir).unwrap();
+        let code = company::Company::init(&dir, "Northwind").unwrap();
+        let port = 47_000 + (std::process::id() % 800) as u16;
+        let server_ref = ServerRef::new(&format!("127.0.0.1:{port}"), &fp_hex(&identity.fingerprint())).unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let members = Members::new(&dir, false);
+            let company = company::Company::load(&dir).unwrap();
+            let listen: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            tokio::spawn(serve(identity, listen, None, 48_000..=48_010, None, members, company));
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            let admin = Identity::ephemeral().unwrap();
+            let pc = Identity::ephemeral().unwrap();
+            let stranger = Identity::ephemeral().unwrap();
+            assert!(directory(&admin, &server_ref, None).await.is_err(), "not the admin yet");
+            let (name, secret) = admin_claim(&admin, &server_ref, &code).await.unwrap();
+            assert_eq!(name, "Northwind");
+            assert!(admin_claim(&stranger, &server_ref, &code).await.is_err(), "a code works once");
+
+            let info = HostInfo { name: "PC-310-07".into(), version: "0.5.0".into(), ..Default::default() };
+            assert!(enroll(&pc, &server_ref, "wrong", info.clone()).await.is_err());
+            assert_eq!(enroll(&pc, &server_ref, &secret, info).await.unwrap(), "Northwind");
+
+            assert!(directory(&stranger, &server_ref, None).await.is_err(), "only the admin sees the list");
+            assert!(directory(&pc, &server_ref, None).await.is_err(), "a company computer is not the admin");
+            let edit = DirEdit::AddFloor { name: "Mine".into() };
+            assert!(directory(&stranger, &server_ref, Some(edit.clone())).await.is_err(), "nor changes it");
+            assert!(directory(&pc, &server_ref, Some(edit)).await.is_err(), "nor changes it");
+            let forged = HostInfo { name: "FORGED".into(), ..Default::default() };
+            assert!(enroll(&stranger, &server_ref, "", forged).await.is_err(), "no secret, no joining");
+            let d = directory(&admin, &server_ref, Some(DirEdit::AddFloor { name: "Floor 3".into() })).await.unwrap();
+            let floor = d.floors[0].id;
+            let d = directory(&admin, &server_ref, Some(DirEdit::AddRoom { floor, name: "310".into() })).await.unwrap();
+            let room = d.floors[0].rooms[0].id;
+            assert_eq!(d.room_counts(None), (0, 1), "the new computer waits in Unassigned (offline)");
+            let edit = DirEdit::Place { computers: vec![pc.fingerprint()], room: Some(room) };
+            let d = directory(&admin, &server_ref, Some(edit)).await.unwrap();
+            assert_eq!(d.computers[0].room, Some(room));
+            assert_eq!(d.computers[0].info.name, "PC-310-07");
+            assert!(d.computers.iter().all(|c| c.info.name != "FORGED"));
+            let ghost = DirEdit::Place { computers: vec![stranger.fingerprint()], room: None };
+            assert!(directory(&admin, &server_ref, Some(ghost)).await.is_err(), "not a company computer");
+        });
+        drop(rt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A company at the limit, every computer's details as long as allowed
+    /// (four-byte characters): the admin gets the whole list in one answer,
+    /// moves all of it with one request, and the server keeps it on disk.
+    #[test]
+    fn enterprise_at_scale() {
+        use rider_core::company::{DirEdit, HostInfo};
+        use rider_core::rendezvous::{ServerRef, admin_claim, directory};
+        let dir = std::env::temp_dir().join(format!("rider-enterprise-scale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::load_or_create(&dir).unwrap();
+        let code = company::Company::init(&dir, "Big").unwrap();
+        let long = "\u{1F600}".repeat(100);
+        let secret = {
+            let c = company::Company::load(&dir).unwrap();
+            let (_, secret) = c.claim(&[1; 32], &company::Company::new_setup_code(&dir).unwrap()).unwrap();
+            let info =
+                HostInfo { name: long.clone(), user: Some(long.clone()), version: long.clone(), ..Default::default() };
+            c.fill(company::MAX_COMPUTERS as u32 - 1, &info);
+            // The last one through the real join: the limit is reached.
+            c.enroll(&[8; 32], &secret, info).unwrap();
+            let mut fp = [9u8; 32];
+            fp[31] = 8;
+            assert!(c.enroll(&fp, &secret, HostInfo::default()).is_err(), "no more than the limit");
+            secret
+        };
+        let _ = secret;
+        let port = 47_000 + ((std::process::id() + 400) % 800) as u16;
+        let server_ref = ServerRef::new(&format!("127.0.0.1:{port}"), &fp_hex(&identity.fingerprint())).unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let members = Members::new(&dir, false);
+            let company = company::Company::load(&dir).unwrap();
+            let listen: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            tokio::spawn(serve(identity, listen, None, 48_020..=48_030, None, members, company));
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let admin = Identity::ephemeral().unwrap();
+            // The setup code from `init` was replaced by the one claimed above.
+            assert!(admin_claim(&admin, &server_ref, &code).await.is_err());
+            let fresh = company::Company::new_setup_code(&dir).unwrap();
+            admin_claim(&admin, &server_ref, &fresh).await.unwrap();
+
+            let started = std::time::Instant::now();
+            let d = directory(&admin, &server_ref, Some(DirEdit::AddFloor { name: "F".into() })).await.unwrap();
+            eprintln!("{} computers listed in {:?}", d.computers.len(), started.elapsed());
+            assert_eq!(d.computers.len(), company::MAX_COMPUTERS);
+            let floor = d.floors[0].id;
+            let d = directory(&admin, &server_ref, Some(DirEdit::AddRoom { floor, name: "R".into() })).await.unwrap();
+            let room = d.floors[0].rooms[0].id;
+            let all: Vec<_> = d.computers.iter().map(|c| c.fingerprint).collect();
+            let started = std::time::Instant::now();
+            let d = directory(&admin, &server_ref, Some(DirEdit::Place { computers: all, room: Some(room) }))
+                .await
+                .unwrap();
+            eprintln!("all moved in {:?}", started.elapsed());
+            assert_eq!(d.room_counts(Some(room)), (0, company::MAX_COMPUTERS));
+        });
+        drop(rt);
+        let kept = company::Company::load(&dir).unwrap().directory(&Default::default()).unwrap();
+        assert!(kept.computers.iter().all(|c| c.room.is_some()), "kept on disk");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

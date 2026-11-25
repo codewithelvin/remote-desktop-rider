@@ -29,6 +29,7 @@
           <li><a href="#features" data-i18n="nav.features">Features</a></li>
           <li><a href="#how" data-i18n="nav.how">How it works</a></li>
           <li><a href="#security" data-i18n="nav.security">Security</a></li>
+          <li><a href="#enterprise" data-i18n="nav.enterprise">Enterprise</a></li>
           <li><a href="#download" data-i18n="nav.download">Download</a></li>
           <li><a href="#self-host" data-i18n="nav.selfhost">Self-host</a></li>
           <li><a href="#faq" data-i18n="nav.faq">FAQ</a></li>
@@ -295,6 +296,25 @@
           <li><h3 data-i18n="sec7.h">Locked-down files</h3><p data-i18n="sec7.p">The host's private key and trust store live in <code>%ProgramData%\RemoteDesktopRider</code>, readable only by SYSTEM and Administrators.</p></li>
           <li><h3 data-i18n="sec8.h">Verified updates</h3><p data-i18n="sec8.p">Every download is checked against the SHA-256 published with the release. Automatic updates can be turned off.</p></li>
         </ul>
+      </div>
+    </section>
+
+    <!-- Enterprise -->
+    <section class="section" id="enterprise" aria-labelledby="enterprise-title">
+      <div class="wrap">
+        <p class="kicker" data-i18n="nav.enterprise">Enterprise</p>
+        <h2 id="enterprise-title" data-i18n="ent.title">Every computer in the company, one admin, nobody watched without consent</h2>
+        <p class="section-lede" data-i18n="ent.lede">Enterprise mode lets one IT admin look after a company's Windows PCs from the app: arranged by floor and room, searchable, connected with a double-click. It runs on your own <code>rider-server</code>, like everything else.</p>
+        <figure class="shot">
+          <img src="screenshots/enterprise.png" width="1300" height="760" loading="lazy" data-i18n-attr="alt:ent.alt" alt="The Enterprise screen: floors and rooms on the left, the computers of the selected room as tiles on the right, each showing who is signed in and whether it is online.">
+        </figure>
+        <ul class="grid sec">
+          <li><h3 data-i18n="ent1.h">Rolled out by Group Policy</h3><p data-i18n="ent1.p">A startup script installs Remote Desktop Rider on every domain PC and joins it to the company with a token. New PCs appear under <b>Unassigned</b>; drag them to their room.</p></li>
+          <li><h3 data-i18n="ent2.h">The employee decides</h3><p data-i18n="ent2.p">Each connection asks the person at the computer to <b>Accept</b> or <b>Decline</b>. No answer within a minute, a locked screen or nobody signed in: no session.</p></li>
+          <li><h3 data-i18n="ent3.h">Unattended only when both agree</h3><p data-i18n="ent3.p">Access without asking needs the installer's <code>/UNATTENDED</code> switch <em>and</em> the admin's switch for that PC. Either one alone is not enough.</p></li>
+          <li><h3 data-i18n="ent4.h">One admin, pinned</h3><p data-i18n="ent4.p">The admin signs in once with a one-time setup code. Company PCs trust only that admin's device key; other devices can't list or reach them.</p></li>
+        </ul>
+        <p class="note" data-i18n="ent.note">Setting it up step by step: <a href="https://github.com/codewithelvin/remote-desktop-rider/blob/main/docs/ENTERPRISE.md">the guide for IT</a>.</p>
       </div>
     </section>
 

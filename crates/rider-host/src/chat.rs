@@ -140,6 +140,7 @@ impl Chat {
                     c.store(true, Ordering::Relaxed);
                 }
             }
+            ChatCmd::Answer(_) => {}
             ChatCmd::End => {
                 tracing::info!("session ended from the chat window");
                 crate::banner::DISCONNECT_REQUESTED.store(true, Ordering::SeqCst);

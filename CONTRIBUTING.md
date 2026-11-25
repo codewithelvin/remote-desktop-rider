@@ -118,6 +118,29 @@ pushes for test builds):
   installed older viewer too).
 - `test/vm/paired-session.ps1`: a paired, PIN-protected session to the VM's
   unattended service.
+- `test/vm/enterprise.ps1`: Enterprise mode, connecting. The company's
+  server is a real installation (below), this PC is the admin (command
+  line only), the VM's service is the company computer and its user
+  answers Accept / Decline (typed in the VM); the VM's host config is
+  restored.
+- `test/vm/enterprise-install.ps1`: Enterprise mode, installing by Group
+  Policy. The VM becomes a new company computer; `rdr-startup.ps1` runs as
+  SYSTEM from a share with the locally built installer
+  (`packaging\windows\build.ps1`) and must install, turn on remote access
+  and join; the employee accepts a session; the next start does nothing.
+  The VM's usual host is put back.
+- `test/vm/enterprise-edge.ps1`: Enterprise mode, the cases around
+  connecting: a stranger device, the employee closing or ignoring the
+  request, the admin cancelling, a second request during a session, a
+  locked computer (refused; unattended still connects), unattended switched
+  off again, a paired PIN session on a company computer, a server restart,
+  leaving the company. Shared steps live in `test/vm/entlib.ps1`.
+- `test/server/server.sh build|up|install|fp|sh|down`: a local rider-server
+  installed like a production one: Ubuntu 22.04 with systemd in Docker,
+  the Linux build of this tree, `deploy/install.sh` and the unit from
+  `deploy/`, at 192.168.56.1 (UDP 47900, relays 47901-47999). A container,
+  not a VM, so it runs next to the Windows VM. `RIDER_SERVER_BIN=<file>`
+  installs another build instead (an older release, for compatibility runs).
 - `test/vm/paired-chat.ps1`: chat in a paired session. The VM's viewer
   connects to the VM's own service, so the chat window the service opens
   and the viewer are both in the VM (all typing there); installs the fresh
@@ -129,9 +152,13 @@ pushes for test builds):
   host; all typing happens inside the VM).
 
 The tests reach the Windows VM through a small agent in it
-(`test/vm/guest/agent.ps1`, started on `vagrant up`) instead of a
-`vagrant winrm` per step: about 0.3 s per step instead of 5-15 s, and every
-step has a time limit. The Lubuntu VM is reached with plain `ssh`/`scp`
+(`test/vm/guest/agent.ps1`, which starts by itself at every boot) instead of
+a `vagrant winrm` per step: about 0.3 s per step instead of 5-15 s, and every
+step has a time limit; a step that times out is withdrawn, so it never runs
+late. The Windows VM is kept light (3 GB, 4 cores at 80%, no window, and
+`guest/slim.ps1` switches off animations, background services and apps once,
+on its first `vagrant up`): ready for tests about 4 minutes after `vagrant
+up`. `RIDER_VM_GUI=1 vagrant up` shows its window. The Lubuntu VM is reached with plain `ssh`/`scp`
 using `vagrant ssh-config`, read once per run.
 
 The macOS VM is a Docker-OSX container driven by `test/macos/mac.sh`: `up`

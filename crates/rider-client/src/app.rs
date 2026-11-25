@@ -5,6 +5,7 @@
 //! it into the video), so pointer movement feels instant whatever the latency.
 //!
 //! Local shortcuts (not sent to the host):
+//!   Alt+1 … Alt+9     show that remote monitor (when it has more than one)
 //!   Ctrl+Alt+Shift+M  next monitor
 //!   Ctrl+Alt+Shift+F  toggle fullscreen
 //!   Ctrl+Alt+Shift+Q  disconnect
@@ -23,6 +24,7 @@
 //! reconnecting" (see `overlay`). QUIC keeps retrying the same connection;
 //! if it dies, a new one is made with `Reconnect` until `RECONNECT_FOR` runs out.
 
+use crate::badge::Badge;
 use crate::chat::ChatPanel;
 use crate::diag::{self, Diag};
 #[cfg(windows)]
@@ -122,6 +124,7 @@ pub fn run(
         reconnect: reconnect.map(Arc::new),
         reconnecting: None,
         overlay: Overlay::default(),
+        badge: Badge::default(),
         chat: None,
         chat_ready: false,
         scratch: Vec::new(),
@@ -201,6 +204,8 @@ struct App {
     /// Why the last connection was lost, while new ones are being tried.
     reconnecting: Option<String>,
     overlay: Overlay,
+    /// The remote monitor shown, named in the corner (more than one).
+    badge: Badge,
     /// Created with the window.
     chat: Option<ChatPanel>,
     /// Someone at the host sees the chat (`HostMsg::ChatReady`).
@@ -241,6 +246,12 @@ impl App {
         self.overlay.draw(area, vw, h, window.scale_factor());
         let monitors = (self.monitors.len() as u32, self.active_monitor);
         self.toolbar.set_state(window.scale_factor(), window.fullscreen().is_some(), monitors);
+        let label = match self.monitors.get(self.active_monitor as usize) {
+            Some(m) if self.monitors.len() > 1 => crate::toolbar::monitor_label(m.index, Some(&m.name)),
+            _ => String::new(),
+        };
+        self.badge.set(label);
+        self.badge.draw(area, vw, h, window.scale_factor(), self.pointer_px);
         self.toolbar.draw(area, vw, h);
         self.toolbar_shown = self.toolbar.visible();
         if panel > 0 {
@@ -273,7 +284,9 @@ impl App {
             s.host_stats.lock().unwrap(),
         );
         if self.monitors.len() > 1 {
-            title.push_str(&format!(" · monitor {}/{}", self.active_monitor + 1, self.monitors.len()));
+            let name = self.monitors.get(self.active_monitor as usize).map_or("", |m| m.name.as_str());
+            let name = if name.is_empty() || name.starts_with("DISPLAY") { tr("monitor", "monitor") } else { name };
+            title.push_str(&format!(" · {name} {}/{}", self.active_monitor + 1, self.monitors.len()));
         }
         // Not full access: always said, not only in the passing notice.
         if let Some(level) = access_label(self.shared.permissions()) {
@@ -303,6 +316,28 @@ impl App {
         let end = key == PhysicalKey::Code(KeyCode::End) || event.logical_key == Key::Named(NamedKey::End);
         if m.control_key() && m.alt_key() && end {
             self.act(el, Action::CtrlAltDel);
+            return true;
+        }
+        // Alt+1 … Alt+9: show that remote monitor (only those that exist, so
+        // Alt+digit still reaches the host otherwise; not with AltGr, which
+        // is Ctrl+Alt, nor the numpad, where Alt+digits types characters).
+        if m.alt_key()
+            && !m.control_key()
+            && !m.shift_key()
+            && !m.super_key()
+            && let Some(n) = digit(key)
+            && self.monitors.len() > 1
+            && n <= self.monitors.len()
+        {
+            // The host already has Alt down: with nothing else pressed, its
+            // release would open the menu bar of the program there. A Ctrl
+            // tap in between makes it an Alt combination, like any other.
+            if self.shared.permissions().control {
+                for down in [true, false] {
+                    self.net.send(ClientMsg::Key { scancode: 0x1D, extended: false, down });
+                }
+            }
+            self.act(el, Action::Monitor(n as u32 - 1));
             return true;
         }
         if !(m.control_key() && m.alt_key() && m.shift_key()) {
@@ -387,6 +422,7 @@ impl App {
             no_control: !p.control,
             chat: chat.map(|c| c.chat.unread),
             chat_open: chat.is_some_and(ChatPanel::is_open),
+            monitor_names: self.monitors.iter().map(|m| m.name.clone()).collect(),
         })
     }
 
@@ -858,7 +894,12 @@ impl ApplicationHandler<UiEvent> for App {
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let WindowEvent::CursorMoved { position, .. } = &event {
+            let (was, now) =
+                (self.badge.under(self.pointer_px.0, self.pointer_px.1), self.badge.under(position.x, position.y));
             self.pointer_px = (position.x, position.y);
+            if was != now {
+                self.redraw_soon(); // the corner label steps aside, or comes back
+            }
         }
         let to_chat = match &event {
             WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
@@ -1085,4 +1126,20 @@ fn elapsed(d: Duration) -> String {
     } else {
         format!("{}:{:02}", s / 60, s % 60)
     }
+}
+
+/// The digit of a top-row number key (1-9).
+fn digit(key: PhysicalKey) -> Option<usize> {
+    let keys = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
+    keys.iter().position(|&k| key == PhysicalKey::Code(k)).map(|i| i + 1)
 }

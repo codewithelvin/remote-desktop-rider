@@ -94,6 +94,11 @@ try {
     Check "back to view only: the click is dropped" ((Clicks) -eq 2)
     $ended = Get-Content (Join-Path $guest "support.out") | Where-Object { $_ -match '"support_ended"' }
     Check "the session is still up" (-not $viewer.P.HasExited -and -not $ended)
+    if (@($results | Where-Object Result -eq "FAIL").Count) {
+        Write-Host "  --- viewer said:"; ($viewer.All() -split "`n" | Select-Object -Last 12) | ForEach-Object { Write-Host "    $_" }
+        Write-Host "  --- host events:"; Get-Content (Join-Path $guest "support.out") | Select-Object -Last 12 | ForEach-Object { Write-Host "    $_" }
+        Write-Host "  --- clicks seen: $(Clicks)"
+    }
 } finally {
     if ($viewer) { $viewer.Stop() }
     Guest "stop-tests.ps1"

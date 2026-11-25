@@ -20,6 +20,8 @@ const FRAME_DEADLINE: Duration = Duration::from_millis(500);
 const MIN_BITRATE: u32 = 300_000;
 const START_BITRATE: u32 = 4_000_000;
 const PAIRING_WINDOW: Duration = Duration::from_secs(600);
+/// How long the person here has to accept the company admin.
+const ACCEPT_WAIT: Duration = Duration::from_secs(60);
 /// The client's first message must come at once; a PIN is typed by a person.
 /// Without limits a connection that never speaks would keep the host busy.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
@@ -40,6 +42,9 @@ pub struct HostState {
     pub paired: tokio::sync::Notify,
     busy: AtomicBool,
     auth: Mutex<AuthGuard>,
+    /// The company admin's switch (from the server): connect without asking,
+    /// if this computer was also installed as unattended-capable.
+    pub company_unattended: AtomicBool,
 }
 
 #[derive(Default)]
@@ -60,6 +65,7 @@ impl HostState {
             paired: tokio::sync::Notify::new(),
             busy: AtomicBool::new(false),
             auth: Mutex::new(AuthGuard::default()),
+            company_unattended: AtomicBool::new(false),
         }
     }
 
@@ -195,13 +201,23 @@ async fn run(
     if state.support {
         let access = support_allow(state, conn, &mut send, &client_fp, &device_name).await?;
         tracing::info!("support session started with {device_name} from {} ({})", conn.remote_address(), access.code());
-        let result = stream(state, conn, send, recv, device_name, tunnel, access).await;
+        let result = stream(state, conn, send, recv, device_name, tunnel, access, None).await;
         crate::ui::emit(serde_json::json!({ "event": "support_ended" }));
         state.done.notify_one();
         return result;
     }
 
-    let known_name = state.config.lock().unwrap().client_name(&client_fp);
+    let (known_name, admin) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.client_name(&client_fp), cfg.company_admin())
+    };
+    // The company's admin (not also paired the usual way): no PIN, the
+    // person here accepts.
+    if !pairing && known_name.is_none() && admin == Some(client_fp) {
+        let panel = company_allow(state, conn, &mut send, &device_name).await?;
+        tracing::info!("company session started with {device_name} from {}", conn.remote_address());
+        return stream(state, conn, send, recv, device_name, tunnel, Access::Full, panel).await;
+    }
     let name = if pairing {
         pair(state, conn, &mut send, &mut recv, &client_fp, &device_name).await?;
         device_name
@@ -217,7 +233,76 @@ async fn run(
 
     authenticate(state, &mut send, &mut recv, &name).await?;
     tracing::info!("session started with {name} ({}) from {}", fp_short(&client_fp), conn.remote_address());
-    stream(state, conn, send, recv, name, tunnel, Access::Full).await
+    stream(state, conn, send, recv, name, tunnel, Access::Full, None).await
+}
+
+/// A chat window already open for this session (and what is typed in it).
+type OpenPanel = (crate::panel::Panel, mpsc::UnboundedReceiver<crate::ui::ChatCmd>);
+
+/// The company's admin connects: allowed without asking only when this
+/// computer was installed as unattended-capable AND the admin switched it
+/// on; otherwise the person signed in here accepts or declines in the chat
+/// window (which then stays as the session's chat).
+async fn company_allow(
+    state: &Arc<HostState>,
+    conn: &quinn::Connection,
+    send: &mut quinn::SendStream,
+    device_name: &str,
+) -> Result<Option<OpenPanel>> {
+    let (company, unattended) = {
+        let cfg = state.config.lock().unwrap();
+        let c = cfg.company.clone().unwrap_or_default();
+        (c.name, c.unattended && state.company_unattended.load(Ordering::Relaxed))
+    };
+    let refuse = async |send: &mut quinn::SendStream, why: &str| -> Result<()> {
+        write_msg(send, &HostMsg::AuthResult { ok: false, message: why.into() }).await?;
+        let _ = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
+        bail!("company admin {device_name}: {why}")
+    };
+    if unattended {
+        tracing::info!("company admin {device_name}: unattended, nobody asked");
+        write_msg(send, &HostMsg::AuthResult { ok: true, message: String::new() }).await?;
+        return Ok(None);
+    }
+    const NOBODY: &str = "nobody is signed in at that computer to accept";
+    match crate::company::console_user() {
+        (None, _) => return refuse(send, NOBODY).await.map(|()| None),
+        // Behind the lock screen nobody would see the question.
+        (Some(_), true) => {
+            return refuse(send, "that computer is locked: the person there is away").await.map(|()| None);
+        }
+        (Some(_), false) => {}
+    }
+    let (device, files) = (device_name.to_owned(), Access::Full.permissions().files);
+    let launched = tokio::task::spawn_blocking(move || crate::panel::Panel::launch(&device, files)).await?;
+    let (panel, mut answers) = match launched {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("no window to ask in: {e:#}");
+            return refuse(send, NOBODY).await.map(|()| None);
+        }
+    };
+    panel.ask(&company, ACCEPT_WAIT.as_secs());
+    let answer = async {
+        while let Some(cmd) = answers.recv().await {
+            if let crate::ui::ChatCmd::Answer(yes) = cmd {
+                return Some(yes);
+            }
+        }
+        None // the window closed
+    };
+    let accepted = tokio::select! {
+        a = tokio::time::timeout(ACCEPT_WAIT, answer) => a.ok().flatten(),
+        _ = conn.closed() => bail!("{device_name} gave up before an answer"),
+    };
+    match accepted {
+        Some(true) => {
+            write_msg(send, &HostMsg::AuthResult { ok: true, message: String::new() }).await?;
+            Ok(Some((panel, answers)))
+        }
+        Some(false) => refuse(send, "the person at that computer declined").await.map(|()| None),
+        None => refuse(send, "the person at that computer did not answer").await.map(|()| None),
+    }
 }
 
 /// One-time support: the person at this computer sees who wants to connect
@@ -408,6 +493,7 @@ async fn authenticate(
     bail!("too many wrong PINs")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream(
     state: &Arc<HostState>,
     conn: &quinn::Connection,
@@ -416,6 +502,7 @@ async fn stream(
     name: String,
     tunnel: bool,
     access: Access,
+    panel: Option<OpenPanel>,
 ) -> Result<()> {
     let cfg = state.config.lock().unwrap().clone();
     // What the viewer may do (`Permissions::bits`); checked on every input,
@@ -446,7 +533,11 @@ async fn stream(
     if v4 {
         let _ = out_tx.send(HostMsg::Permissions(access.permissions()));
     }
-    let link = chat_link(state, v5, &name, access).await;
+    let link = match panel {
+        // Already open: it asked the person here to accept.
+        Some(p) if v5 => crate::chat::Link::panel(p),
+        _ => chat_link(state, v5, &name, access).await,
+    };
     let chat = crate::chat::Chat::new(conn.clone(), out_tx.clone(), v5, link);
     let chat_task = {
         let perms = perms.clone();
@@ -662,7 +753,7 @@ async fn stream(
                     let sample = Sample {
                         rtt_ms: u16_of(path.rtt.as_millis()),
                         min_rtt_ms: u16_of(path.min_rtt.as_millis()),
-                        loss_permille: u16_of(d_lost * 1000 / d_sent.max(1)),
+                        loss_permille: diag::loss_permille(d_lost, d_sent),
                         cwnd_kb: u32::try_from(path.cwnd / 1024).unwrap_or(u32::MAX),
                         fps: u16_of(u64::from(d_frames) / secs),
                         kbps: u32::try_from(d_bytes * 8 / 1000 / secs).unwrap_or(u32::MAX),
