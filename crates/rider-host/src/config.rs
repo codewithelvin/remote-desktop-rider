@@ -175,3 +175,19 @@ fn hash_pin(pin: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Argon2::default().hash_password_into(pin.as_bytes(), salt, &mut out).map_err(|e| anyhow::anyhow!("argon2: {e}"))?;
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PINs saved by earlier versions must keep matching: the hash is
+    /// Argon2id v1.3, m=19456 KiB, t=2, p=1, 32 bytes (argon2's defaults as
+    /// of 0.5). The expected value comes from the reference implementation
+    /// (argon2-cffi), so a dependency update that changes it fails here.
+    #[test]
+    fn pin_hash_is_stable() {
+        let salt: Vec<u8> = (0..16).collect();
+        let hash = hash_pin("1234-rider", &salt).unwrap();
+        assert_eq!(hex::encode(hash), "905245a3defa99255ee371d1b49a267c32748dfaa6b92ae540597324cd03d80e");
+    }
+}

@@ -1,19 +1,21 @@
-# Weekly pull requests for outdated or vulnerable dependencies. They go
-# through CI like any other change; nothing reaches a release until merged.
+# Monthly pull requests for outdated or vulnerable dependencies: one for the
+# Rust crates, one for the GitHub Actions. Every merge to main is a release,
+# so they come grouped; they go through CI and the VM tests like any change.
+# (Security fixes still come at once, outside this schedule.)
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
-      minor-and-patch:
-        update-types: [minor, patch]
+      crates:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       actions:
         patterns: ["*"]
