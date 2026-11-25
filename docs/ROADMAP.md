@@ -305,7 +305,7 @@ a reason. Without someone at the host (unattended, until the session panel),
 files dropped on the window still go to `Downloads\Rider`. Control messages a peer does not know are
 skipped (from `rider/4` on), so later additions cannot break a session.
 
-## Milestone 7: Enterprise mode (design agreed 2026-11-25; phases 1-5 built, not released)
+## Milestone 7: Enterprise mode (design agreed 2026-11-25; released in 0.6.0)
 
 One admin looks after a company's computers (1000+) from the same app.
 The core (sessions, video, chat, security) is unchanged; what is new is a
@@ -382,6 +382,11 @@ compromised server cannot swap in another admin.
    `packaging/windows/enterprise/rdr-startup.ps1` as a GPO startup script
    installs, updates (never downgrades) and joins, and does nothing once
    all is in place. Guide for IT: `docs/ENTERPRISE.md`.
+6. **Built.** Office or remote: every 15 s a company computer reports
+   whether its Windows domain is on its own network (office) or only
+   through a VPN adapter such as GlobalProtect's (remote); the console
+   marks remote computers and counts them (`PeerMsg::Place`, sent only
+   after the server's `CompanyPolicy2`; the app asks `Directory2`).
 
 **Open questions for later:** audit log of connections, floor-plan view,
 bulk actions (message a room, push an update), more admins with scopes.

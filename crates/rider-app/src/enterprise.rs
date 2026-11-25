@@ -186,7 +186,7 @@ impl Enterprise {
                 name: name.into(),
                 user: user.map(Into::into),
                 locked,
-                version: "0.5.0".into(),
+                version: "0.6.0".into(),
                 unattended: n == 9,
             },
             room,

@@ -122,6 +122,8 @@
     "ent3.p": "Soruşmadan giriş üçün həm quraşdırıcının <code>/UNATTENDED</code> açarı, <em>həm də</em> administratorun həmin kompüter üçün açarı lazımdır. Təkcə biri kifayət deyil.",
     "ent4.h": "Bir administrator, sabitlənmiş",
     "ent4.p": "Administrator birdəfəlik quraşdırma kodu ilə bir dəfə daxil olur. Şirkət kompüterləri yalnız həmin administratorun cihaz açarına etibar edir; digər cihazlar onları nə görə, nə də onlara qoşula bilər.",
+    "ent5.h": "Ofisdə, yoxsa uzaqdan — bir baxışda",
+    "ent5.p": "Evdən şirkətin VPN-i (məsələn, GlobalProtect) ilə işləyən noutbuk <b>Uzaqdan</b> kimi işarələnir. Hər kompüter bunu özü müəyyən edir: Windows domeni öz şəbəkəsindədirsə, deməli ofisdədir.",
     "ent.note": "Addım-addım quraşdırma: <a href=\"https://github.com/codewithelvin/remote-desktop-rider/blob/main/docs/ENTERPRISE.md\">İT üçün bələdçi</a>.",
 
     "sh.kicker": "Öz serverinizi qurun",

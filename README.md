@@ -207,6 +207,9 @@ your own `rider-server`.
   *and* the admin's switch for that PC.
 - **One admin, pinned.** Company PCs trust only the admin's device key; other
   devices can't list or reach them. Tested with 5,000 computers.
+- **Office or remote at a glance.** A laptop working from home over the
+  company VPN (e.g. GlobalProtect) is marked *Remote*; each PC tells by
+  whether its Windows domain is on its own network or only through the VPN.
 
 Setting it up: [the guide for IT](docs/ENTERPRISE.md).
 
