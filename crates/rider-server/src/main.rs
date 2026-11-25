@@ -471,14 +471,14 @@ fn company_request(server: &Server, conn: &quinn::Connection, fp: Fingerprint, m
             }
         }
         PeerMsg::DirectoryEdit { edit, .. } => {
-            let policy = match &edit {
+            let switched = match &edit {
                 DirEdit::Unattended { computer, on } => Some((*computer, *on)),
                 _ => None,
             };
             match server.company.edit(edit) {
                 Ok(()) => {
                     // The computer learns of its new switch at once.
-                    if let Some((computer, unattended)) = policy
+                    if let Some((computer, unattended)) = switched
                         && let Some(h) = server.hosts.lock().unwrap().get(&computer)
                     {
                         let _ = h.tx.send(policy(server, &computer, unattended));

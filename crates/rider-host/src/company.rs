@@ -87,7 +87,9 @@ fn net_links() -> Result<Vec<NetLink>> {
     use windows::Win32::Networking::NetworkListManager::{
         INetworkConnection, INetworkListManager, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED, NetworkListManager,
     };
-    use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    };
 
     let adapters = adapters();
     // SAFETY: COM is initialised on this thread for the calls below (and
@@ -128,7 +130,10 @@ fn net_links() -> Result<Vec<NetLink>> {
 
 /// Adapters by their id: description and interface type.
 fn adapters() -> std::collections::HashMap<u128, (String, u32)> {
-    use windows::Win32::NetworkManagement::IpHelper::{GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH};
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
     use windows::Win32::Networking::WinSock::AF_UNSPEC;
 
     let mut out = std::collections::HashMap::new();
@@ -138,7 +143,8 @@ fn adapters() -> std::collections::HashMap<u128, (String, u32)> {
     for _ in 0..3 {
         buf.resize((size as usize).div_ceil(8), 0);
         // SAFETY: `buf` is at least `size` bytes and suitably aligned.
-        let err = unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(buf.as_mut_ptr().cast()), &mut size) };
+        let err =
+            unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(buf.as_mut_ptr().cast()), &mut size) };
         match err {
             0 => break,
             111 => continue, // ERROR_BUFFER_OVERFLOW: `size` now holds the required length
@@ -165,7 +171,9 @@ fn adapters() -> std::collections::HashMap<u128, (String, u32)> {
 
 /// The computer is joined to a Windows domain.
 fn domain_joined() -> bool {
-    use windows::Win32::NetworkManagement::NetManagement::{NETSETUP_JOIN_STATUS, NetApiBufferFree, NetGetJoinInformation, NetSetupDomainName};
+    use windows::Win32::NetworkManagement::NetManagement::{
+        NETSETUP_JOIN_STATUS, NetApiBufferFree, NetGetJoinInformation, NetSetupDomainName,
+    };
     let mut name = PWSTR::null();
     let mut status = NETSETUP_JOIN_STATUS(0);
     // SAFETY: both out pointers are valid; the name buffer is freed below.

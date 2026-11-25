@@ -351,14 +351,16 @@ impl Company {
     pub fn takes_place(&self, fp: &Fingerprint) -> bool {
         let hex = fp_hex(fp);
         let s = self.state.lock().unwrap();
-        let version = s.as_ref().and_then(|s| s.computers.iter().find(|c| c.fingerprint == hex)).map(|c| c.info.version.clone());
+        let version =
+            s.as_ref().and_then(|s| s.computers.iter().find(|c| c.fingerprint == hex)).map(|c| c.info.version.clone());
         version.is_some_and(|v| at_least(&v, (0, 6)))
     }
 
     /// Where a company computer is (only those enrolled).
     pub fn set_place(&self, fp: &Fingerprint, mut place: Whereabouts) {
         let hex = fp_hex(fp);
-        let enrolled = self.state.lock().unwrap().as_ref().is_some_and(|s| s.computers.iter().any(|c| c.fingerprint == hex));
+        let enrolled =
+            self.state.lock().unwrap().as_ref().is_some_and(|s| s.computers.iter().any(|c| c.fingerprint == hex));
         if enrolled {
             place.via = cut(&place.via, 64);
             self.places.lock().unwrap().insert(*fp, place);
@@ -368,7 +370,11 @@ impl Company {
     /// Where the online computers are (those that said, and know).
     pub fn places(&self, online: &HashSet<Fingerprint>) -> Vec<(Fingerprint, Whereabouts)> {
         let places = self.places.lock().unwrap();
-        places.iter().filter(|(fp, w)| online.contains(*fp) && w.place != Place::Unknown).map(|(fp, w)| (*fp, w.clone())).collect()
+        places
+            .iter()
+            .filter(|(fp, w)| online.contains(*fp) && w.place != Place::Unknown)
+            .map(|(fp, w)| (*fp, w.clone()))
+            .collect()
     }
 
     /// A company computer went offline: remember when.
@@ -656,6 +662,7 @@ mod tests {
     fn list_of_5000_fits_one_message() {
         // The worst a computer can send: every field long, four-byte characters.
         let long = "\u{1F600}".repeat(500);
+        let via = cut(&long, 64); // a place's note, as long as it gets
         let info =
             HostInfo { name: long.clone(), user: Some(long.clone()), version: long, locked: true, unattended: true };
         let info = bounded(info);
@@ -676,8 +683,7 @@ mod tests {
             })
             .collect();
         let dir = Directory { company: "x".repeat(MAX_NAME), floors: Vec::new(), computers };
-        // With every computer's place too (0.6+), its note as long as it gets.
-        let via = cut(&long, 64);
+        // With every computer's place too (0.6+).
         let places = dir
             .computers
             .iter()

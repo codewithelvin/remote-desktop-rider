@@ -266,14 +266,14 @@ mod tests {
         let home = link("HomeWiFi", "Intel(R) Wi-Fi 6 AX201", false, false);
         let decide = |links: &[NetLink], joined| Whereabouts::decide(links, joined);
         // In the office, with or without GlobalProtect connected too.
-        assert_eq!(decide(&[lan.clone()], true).place, Place::Office);
+        assert_eq!(decide(std::slice::from_ref(&lan), true).place, Place::Office);
         let both = decide(&[gp.clone(), lan], true);
         assert_eq!((both.place, both.via.as_str()), (Place::Office, "corp.example.com"));
         // At home: the domain only through the VPN.
         let away = decide(&[home.clone(), gp], true);
         assert_eq!((away.place, away.via.as_str()), (Place::Remote, "PANGP Virtual Ethernet Adapter"));
         // At home without the VPN: a domain computer is still not in the office.
-        assert_eq!(decide(&[home.clone()], true).place, Place::Remote);
+        assert_eq!(decide(std::slice::from_ref(&home), true).place, Place::Remote);
         // Not on a domain, no VPN: cannot tell.
         assert_eq!(decide(&[home], false).place, Place::Unknown);
         assert_eq!(decide(&[], false).place, Place::Unknown);
