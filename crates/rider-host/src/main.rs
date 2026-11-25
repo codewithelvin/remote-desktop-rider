@@ -339,6 +339,10 @@ fn main() -> Result<()> {
                     m.info.height
                 );
             }
+            // What a company's admin sees: in the office or not.
+            let w = company::whereabouts();
+            let via = if w.via.is_empty() { String::new() } else { format!(" (via {})", w.via) };
+            println!("Place:        {:?}{via}", w.place);
         }
         Cmd::Pair => {
             let _paused = service::Paused::service()?;

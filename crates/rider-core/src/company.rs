@@ -175,9 +175,120 @@ impl JoinToken {
     }
 }
 
+/// Where a company computer is: in the office, or outside it (working from
+/// home over the company VPN). Sent by 0.6+ computers in `PeerMsg::Place`,
+/// only to servers that said they take it (`ServerMsg::CompanyPolicy2`).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Place {
+    /// Cannot tell (not on a domain, no VPN): shown as nothing.
+    #[default]
+    Unknown,
+    Office,
+    Remote,
+}
+
+/// A computer's place, and what told it: the office network's name, or the
+/// VPN adapter it reaches the company through.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct Whereabouts {
+    pub place: Place,
+    pub via: String,
+}
+
+/// One connected network as Windows sees it (Network List Manager), with
+/// the adapter it is on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetLink {
+    /// The network's name, e.g. "corp.example.com".
+    pub network: String,
+    /// The adapter's description, e.g. "PANGP Virtual Ethernet Adapter".
+    pub adapter: String,
+    /// Windows found the computer's domain controller on it.
+    pub domain: bool,
+    /// The adapter is a VPN's (see [`is_vpn_adapter`]).
+    pub vpn: bool,
+}
+
+/// A VPN's virtual adapter, by its description or interface type (PPP 23,
+/// tunnel 131). Hyper-V's and VirtualBox's adapters are not: they carry the
+/// computer's own network.
+pub fn is_vpn_adapter(description: &str, if_type: u32) -> bool {
+    const NAMES: [&str; 12] = [
+        "pangp", // Palo Alto GlobalProtect: "PANGP Virtual Ethernet Adapter"
+        "globalprotect",
+        "vpn",
+        "anyconnect",
+        "fortinet",
+        "fortissl",
+        "wireguard",
+        "wintun",
+        "openvpn",
+        "tap-windows",
+        "juniper",
+        "pulse secure",
+    ];
+    let d = description.to_ascii_lowercase();
+    if_type == 23 || if_type == 131 || NAMES.iter().any(|n| d.contains(n))
+}
+
+impl Whereabouts {
+    /// Decide from the connected networks. A domain-joined computer in the
+    /// office finds its domain on its own Wi-Fi or Ethernet (even with the
+    /// VPN connected too); outside, only through the VPN or not at all.
+    pub fn decide(links: &[NetLink], domain_joined: bool) -> Self {
+        if let Some(l) = links.iter().find(|l| l.domain && !l.vpn) {
+            return Self { place: Place::Office, via: l.network.clone() };
+        }
+        if let Some(l) = links.iter().find(|l| l.vpn) {
+            return Self { place: Place::Remote, via: l.adapter.clone() };
+        }
+        if domain_joined {
+            return Self { place: Place::Remote, via: String::new() };
+        }
+        Self::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn office_or_remote() {
+        let link = |network: &str, adapter: &str, domain, vpn| NetLink {
+            network: network.into(),
+            adapter: adapter.into(),
+            domain,
+            vpn,
+        };
+        let lan = link("corp.example.com", "Intel(R) Wi-Fi 6 AX201", true, false);
+        let gp = link("corp.example.com", "PANGP Virtual Ethernet Adapter", true, true);
+        let home = link("HomeWiFi", "Intel(R) Wi-Fi 6 AX201", false, false);
+        let decide = |links: &[NetLink], joined| Whereabouts::decide(links, joined);
+        // In the office, with or without GlobalProtect connected too.
+        assert_eq!(decide(&[lan.clone()], true).place, Place::Office);
+        let both = decide(&[gp.clone(), lan], true);
+        assert_eq!((both.place, both.via.as_str()), (Place::Office, "corp.example.com"));
+        // At home: the domain only through the VPN.
+        let away = decide(&[home.clone(), gp], true);
+        assert_eq!((away.place, away.via.as_str()), (Place::Remote, "PANGP Virtual Ethernet Adapter"));
+        // At home without the VPN: a domain computer is still not in the office.
+        assert_eq!(decide(&[home.clone()], true).place, Place::Remote);
+        // Not on a domain, no VPN: cannot tell.
+        assert_eq!(decide(&[home], false).place, Place::Unknown);
+        assert_eq!(decide(&[], false).place, Place::Unknown);
+    }
+
+    #[test]
+    fn vpn_adapters() {
+        assert!(is_vpn_adapter("PANGP Virtual Ethernet Adapter", 6));
+        assert!(is_vpn_adapter("PANGP Virtual Ethernet Adapter Secure", 6));
+        assert!(is_vpn_adapter("Cisco AnyConnect Secure Mobility Client Virtual Miniport Adapter", 6));
+        assert!(is_vpn_adapter("WAN Miniport (PPTP)", 23));
+        assert!(!is_vpn_adapter("Intel(R) Ethernet Connection (13) I219-LM", 6));
+        assert!(!is_vpn_adapter("Hyper-V Virtual Ethernet Adapter", 6));
+        assert!(!is_vpn_adapter("VirtualBox Host-Only Ethernet Adapter", 6));
+    }
 
     #[test]
     fn join_token_round_trip() {

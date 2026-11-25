@@ -6,7 +6,7 @@
 
 use crate::config::{CompanyLink, HostConfig};
 use anyhow::{Context, Result};
-use rider_core::company::{HostInfo, JoinToken};
+use rider_core::company::{HostInfo, JoinToken, NetLink, Whereabouts};
 use rider_core::identity::{Identity, fp_hex};
 use rider_core::rendezvous::ServerRef;
 use windows::Win32::System::RemoteDesktop::{
@@ -69,5 +69,111 @@ pub fn console_user() -> (Option<String>, bool) {
             WTSFreeMemory(buf.0.cast());
         }
         (user, locked)
+    }
+}
+
+/// In the office or not, from the networks Windows sees (the rule is
+/// `Whereabouts::decide`). Blocking: Network List Manager is a COM object.
+pub fn whereabouts() -> Whereabouts {
+    let links = net_links().unwrap_or_else(|e| {
+        tracing::debug!("network list: {e:#}");
+        Vec::new()
+    });
+    Whereabouts::decide(&links, domain_joined())
+}
+
+/// The connected networks, each with its adapter.
+fn net_links() -> Result<Vec<NetLink>> {
+    use windows::Win32::Networking::NetworkListManager::{
+        INetworkConnection, INetworkListManager, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED, NetworkListManager,
+    };
+    use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
+
+    let adapters = adapters();
+    // SAFETY: COM is initialised on this thread for the calls below (and
+    // uninitialised after, if this call did it); every out value is owned.
+    unsafe {
+        let initialised = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| -> Result<Vec<NetLink>> {
+            let nlm: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL)?;
+            let connections = nlm.GetNetworkConnections()?;
+            let mut links = Vec::new();
+            loop {
+                let mut item: [Option<INetworkConnection>; 1] = [None];
+                let mut fetched = 0u32;
+                if connections.Next(&mut item, Some(&mut fetched)).is_err() || fetched == 0 {
+                    break;
+                }
+                let Some(c) = item[0].take() else { break };
+                if !c.IsConnected().is_ok_and(|b| b.as_bool()) {
+                    continue;
+                }
+                let network = c.GetNetwork()?;
+                let (description, if_type) = adapters.get(&c.GetAdapterId()?.to_u128()).cloned().unwrap_or_default();
+                links.push(NetLink {
+                    network: network.GetName().map(|n| n.to_string()).unwrap_or_default(),
+                    vpn: rider_core::company::is_vpn_adapter(&description, if_type),
+                    adapter: description,
+                    domain: network.GetCategory()? == NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED,
+                });
+            }
+            Ok(links)
+        })();
+        if initialised {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+/// Adapters by their id: description and interface type.
+fn adapters() -> std::collections::HashMap<u128, (String, u32)> {
+    use windows::Win32::NetworkManagement::IpHelper::{GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH};
+    use windows::Win32::Networking::WinSock::AF_UNSPEC;
+
+    let mut out = std::collections::HashMap::new();
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_UNICAST;
+    let mut size = 16 * 1024u32;
+    let mut buf: Vec<u64> = Vec::new(); // u64 for alignment of the structs
+    for _ in 0..3 {
+        buf.resize((size as usize).div_ceil(8), 0);
+        // SAFETY: `buf` is at least `size` bytes and suitably aligned.
+        let err = unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(buf.as_mut_ptr().cast()), &mut size) };
+        match err {
+            0 => break,
+            111 => continue, // ERROR_BUFFER_OVERFLOW: `size` now holds the required length
+            _ => return out,
+        }
+    }
+    // SAFETY: the OS filled `buf` with a linked list of adapters that lives
+    // as long as `buf`; every pointer is checked for null before use.
+    unsafe {
+        let mut adapter = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        while !adapter.is_null() {
+            let a = &*adapter;
+            // AdapterName is the adapter's id: "{4D36E972-...}".
+            let id = a.AdapterName.to_string().ok().map(|s| s.trim_matches(['{', '}']).to_owned());
+            if let Some(guid) = id.and_then(|s| windows::core::GUID::try_from(s.as_str()).ok()) {
+                let description = a.Description.to_string().unwrap_or_default();
+                out.insert(guid.to_u128(), (description, a.IfType));
+            }
+            adapter = a.Next;
+        }
+    }
+    out
+}
+
+/// The computer is joined to a Windows domain.
+fn domain_joined() -> bool {
+    use windows::Win32::NetworkManagement::NetManagement::{NETSETUP_JOIN_STATUS, NetApiBufferFree, NetGetJoinInformation, NetSetupDomainName};
+    let mut name = PWSTR::null();
+    let mut status = NETSETUP_JOIN_STATUS(0);
+    // SAFETY: both out pointers are valid; the name buffer is freed below.
+    unsafe {
+        let err = NetGetJoinInformation(windows::core::PCWSTR::null(), &mut name, &mut status);
+        if !name.is_null() {
+            NetApiBufferFree(Some(name.0.cast()));
+        }
+        err == 0 && status == NetSetupDomainName
     }
 }

@@ -12,10 +12,10 @@
 //! The server only stores who is where; it never takes part in sessions.
 
 use anyhow::{Context, Result, bail};
-use rider_core::company::{Computer, DirEdit, Directory, Floor, HostInfo, MAX_NAME, Room};
+use rider_core::company::{Computer, DirEdit, Directory, Floor, HostInfo, MAX_NAME, Place, Room, Whereabouts};
 use rider_core::identity::{Fingerprint, fp_from_hex, fp_hex};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -65,6 +65,8 @@ pub struct Company {
     dirty: std::sync::atomic::AtomicBool,
     taken: std::sync::atomic::AtomicU64,
     written: Mutex<u64>,
+    /// Where each computer said it is (0.6+): live state, not written.
+    places: Mutex<HashMap<Fingerprint, Whereabouts>>,
 }
 
 fn random_hex(bytes: usize) -> Result<String> {
@@ -132,6 +134,7 @@ impl Company {
             dirty: std::sync::atomic::AtomicBool::new(false),
             taken: std::sync::atomic::AtomicU64::new(0),
             written: Mutex::new(0),
+            places: Mutex::new(HashMap::new()),
         }
     }
 
@@ -343,8 +346,35 @@ impl Company {
         }
     }
 
+    /// The computer runs 0.6 or later: it understands `CompanyPolicy2` and
+    /// sends its place.
+    pub fn takes_place(&self, fp: &Fingerprint) -> bool {
+        let hex = fp_hex(fp);
+        let s = self.state.lock().unwrap();
+        let version = s.as_ref().and_then(|s| s.computers.iter().find(|c| c.fingerprint == hex)).map(|c| c.info.version.clone());
+        version.is_some_and(|v| at_least(&v, (0, 6)))
+    }
+
+    /// Where a company computer is (only those enrolled).
+    pub fn set_place(&self, fp: &Fingerprint, mut place: Whereabouts) {
+        let hex = fp_hex(fp);
+        let enrolled = self.state.lock().unwrap().as_ref().is_some_and(|s| s.computers.iter().any(|c| c.fingerprint == hex));
+        if enrolled {
+            place.via = cut(&place.via, 64);
+            self.places.lock().unwrap().insert(*fp, place);
+        }
+    }
+
+    /// Where the online computers are (those that said, and know).
+    pub fn places(&self, online: &HashSet<Fingerprint>) -> Vec<(Fingerprint, Whereabouts)> {
+        let places = self.places.lock().unwrap();
+        places.iter().filter(|(fp, w)| online.contains(*fp) && w.place != Place::Unknown).map(|(fp, w)| (*fp, w.clone())).collect()
+    }
+
     /// A company computer went offline: remember when.
     pub fn seen(&self, fp: &Fingerprint) {
+        // It tells again where it is when it comes back.
+        self.places.lock().unwrap().remove(fp);
         let hex = fp_hex(fp);
         let mut guard = self.state.lock().unwrap();
         let Some(s) = guard.as_mut() else { return };
@@ -359,6 +389,25 @@ impl Company {
 /// What a computer says about itself, cut to size in bytes (not characters:
 /// four-byte characters must not make the admin's list of 5000 computers
 /// outgrow one message, see `list_of_5000_fits_one_message`).
+/// `s` without control characters, cut to `max` bytes on a character boundary.
+fn cut(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars().filter(|c| !c.is_control()) {
+        if out.len() + c.len_utf8() > max {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "0.6.2" is at least (0, 6).
+fn at_least(version: &str, (major, minor): (u32, u32)) -> bool {
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let v = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    v >= (major, minor)
+}
+
 fn bounded(mut info: HostInfo) -> HostInfo {
     let cut = |s: &str, max: usize| {
         let mut out = String::new();
@@ -536,6 +585,30 @@ mod tests {
     }
 
     #[test]
+    fn places_of_new_computers_only() {
+        let d = dir("whereabouts");
+        Company::init(&d, "Northwind").unwrap();
+        let c = Company::load(&d).unwrap();
+        let secret = c.claim(&[1; 32], &std::fs::read_to_string(d.join("company-setup")).unwrap()[..14]).unwrap().1;
+        let version = |v: &str| HostInfo { name: "PC".into(), version: v.into(), ..Default::default() };
+        c.enroll(&[5; 32], &secret, version("0.5.0")).unwrap();
+        c.enroll(&[6; 32], &secret, version("0.6.0")).unwrap();
+        c.enroll(&[7; 32], &secret, version("1.0.2")).unwrap();
+        // Only 0.6+ computers are told the server takes their place.
+        assert!(!c.takes_place(&[5; 32]) && c.takes_place(&[6; 32]) && c.takes_place(&[7; 32]));
+        assert!(!c.takes_place(&[8; 32])); // not in the company
+        let remote = Whereabouts { place: Place::Remote, via: "PANGP Virtual Ethernet Adapter".into() };
+        c.set_place(&[6; 32], remote.clone());
+        c.set_place(&[7; 32], Whereabouts { place: Place::Unknown, via: String::new() });
+        c.set_place(&[8; 32], remote.clone()); // not in the company: ignored
+        let online: HashSet<Fingerprint> = [[6; 32], [7; 32], [8; 32]].into();
+        assert_eq!(c.places(&online), vec![([6; 32], remote)]);
+        // Offline: forgotten until it says again.
+        c.seen(&[6; 32]);
+        assert!(c.places(&online).is_empty());
+    }
+
+    #[test]
     fn batched_writes_keep_the_newest() {
         let d = std::env::temp_dir().join(format!("rider-company-batch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -603,7 +676,15 @@ mod tests {
             })
             .collect();
         let dir = Directory { company: "x".repeat(MAX_NAME), floors: Vec::new(), computers };
-        let size = postcard::to_allocvec(&rider_core::rendezvous::ServerMsg::Directory(dir)).unwrap().len();
+        // With every computer's place too (0.6+), its note as long as it gets.
+        let via = cut(&long, 64);
+        let places = dir
+            .computers
+            .iter()
+            .map(|c| (c.fingerprint, Whereabouts { place: Place::Remote, via: via.clone() }))
+            .collect();
+        let msg = rider_core::rendezvous::ServerMsg::Directory2 { directory: dir, places };
+        let size = postcard::to_allocvec(&msg).unwrap().len();
         eprintln!("the worst list of {MAX_COMPUTERS}: {size} bytes");
         assert!(size < 4 * 1024 * 1024 * 3 / 4, "{size} bytes: too close to the 4 MB message limit");
     }

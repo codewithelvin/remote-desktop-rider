@@ -146,6 +146,13 @@ pub enum PeerMsg {
     /// A company computer, on its `Register` connection: what the admin's
     /// console shows about it (sent again when it changes).
     HostInfo { version: u32, info: crate::company::HostInfo },
+    // 0.6+. New messages go last: postcard numbers the variants.
+    /// A company computer, on its `Register` connection: in the office or
+    /// not. Sent only once the server answered with `CompanyPolicy2`.
+    Place { version: u32, place: crate::company::Whereabouts },
+    /// The admin: the directory and where each online computer is. Older
+    /// servers close the connection; then the app asks `Directory`.
+    Directory2 { version: u32 },
 }
 
 /// Server → peer.
@@ -198,6 +205,18 @@ pub enum ServerMsg {
     /// switch for connecting without anyone accepting.
     CompanyPolicy {
         unattended: bool,
+    },
+    // 0.6+, sent only to peers that understand them.
+    /// As `CompanyPolicy`, to a 0.6+ computer (by `HostInfo::version`): this
+    /// server also takes `PeerMsg::Place`.
+    CompanyPolicy2 {
+        unattended: bool,
+    },
+    /// Answer to `Directory2`: the directory, and where its online
+    /// computers are (those that said).
+    Directory2 {
+        directory: crate::company::Directory,
+        places: Vec<(Fingerprint, crate::company::Whereabouts)>,
     },
 }
 
@@ -331,6 +350,37 @@ pub async fn admin_claim(identity: &Identity, server: &ServerRef, code: &str) ->
         ServerMsg::Company { company, join_secret } => Ok((company, join_secret)),
         _ => bail!("unexpected reply from the rendezvous server"),
     }
+}
+
+/// Where the company's online computers are (0.6+ servers and computers).
+pub type Places = Vec<(Fingerprint, crate::company::Whereabouts)>;
+
+/// The server closed on `Directory2` once: it is older, ask it `Directory`.
+static OLD_DIRECTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enterprise mode, admin only: the company directory and where its
+/// computers are (`None` from a server older than 0.6).
+pub async fn directory_and_places(
+    identity: &Identity,
+    server: &ServerRef,
+) -> Result<(crate::company::Directory, Option<Places>)> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !OLD_DIRECTORY.load(Relaxed) {
+        let (_socket, conn, mut send, mut recv) = reach_server(identity, server).await?;
+        crate::proto::write_msg(&mut send, &PeerMsg::Directory2 { version: VERSION }).await?;
+        let reply = tokio::time::timeout(Duration::from_secs(10), crate::proto::read_msg::<ServerMsg>(&mut recv))
+            .await
+            .context("the server did not answer")?;
+        conn.close(0u32.into(), b"done");
+        match reply {
+            Ok(Some(ServerMsg::Directory2 { directory, places })) => return Ok((directory, Some(places))),
+            Ok(Some(ServerMsg::Error { message })) => bail!("{}", explain(&message)),
+            Ok(Some(_)) => bail!("unexpected reply from the rendezvous server"),
+            // An older server closes on messages it does not know.
+            Ok(None) | Err(_) => OLD_DIRECTORY.store(true, Relaxed),
+        }
+    }
+    Ok((directory(identity, server, None).await?, None))
 }
 
 /// Enterprise mode, admin only: the company directory, after `edit` if given.

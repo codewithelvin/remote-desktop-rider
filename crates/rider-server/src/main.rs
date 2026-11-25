@@ -394,6 +394,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             msg @ (PeerMsg::AdminClaim { .. }
             | PeerMsg::Directory { .. }
             | PeerMsg::DirectoryEdit { .. }
+            | PeerMsg::Directory2 { .. }
             | PeerMsg::Enroll { .. }),
         ) => {
             let reply = company_request(server, conn, fp, msg);
@@ -403,7 +404,16 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             Ok(())
         }
         // Only on a host's Register connection.
-        Some(PeerMsg::HostInfo { .. }) | None => Ok(()),
+        Some(PeerMsg::HostInfo { .. } | PeerMsg::Place { .. }) | None => Ok(()),
+    }
+}
+
+/// The admin's switch for a company computer, in the words it understands.
+fn policy(server: &Server, fp: &Fingerprint, unattended: bool) -> ServerMsg {
+    if server.company.takes_place(fp) {
+        ServerMsg::CompanyPolicy2 { unattended }
+    } else {
+        ServerMsg::CompanyPolicy { unattended }
     }
 }
 
@@ -414,6 +424,7 @@ fn company_request(server: &Server, conn: &quinn::Connection, fp: Fingerprint, m
         PeerMsg::AdminClaim { version, .. }
         | PeerMsg::Directory { version }
         | PeerMsg::DirectoryEdit { version, .. }
+        | PeerMsg::Directory2 { version }
         | PeerMsg::Enroll { version, .. } => *version,
         _ => return error("unexpected request".into()),
     };
@@ -452,6 +463,13 @@ fn company_request(server: &Server, conn: &quinn::Connection, fp: Fingerprint, m
         },
         _ if !server.company.is_admin(&fp) => error("only the company's admin can see its computers".into()),
         PeerMsg::Directory { .. } => directory(server),
+        PeerMsg::Directory2 { .. } => {
+            let online: HashSet<Fingerprint> = server.hosts.lock().unwrap().keys().copied().collect();
+            match server.company.directory(&online) {
+                Some(directory) => ServerMsg::Directory2 { directory, places: server.company.places(&online) },
+                None => error("this server has no company".into()),
+            }
+        }
         PeerMsg::DirectoryEdit { edit, .. } => {
             let policy = match &edit {
                 DirEdit::Unattended { computer, on } => Some((*computer, *on)),
@@ -463,7 +481,7 @@ fn company_request(server: &Server, conn: &quinn::Connection, fp: Fingerprint, m
                     if let Some((computer, unattended)) = policy
                         && let Some(h) = server.hosts.lock().unwrap().get(&computer)
                     {
-                        let _ = h.tx.send(ServerMsg::CompanyPolicy { unattended });
+                        let _ = h.tx.send(policy(server, &computer, unattended));
                     }
                     directory(server)
                 }
@@ -531,8 +549,9 @@ async fn serve_host(
                 }
                 PeerMsg::HostInfo { info, .. } => {
                     server.company.update_info(&fp, info);
-                    let _ = tx.send(ServerMsg::CompanyPolicy { unattended: server.company.unattended_on(&fp) });
+                    let _ = tx.send(policy(server, &fp, server.company.unattended_on(&fp)));
                 }
+                PeerMsg::Place { place, .. } => server.company.set_place(&fp, place),
                 _ => {}
             }
         }

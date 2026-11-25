@@ -115,6 +115,27 @@ and rooms (**+ Floor**, then **+ Room** on a floor), and drag computers onto
 rooms. Right-click a computer for more: move it, switch unattended access,
 or remove it from the list.
 
+### In the office or remote
+
+A laptop taken home still reaches the company's server over the company VPN
+(GlobalProtect, AnyConnect, ...), so you can help it there too. The console
+marks it **Remote**, and the header counts how many are ("6 of 7 computers
+online, 2 remote"); hover over a computer to see what it went by.
+
+Each computer works this out itself every 15 seconds, from the networks
+Windows sees:
+
+- **In the office**: it finds its Windows domain on its own Wi-Fi or
+  Ethernet (Windows calls it a "Domain network"), even with the VPN
+  connected too.
+- **Remote**: it reaches the domain only through a VPN's adapter (for
+  GlobalProtect, "PANGP Virtual Ethernet Adapter"), or not at all.
+- Computers that are not joined to a domain and use no VPN show nothing.
+
+To check one computer, run `rider-host info` there: the `Place:` line says
+what it would report. Needs version 0.6 on the server, the computers and the
+admin's app; older ones keep working and show nothing.
+
 ## Connecting
 
 Double-click a computer (or right-click > **Connect**). On that computer the

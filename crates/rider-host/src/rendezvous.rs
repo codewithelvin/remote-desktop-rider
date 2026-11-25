@@ -20,6 +20,8 @@ use std::time::Duration;
 
 /// How often the allow-list, pairing state and LAN addresses are re-checked.
 const UPDATE_INTERVAL: Duration = Duration::from_secs(2);
+/// How often a company computer checks whether it is in the office.
+const PLACE_INTERVAL: Duration = Duration::from_secs(15);
 const SERVER_CHANGED: &str = "server setting changed";
 
 fn configured(state: &HostState) -> Option<ServerRef> {
@@ -186,8 +188,12 @@ async fn session(
     if let Some(i) = &info {
         write_msg(&mut send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
     }
+    // In the office or not: sent once the server said it takes it.
+    let mut place: Option<rider_core::company::Whereabouts> = None;
+    let mut takes_place = false;
     let mut shown_code: Option<String> = None;
     let mut tick = tokio::time::interval(UPDATE_INTERVAL);
+    let mut place_tick = tokio::time::interval(PLACE_INTERVAL);
     loop {
         tokio::select! {
             msg = read_msg::<ServerMsg>(&mut recv) => match msg? {
@@ -217,6 +223,17 @@ async fn session(
                     tracing::info!("the company admin's unattended switch: {}", if unattended { "on" } else { "off" });
                     state.company_unattended.store(unattended, std::sync::atomic::Ordering::Relaxed);
                 }
+                Some(ServerMsg::CompanyPolicy2 { unattended }) => {
+                    tracing::info!("the company admin's unattended switch: {}", if unattended { "on" } else { "off" });
+                    state.company_unattended.store(unattended, std::sync::atomic::Ordering::Relaxed);
+                    if !takes_place {
+                        takes_place = true;
+                        let now = tokio::task::spawn_blocking(crate::company::whereabouts).await?;
+                        tracing::info!("place: {:?} ({})", now.place, now.via);
+                        write_msg(&mut send, &PeerMsg::Place { version: VERSION, place: now.clone() }).await?;
+                        place = Some(now);
+                    }
+                }
                 Some(ServerMsg::Error { message }) => bail!("{message}"),
                 Some(
                     ServerMsg::Ready { .. }
@@ -225,6 +242,7 @@ async fn session(
                     | ServerMsg::InviteCode { .. }
                     | ServerMsg::Company { .. }
                     | ServerMsg::Directory(_)
+                    | ServerMsg::Directory2 { .. }
                     | ServerMsg::Enrolled { .. },
                 ) => {}
                 None => bail!("server closed the connection"),
@@ -245,6 +263,14 @@ async fn session(
                         write_msg(&mut send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
                     }
                     info = now;
+                }
+            }
+            _ = place_tick.tick(), if takes_place => {
+                let now = tokio::task::spawn_blocking(crate::company::whereabouts).await?;
+                if place.as_ref() != Some(&now) {
+                    tracing::info!("place: {:?} ({})", now.place, now.via);
+                    write_msg(&mut send, &PeerMsg::Place { version: VERSION, place: now.clone() }).await?;
+                    place = Some(now);
                 }
             }
             e = conn.closed() => bail!("{e}"),

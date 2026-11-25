@@ -8,7 +8,7 @@
 
 use crate::widgets::{self, ACCENT, AMBER, GREEN, GREY, icon};
 use eframe::egui::{self, Align, Key, Layout, RichText, ScrollArea, TextEdit, Ui, vec2};
-use rider_core::company::{Computer, DirEdit, Directory, JoinToken};
+use rider_core::company::{Computer, DirEdit, Directory, JoinToken, Place, Whereabouts};
 use rider_core::i18n::tr;
 use rider_core::identity::{Fingerprint, Identity, fp_from_hex};
 use rider_core::rendezvous::ServerRef;
@@ -45,7 +45,9 @@ pub enum Outcome {
 
 enum Reply {
     Claimed(Result<(String, String), String>),
-    Directory(Result<Directory, String>),
+    /// The directory; with where its computers are, from 0.6+ servers
+    /// (`None` after an edit: the places shown stay).
+    Directory(Result<(Directory, Option<rider_core::rendezvous::Places>), String>),
     /// A session to a company computer moved on.
     Session(Fingerprint, Session),
 }
@@ -84,6 +86,8 @@ pub struct Enterprise {
     rx: mpsc::Receiver<Reply>,
     ctx: egui::Context,
     dir: Option<Directory>,
+    /// Where the online computers are (in the office or not), as they said.
+    places: std::collections::HashMap<Fingerprint, Whereabouts>,
     error: Option<String>,
     /// A request is on its way.
     busy: bool,
@@ -111,6 +115,7 @@ impl Enterprise {
             rx,
             ctx: ctx.clone(),
             dir: None,
+            places: std::collections::HashMap::new(),
             error: None,
             busy: false,
             fetched: None,
@@ -207,6 +212,8 @@ impl Enterprise {
                 pc(6, "LAPTOP-NEW-17", Some("Priya N."), None, true, false),
             ],
         });
+        let gp = |place| Whereabouts { place, via: "PANGP Virtual Ethernet Adapter".into() };
+        self.places = [([1; 32], gp(Place::Remote)), ([6; 32], gp(Place::Remote)), ([2; 32], gp(Place::Office))].into();
         self.selected = Selected::Room(3);
         // Never fetched again: there is no server behind it.
         self.fetched = Some(Instant::now() + Duration::from_secs(86_400));
@@ -217,10 +224,25 @@ impl Enterprise {
         self.busy = true;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         env.rt.spawn(async move {
-            let r = rider_core::rendezvous::directory(&id, &server, edit).await.map_err(|e| format!("{e:#}"));
+            let r = match edit {
+                Some(edit) => rider_core::rendezvous::directory(&id, &server, Some(edit)).await.map(|d| (d, None)),
+                None => rider_core::rendezvous::directory_and_places(&id, &server).await,
+            };
+            let r = r.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Reply::Directory(r));
             ctx.request_repaint();
         });
+    }
+
+    /// Where an online computer is, if it said.
+    fn place(&self, c: &Computer) -> Option<&Whereabouts> {
+        self.places.get(&c.fingerprint).filter(|_| c.online)
+    }
+
+    /// Online computers outside the office.
+    fn remote_count(&self) -> usize {
+        let Some(dir) = &self.dir else { return 0 };
+        dir.computers.iter().filter(|c| self.place(c).is_some_and(|w| w.place == Place::Remote)).count()
     }
 
     fn claim(&mut self, env: &Env) {
@@ -250,7 +272,10 @@ impl Enterprise {
                     outcome = Some(Outcome::SignedIn(rider_client::config::EnterpriseAdmin { company, join_secret }));
                 }
                 Reply::Claimed(Err(e)) => self.error = Some(e),
-                Reply::Directory(Ok(d)) => {
+                Reply::Directory(Ok((d, places))) => {
+                    if let Some(places) = places {
+                        self.places = places.into_iter().collect();
+                    }
                     if let Selected::Room(r) = self.selected
                         && d.room(r).is_none()
                     {
@@ -362,7 +387,11 @@ impl Enterprise {
         let mut edits: Vec<DirEdit> = Vec::new();
         let (online, total) =
             self.dir.as_ref().map_or((0, 0), |d| (d.computers.iter().filter(|c| c.online).count(), d.computers.len()));
-        let subtitle = trf!("{} of {} computers online", "{} / {} kompüter onlayndır", online, total);
+        let mut subtitle = trf!("{} of {} computers online", "{} / {} kompüter onlayndır", online, total);
+        let remote = self.remote_count();
+        if remote > 0 {
+            subtitle += &trf!(", {} remote", ", {} uzaqdan", remote);
+        }
         widgets::page_header(ui, &admin.company, &subtitle, |ui| {
             if ui
                 .button(tr("Sign out", "Çıxış"))
@@ -758,7 +787,13 @@ impl Enterprise {
         };
         let fill = if picked { ACCENT.linear_multiply(if dark { 0.18 } else { 0.08 }) } else { widgets::card_fill(ui) };
         ui.painter().rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
-        tile_body(ui, rect, c, &status, color);
+        let place = self.place(c);
+        tile_body(ui, rect, c, &status, color, place);
+        let place_note = place.and_then(place_note);
+        let r = match place_note {
+            Some(note) if !r.dragged() => r.on_hover_text(note),
+            _ => r,
+        };
         // A picked tile carries the whole selection; any other just itself.
         let carried = if picked {
             list.iter().map(|c| c.fingerprint).filter(|fp| self.picked.contains(fp)).collect()
@@ -984,7 +1019,7 @@ impl Enterprise {
 
 /// A tile: the computer's icon tinted by its state, its name, who is
 /// there (or the session's state), and an Unattended badge.
-fn tile_body(ui: &Ui, rect: egui::Rect, c: &Computer, status: &str, color: egui::Color32) {
+fn tile_body(ui: &Ui, rect: egui::Rect, c: &Computer, status: &str, color: egui::Color32, place: Option<&Whereabouts>) {
     let p = ui.painter();
     let dark = ui.visuals().dark_mode;
     let icon_rect = egui::Rect::from_center_size(rect.left_center() + vec2(30.0, 0.0), vec2(36.0, 36.0));
@@ -1003,6 +1038,18 @@ fn tile_body(ui: &Ui, rect: egui::Rect, c: &Computer, status: &str, color: egui:
         p.galley(b.min + vec2(6.0, 2.0), galley, AMBER);
         right = b.left() - 6.0;
     }
+    // Outside the office (over the company VPN): the admin should know.
+    if place.is_some_and(|w| w.place == Place::Remote) {
+        let badge = tr("Remote", "Uzaqdan");
+        let galley = p.layout_no_wrap(badge.into(), egui::FontId::proportional(11.0), VIOLET);
+        let b = egui::Rect::from_min_size(
+            egui::pos2(right - galley.size().x - 12.0, rect.top() + 10.0),
+            galley.size() + vec2(12.0, 4.0),
+        );
+        p.rect_filled(b, 8.0, VIOLET.linear_multiply(if dark { 0.22 } else { 0.14 }));
+        p.galley(b.min + vec2(6.0, 2.0), galley, VIOLET);
+        right = b.left() - 6.0;
+    }
     let text = ui.visuals().text_color();
     let name = p.layout(c.info.name.clone(), egui::FontId::new(14.0, widgets::semibold()), text, (right - x).max(10.0));
     let name = truncate_galley(ui, name, &c.info.name, egui::FontId::new(14.0, widgets::semibold()), text, right - x);
@@ -1018,6 +1065,20 @@ fn tile_body(ui: &Ui, rect: egui::Rect, c: &Computer, status: &str, color: egui:
     );
     p.galley(egui::pos2(x, rect.center().y + 2.0), line, sub);
 }
+
+/// A tile's hover note on where the computer is.
+fn place_note(w: &Whereabouts) -> Option<String> {
+    let via = if w.via.is_empty() { String::new() } else { format!(" ({})", w.via) };
+    let what = match w.place {
+        Place::Office => tr("In the office", "Ofisdədir"),
+        Place::Remote => tr("Outside the office, through the VPN", "Ofisdən kənarda, VPN vasitəsilə"),
+        Place::Unknown => return None,
+    };
+    Some(format!("{what}{via}"))
+}
+
+/// The "Remote" badge's colour.
+const VIOLET: egui::Color32 = egui::Color32::from_rgb(150, 112, 240);
 
 /// One line of `text`, cut with "…" to `width`.
 fn truncate_galley(
