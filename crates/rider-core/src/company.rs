@@ -71,7 +71,7 @@ impl Directory {
     }
 
     fn counts(&self, f: impl Fn(&Computer) -> bool) -> (usize, usize) {
-        self.computers.iter().filter(|c| f(c)).fold((0, 0), |(on, all), c| (on + c.online as usize, all + 1))
+        self.computers.iter().filter(|c| f(c)).fold((0, 0), |(on, all), c| (on + usize::from(c.online), all + 1))
     }
 }
 

@@ -7,7 +7,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
             let cover = |d: f32| (0.5 - d * s).clamp(0.0, 1.0);
 
             let tile = cover(rounded_box(p, (0.5, 0.5), (0.47, 0.47), 0.22));
-            let t = (p.0 + p.1) * 0.5;
+            let t = f32::midpoint(p.0, p.1);
             let bg = [lerp(66.0, 29.0, t), lerp(133.0, 78.0, t), lerp(244.0, 216.0, t)];
 
             let w = 0.034_f32.max(0.55 / s);

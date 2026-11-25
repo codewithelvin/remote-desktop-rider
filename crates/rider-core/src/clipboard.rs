@@ -26,7 +26,7 @@ pub fn spawn(local_changes: UnboundedSender<String>, remote_updates: Receiver<St
             if let Ok(text) = cb.get_text()
                 && text != last
             {
-                last = text.clone();
+                last.clone_from(&text);
                 if text.len() <= MAX_TEXT && local_changes.send(text).is_err() {
                     return;
                 }

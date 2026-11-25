@@ -126,7 +126,7 @@ fn main() -> Result<()> {
                 println!("No paired hosts. Use `rider-client pair <address>`.");
             }
             for h in &cfg.hosts {
-                let fp = fp_from_hex(&h.fingerprint).map(|f| fp_short(&f)).unwrap_or_default();
+                let fp = fp_from_hex(&h.fingerprint).map_or_default(|f| fp_short(&f));
                 let addr = if h.addr.is_empty() { "(via server)" } else { h.addr.as_str() };
                 println!("{:<20} {:<28} {fp}", h.name, addr);
             }
@@ -240,7 +240,7 @@ fn main() -> Result<()> {
                 Box::new(move || {
                     let (cfg, identity, known, pin) = (cfg.clone(), identity.clone(), known.clone(), pin.clone());
                     Box::pin(async move { Ok(rider_client::connect(&cfg, &identity, &known, Some(pin)).await?.0) })
-                        as std::pin::Pin<Box<dyn std::future::Future<Output = Result<_>> + Send>>
+                        as std::pin::Pin<Box<dyn Future<Output = Result<_>> + Send>>
                 }) as rider_client::app::Reconnect
             });
             let (session, route) = rt.block_on(rider_client::connect(&cfg, &identity, &known, piped))?;

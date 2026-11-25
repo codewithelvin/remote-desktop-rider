@@ -300,7 +300,7 @@ impl ClientApp {
                 match which {
                     "enterprise-many" => self.enterprise.preview_many(1500),
                     other => {
-                        self.enterprise.preview_state(other.trim_start_matches("enterprise").trim_start_matches('-'))
+                        self.enterprise.preview_state(other.trim_start_matches("enterprise").trim_start_matches('-'));
                     }
                 }
             }
@@ -341,11 +341,11 @@ impl ClientApp {
         match pins::load(&fingerprint) {
             Some(pin) => {
                 let d = ConnectDialog { fingerprint, name, pin, remember: false, error: None };
-                self.start_session(d, true);
+                self.start_session(&d, true);
             }
             None => {
                 self.connect =
-                    Some(ConnectDialog { fingerprint, name, pin: String::new(), remember: true, error: None })
+                    Some(ConnectDialog { fingerprint, name, pin: String::new(), remember: true, error: None });
             }
         }
     }
@@ -448,7 +448,7 @@ impl ClientApp {
                             self.server_error = Some(trf!(
                                 "Cannot remember the PIN: {e:#}",
                                 "PIN kodu yadda saxlamaq mümkün olmadı: {e:#}"
-                            ))
+                            ));
                         }
                     }
                 }
@@ -648,7 +648,7 @@ impl ClientApp {
         });
     }
 
-    fn start_session(&mut self, d: ConnectDialog, saved_pin: bool) {
+    fn start_session(&mut self, d: &ConnectDialog, saved_pin: bool) {
         self.sessions.retain(|s| s.finished.is_none() || s.host != d.fingerprint);
         let id = self.next_id();
         let mut session = Session {
@@ -854,7 +854,7 @@ impl ClientApp {
                     (Some(_), None) => (Some(GREEN), tr("Server online", "Server aktivdir")),
                 };
                 widgets::dot(ui, color);
-                ui.add(egui::Label::new(egui::RichText::new(text).weak()).wrap());
+                ui.add(egui::Label::new(RichText::new(text).weak()).wrap());
             });
             ui.horizontal(|ui| {
                 ui.add_space(4.0);
@@ -1186,8 +1186,7 @@ impl ClientApp {
                     let fp = self
                         .identity
                         .as_ref()
-                        .map(|i| rider_core::identity::fp_short(&i.fingerprint()))
-                        .unwrap_or_default();
+                        .map_or_default(|i| rider_core::identity::fp_short(&i.fingerprint()));
                     ui.horizontal(|ui| widgets::copyable(ui, &fp, RichText::new(&fp).monospace()));
                     ui.end_row();
                 });
@@ -1420,7 +1419,7 @@ impl ClientApp {
                         ui.spinner();
                     }
                     State::UpToDate => {
-                        widgets::success(ui, tr("You have the latest version.", "Ən son versiya quraşdırılıb."))
+                        widgets::success(ui, tr("You have the latest version.", "Ən son versiya quraşdırılıb."));
                     }
                     State::Failed { error, release: None } => widgets::error(ui, &error),
                     State::Available(r) => {
@@ -1431,7 +1430,7 @@ impl ClientApp {
                                 "Version {version} is available (see the top).",
                                 "{version} versiyası mövcuddur (yuxarıya baxın)."
                             ),
-                        )
+                        );
                     }
                     _ => {}
                 }
@@ -1492,14 +1491,14 @@ impl ClientApp {
 
     fn server_editor(&mut self, ui: &mut Ui) {
         use rider_core::rendezvous::ServerRef;
-        let saved = self.cfg.server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default();
+        let saved = self.cfg.server.as_ref().map_or_default(|s| (s.addr.clone(), s.fingerprint.clone()));
         let checked = self.server_check.as_ref().and_then(|rx| rx.try_recv().ok());
         if checked.is_some() {
             self.server_check = None;
         }
         let checking = self.server_check.is_some();
         if checking {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         let edit = self.server_edit.get_or_insert_with(|| saved.clone());
         let (mut save, mut clear, mut typed) = (false, false, false);
@@ -1582,14 +1581,13 @@ impl ClientApp {
         };
         let result = result.and_then(|server| {
             let mut cfg = ClientConfig::load().map_err(|e| format!("{e:#}"))?;
-            cfg.server = server.clone();
+            cfg.server.clone_from(&server);
             cfg.save().map_err(|e| format!("{e:#}"))?;
             Ok(server)
         });
         self.server_msg = Some(match result {
             Ok(server) => {
-                self.server_edit =
-                    Some(server.as_ref().map(|s| (s.addr.clone(), s.fingerprint.clone())).unwrap_or_default());
+                self.server_edit = Some(server.as_ref().map_or_default(|s| (s.addr.clone(), s.fingerprint.clone())));
                 self.cfg.server = server;
                 self.cfg_mtime = config_mtime();
                 self.server_error = None;
@@ -1756,7 +1754,7 @@ impl ClientApp {
         });
         if go {
             if let Some(d) = self.connect.take() {
-                self.start_session(d, false);
+                self.start_session(&d, false);
             }
         } else if close {
             self.connect = None;
@@ -2056,7 +2054,7 @@ impl ClientApp {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             let full = ui.available_rect_before_wrap();
             let w = full.width().min(620.0);
-            let rect = egui::Rect::from_center_size(full.center(), egui::vec2(w, full.height()));
+            let rect = egui::Rect::from_center_size(full.center(), vec2(w, full.height()));
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| chat_actions = s.chat.show(ui));
         });
         if access_changed {
@@ -2177,7 +2175,7 @@ fn parse_support_event(line: &str) -> Option<SupportEvent> {
 
 impl eframe::App for ClientApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
-        crate::sys::smooth_monitor_moves(frame);
+        sys::smooth_monitor_moves(frame);
         let ctx = ui.ctx().clone();
         if self.hide_in > 0 {
             self.hide_in -= 1;
@@ -2191,7 +2189,7 @@ impl eframe::App for ClientApp {
         self.handle_messages();
         self.watch_config();
         self.poll_online();
-        if crate::tray::take_install_request() {
+        if tray::take_install_request() {
             self.updater.install_offered();
         }
         ctx.request_repaint_after(Duration::from_secs(2));
@@ -2235,18 +2233,17 @@ impl eframe::App for ClientApp {
 
 fn progress_line(ui: &mut Ui, fraction: Option<f32>) {
     ui.add_space(2.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 2.0, ui.visuals().widgets.inactive.weak_bg_fill);
     let w = rect.width();
-    let (x0, x1) = match fraction {
-        Some(f) => (0.0, w * f.clamp(0.0, 1.0)),
-        None => {
-            let t = ui.input(|i| i.time) as f32;
-            let pos = (t / 1.4).fract() * (w * 1.3) - w * 0.3;
-            ui.ctx().request_repaint();
-            (pos.max(0.0), (pos + w * 0.3).min(w))
-        }
+    let (x0, x1) = if let Some(f) = fraction {
+        (0.0, w * f.clamp(0.0, 1.0))
+    } else {
+        let t = ui.input(|i| i.time) as f32;
+        let pos = (t / 1.4).fract() * (w * 1.3) - w * 0.3;
+        ui.ctx().request_repaint();
+        (pos.max(0.0), (pos + w * 0.3).min(w))
     };
     if x1 > x0 {
         let bar = egui::Rect::from_min_max(

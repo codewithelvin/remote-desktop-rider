@@ -39,7 +39,7 @@ pub fn console_user() -> (Option<String>, bool) {
         let session = WTSGetActiveConsoleSessionId();
         let mut buf = PWSTR::null();
         let mut len = 0u32;
-        let user = if WTSQuerySessionInformationW(None, session, WTSUserName, &mut buf, &mut len).is_ok() {
+        let user = if WTSQuerySessionInformationW(None, session, WTSUserName, &raw mut buf, &raw mut len).is_ok() {
             let name = buf.to_string().unwrap_or_default();
             WTSFreeMemory(buf.0.cast());
             Some(name).filter(|n| !n.is_empty())
@@ -48,9 +48,11 @@ pub fn console_user() -> (Option<String>, bool) {
         };
         let mut locked = false;
         let mut buf = PWSTR::null();
-        if user.is_some() && WTSQuerySessionInformationW(None, session, WTSSessionInfoEx, &mut buf, &mut len).is_ok() {
-            if len as usize >= std::mem::size_of::<WTSINFOEXW>() {
-                let ex = &*(buf.0 as *const WTSINFOEXW);
+        if user.is_some()
+            && WTSQuerySessionInformationW(None, session, WTSSessionInfoEx, &raw mut buf, &raw mut len).is_ok()
+        {
+            if len as usize >= size_of::<WTSINFOEXW>() {
+                let ex = std::ptr::read_unaligned(buf.0.cast::<WTSINFOEXW>());
                 if ex.Level == 1 {
                     locked = ex.Data.WTSInfoExLevel1.SessionFlags as u32 == WTS_SESSIONSTATE_LOCK;
                 }
@@ -87,17 +89,17 @@ fn net_links() -> Result<Vec<NetLink>> {
             loop {
                 let mut item: [Option<INetworkConnection>; 1] = [None];
                 let mut fetched = 0u32;
-                if connections.Next(&mut item, Some(&mut fetched)).is_err() || fetched == 0 {
+                if connections.Next(&mut item, Some(&raw mut fetched)).is_err() || fetched == 0 {
                     break;
                 }
                 let Some(c) = item[0].take() else { break };
-                if !c.IsConnected().is_ok_and(|b| b.as_bool()) {
+                if !c.IsConnected().is_ok_and(windows::Win32::Foundation::VARIANT_BOOL::as_bool) {
                     continue;
                 }
                 let network = c.GetNetwork()?;
                 let (description, if_type) = adapters.get(&c.GetAdapterId()?.to_u128()).cloned().unwrap_or_default();
                 links.push(NetLink {
-                    network: network.GetName().map(|n| n.to_string()).unwrap_or_default(),
+                    network: network.GetName().map_or_default(|n| n.to_string()),
                     vpn: rider_core::company::is_vpn_adapter(&description, if_type),
                     adapter: description,
                     domain: network.GetCategory()? == NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED,
@@ -125,16 +127,17 @@ fn adapters() -> std::collections::HashMap<u128, (String, u32)> {
     let mut buf: Vec<u64> = Vec::new();
     for _ in 0..3 {
         buf.resize((size as usize).div_ceil(8), 0);
-        let err =
-            unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(buf.as_mut_ptr().cast()), &mut size) };
+        let err = unsafe {
+            GetAdaptersAddresses(u32::from(AF_UNSPEC.0), flags, None, Some(buf.as_mut_ptr().cast()), &raw mut size)
+        };
         match err {
             0 => break,
-            111 => continue,
+            111 => {}
             _ => return out,
         }
     }
     unsafe {
-        let mut adapter = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        let mut adapter = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
         while !adapter.is_null() {
             let a = &*adapter;
             let id = a.AdapterName.to_string().ok().map(|s| s.trim_matches(['{', '}']).to_owned());
@@ -155,7 +158,7 @@ fn domain_joined() -> bool {
     let mut name = PWSTR::null();
     let mut status = NETSETUP_JOIN_STATUS(0);
     unsafe {
-        let err = NetGetJoinInformation(windows::core::PCWSTR::null(), &mut name, &mut status);
+        let err = NetGetJoinInformation(windows::core::PCWSTR::null(), &raw mut name, &raw mut status);
         if !name.is_null() {
             NetApiBufferFree(Some(name.0.cast()));
         }

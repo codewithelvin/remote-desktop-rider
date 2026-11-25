@@ -25,7 +25,7 @@ impl Overlay {
 
     pub fn draw(&mut self, buf: &mut [u32], w: usize, h: usize, scale: f64) {
         let Some((title, detail)) = &self.lines else { return };
-        if self.scale != scale {
+        if self.scale.to_bits() != scale.to_bits() {
             self.scale = scale;
             self.card = None;
         }
@@ -78,8 +78,8 @@ fn render(title: &str, detail: &str, scale: f64) -> Option<Card> {
             } else {
                 (0, 0)
             };
-            let (a, t) = ((BG.3 as f64 * shape) as u32, t as u32);
-            let mix = |c: u8| ((c as u32 * (255 - t) + ink * t) / 255 * a + 127) / 255;
+            let (a, t) = ((f64::from(BG.3) * shape) as u32, u32::from(t));
+            let mix = |c: u8| ((u32::from(c) * (255 - t) + ink * t) / 255 * a + 127) / 255;
             px[y * w + x] = a << 24 | mix(BG.0) << 16 | mix(BG.1) << 8 | mix(BG.2);
         }
     }

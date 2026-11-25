@@ -1,9 +1,19 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect,
+    GetDC, GetTextExtentPoint32W, PAINTSTRUCT, ReleaseDC, SetBkMode, SetTextColor, TRANSPARENT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
+    GetSystemMetrics, GetWindowRect, HC_ACTION, IDC_HAND, LLMHF_INJECTED, LWA_ALPHA, LoadCursorW, MSG, MSLLHOOKSTRUCT,
+    PostMessageW, PostQuitMessage, RegisterClassW, SM_CXSCREEN, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
+    WDA_EXCLUDEFROMCAPTURE, WH_MOUSE_LL, WM_CLOSE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
+};
 use windows::core::w;
 
 static TEXT: Mutex<Vec<u16>> = Mutex::new(Vec::new());
@@ -18,7 +28,7 @@ pub struct Banner {
 }
 
 impl Banner {
-    pub fn show(text: String) -> Self {
+    pub fn show(text: &str) -> Self {
         DISCONNECT_REQUESTED.store(false, Ordering::SeqCst);
         *TEXT.lock().unwrap() = text.encode_utf16().collect();
         let thread = std::thread::Builder::new().name("rider-banner".into()).spawn(run).ok();
@@ -51,13 +61,13 @@ fn run() {
             hCursor: LoadCursorW(None, IDC_HAND).unwrap_or_default(),
             ..Default::default()
         };
-        RegisterClassW(&wc);
+        RegisterClassW(&raw const wc);
         let screen_w = GetSystemMetrics(SM_CXSCREEN);
         let width = {
             let text = TEXT.lock().unwrap().clone();
             let dc = GetDC(None);
-            let mut size = windows::Win32::Foundation::SIZE::default();
-            let _ = GetTextExtentPoint32W(dc, &text, &mut size);
+            let mut size = SIZE::default();
+            let _ = GetTextExtentPoint32W(dc, &text, &raw mut size);
             ReleaseDC(None, dc);
             (size.cx + 48).clamp(WIDTH, screen_w.max(WIDTH))
         };
@@ -87,9 +97,9 @@ fn run() {
         }
 
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&raw const msg);
+            DispatchMessageW(&raw const msg);
         }
         if let Ok(h) = hook {
             let _ = UnhookWindowsHookEx(h);
@@ -111,7 +121,7 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let m = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
         let h = HWND_VAL.load(Ordering::SeqCst);
         let mut rc = RECT::default();
-        if h != 0 && unsafe { GetWindowRect(HWND(h as _), &mut rc) }.is_ok() && local_click_on(m.flags, m.pt, rc) {
+        if h != 0 && unsafe { GetWindowRect(HWND(h as _), &raw mut rc) }.is_ok() && local_click_on(m.flags, m.pt, rc) {
             if msg == WM_LBUTTONUP {
                 DISCONNECT_REQUESTED.store(true, Ordering::SeqCst);
             }
@@ -125,7 +135,7 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
 fn rect() -> Option<RECT> {
     let h = HWND_VAL.load(Ordering::SeqCst);
     let mut rc = RECT::default();
-    (h != 0 && unsafe { GetWindowRect(HWND(h as _), &mut rc) }.is_ok()).then_some(rc)
+    (h != 0 && unsafe { GetWindowRect(HWND(h as _), &raw mut rc) }.is_ok()).then_some(rc)
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -133,17 +143,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         match msg {
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
+                let hdc = BeginPaint(hwnd, &raw mut ps);
                 let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let brush = CreateSolidBrush(COLORREF(0x002A2AC8));
-                FillRect(hdc, &rc, brush);
+                let _ = GetClientRect(hwnd, &raw mut rc);
+                let brush = CreateSolidBrush(COLORREF(0x002A_2AC8));
+                FillRect(hdc, &raw const rc, brush);
                 let _ = DeleteObject(brush.into());
                 SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, COLORREF(0x00FFFFFF));
+                SetTextColor(hdc, COLORREF(0x00FF_FFFF));
                 let mut text = TEXT.lock().unwrap().clone();
-                DrawTextW(hdc, &mut text, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                let _ = EndPaint(hwnd, &ps);
+                DrawTextW(hdc, &mut text, &raw mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                let _ = EndPaint(hwnd, &raw const ps);
                 LRESULT(0)
             }
             WM_CLOSE => {
@@ -166,6 +176,10 @@ mod tests {
     use std::time::{Duration, Instant};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetCursorPos, GetWindowThreadProcessId, IsWindowVisible, LLMHF_LOWER_IL_INJECTED,
+        PostThreadMessageW, SW_SHOW, SetCursorPos, WM_QUIT,
     };
 
     #[test]
@@ -227,13 +241,13 @@ mod tests {
             .unwrap();
             let _ = ShowWindow(hwnd, SW_SHOW);
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                DispatchMessageW(&msg);
+            while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+                DispatchMessageW(&raw const msg);
             }
         });
         std::thread::sleep(Duration::from_millis(300));
 
-        let banner = Banner::show("test banner — click here to disconnect".into());
+        let banner = Banner::show("test banner — click here to disconnect");
         wait_for("the banner", || rect().is_some());
         std::thread::sleep(Duration::from_millis(300));
         let rc = rect().unwrap();
@@ -243,8 +257,8 @@ mod tests {
 
         let mut before = POINT::default();
         unsafe {
-            let _ = GetCursorPos(&mut before);
-            let _ = SetCursorPos((rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2);
+            let _ = GetCursorPos(&raw mut before);
+            let _ = SetCursorPos(i32::midpoint(rc.left, rc.right), i32::midpoint(rc.top, rc.bottom));
         }
         std::thread::sleep(Duration::from_millis(100));
         let click = |flags| INPUT {
@@ -266,7 +280,7 @@ mod tests {
             let h = FindWindowW(w!("RiderBannerTestUnder"), None).unwrap();
             let tid = GetWindowThreadProcessId(h, None);
             let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+            let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
         }
         let _ = under.join();
     }

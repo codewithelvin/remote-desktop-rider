@@ -47,7 +47,7 @@ impl Updater {
                 std::thread::sleep(FIRST_CHECK);
                 loop {
                     let idle = matches!(
-                        state.lock().map(|s| s.clone()).unwrap_or(State::Idle),
+                        state.lock().map_or(State::Idle, |s| s.clone()),
                         State::Idle | State::UpToDate | State::Failed { .. }
                     );
                     if auto_on.load(Ordering::Relaxed) && idle {
@@ -61,7 +61,7 @@ impl Updater {
     }
 
     pub fn state(&self) -> State {
-        self.state.lock().map(|s| s.clone()).unwrap_or(State::Idle)
+        self.state.lock().map_or(State::Idle, |s| s.clone())
     }
 
     pub fn preview(&self, stage: &str) {

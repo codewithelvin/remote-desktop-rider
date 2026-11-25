@@ -6,12 +6,17 @@ use crate::video::{self, VideoCmd, VideoConfig, VideoPacket, VideoStats};
 use anyhow::{Context, Result, bail};
 use rider_core::diag::{self, Recorder, Role, Route, Sample, u16_of};
 use rider_core::identity::{Fingerprint, Identity, fp_short};
-use rider_core::proto::*;
+use rider_core::proto::{
+    Access, ClientMsg, HostMsg, MonitorInfo, MouseMove, PROTOCOL_VERSION, Permissions, decode, frame_prefix,
+    read_known, read_msg, write_msg,
+};
+use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+const NOBODY: &str = "nobody is signed in at that computer to accept";
 const FRAME_DEADLINE: Duration = Duration::from_millis(500);
 const MIN_BITRATE: u32 = 300_000;
 const START_BITRATE: u32 = 4_000_000;
@@ -128,12 +133,9 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming, tunnel: bo
             return;
         }
     };
-    let streams = match tokio::time::timeout(Duration::from_secs(10), conn.accept_bi()).await {
-        Ok(Ok(s)) => s,
-        _ => {
-            tracing::debug!("{remote}: no control stream (path not chosen by the client)");
-            return;
-        }
+    let Ok(Ok(streams)) = tokio::time::timeout(Duration::from_secs(10), conn.accept_bi()).await else {
+        tracing::debug!("{remote}: no control stream (path not chosen by the client)");
+        return;
     };
     if state.busy.swap(true, Ordering::SeqCst) {
         conn.close(1u32.into(), b"host is busy with another session");
@@ -146,7 +148,7 @@ pub async fn handle(state: Arc<HostState>, incoming: quinn::Incoming, tunnel: bo
     match result {
         Ok(()) => tracing::info!("{remote}: session ended"),
         Err(e) if matches!(conn.close_reason(), Some(quinn::ConnectionError::ApplicationClosed(_))) => {
-            tracing::info!("{remote}: closed by client ({e:#})")
+            tracing::info!("{remote}: closed by client ({e:#})");
         }
         Err(e) => tracing::warn!("{remote}: {e:#}"),
     }
@@ -176,7 +178,7 @@ async fn run(
         let access = support_allow(state, conn, &mut send, &client_fp, &device_name).await?;
         tracing::info!("support session started with {device_name} from {} ({})", conn.remote_address(), access.code());
         let result = stream(state, conn, send, recv, device_name, tunnel, access, None).await;
-        crate::ui::emit(serde_json::json!({ "event": "support_ended" }));
+        crate::ui::emit(&serde_json::json!({ "event": "support_ended" }));
         state.done.notify_one();
         return result;
     }
@@ -193,14 +195,11 @@ async fn run(
     let name = if pairing {
         pair(state, conn, &mut send, &mut recv, &client_fp, &device_name).await?;
         device_name
+    } else if let Some(n) = known_name {
+        n
     } else {
-        match known_name {
-            Some(n) => n,
-            None => {
-                write_msg(&mut send, &HostMsg::Bye { reason: "this device is not paired".into() }).await?;
-                bail!("unpaired device {} tried to connect", fp_short(&client_fp));
-            }
-        }
+        write_msg(&mut send, &HostMsg::Bye { reason: "this device is not paired".into() }).await?;
+        bail!("unpaired device {} tried to connect", fp_short(&client_fp));
     };
 
     authenticate(state, &mut send, &mut recv, &name).await?;
@@ -231,7 +230,6 @@ async fn company_allow(
         write_msg(send, &HostMsg::AuthResult { ok: true, message: String::new() }).await?;
         return Ok(None);
     }
-    const NOBODY: &str = "nobody is signed in at that computer to accept";
     match crate::company::console_user() {
         (None, _) => return refuse(send, NOBODY).await.map(|()| None),
         (Some(_), true) => {
@@ -283,7 +281,7 @@ async fn support_allow(
         bail!("support request after the code expired");
     }
     let code = rider_core::sas::compute(conn, &state.identity.fingerprint(), client_fp)?;
-    crate::ui::emit(serde_json::json!({
+    crate::ui::emit(&serde_json::json!({
         "event": "support_request", "device": device_name, "from": conn.remote_address(), "code": code,
     }));
     let answer = async {
@@ -294,7 +292,6 @@ async fn support_allow(
         println!("  \"{device_name}\" ({}) wants to see and control this screen.", conn.remote_address());
         println!("  Verification code: {code} (the helper sees the same code)");
         print!("  Allow? [y = full access, s = standard (no files), v = view only, N = no] ");
-        use std::io::Write;
         let _ = std::io::stdout().flush();
         tokio::task::spawn_blocking(|| {
             let mut line = String::new();
@@ -312,20 +309,20 @@ async fn support_allow(
     let allowed = tokio::select! {
         a = answer => a,
         _ = conn.closed() => {
-            crate::ui::emit(serde_json::json!({ "event": "support_cancelled", "device": device_name }));
+            crate::ui::emit(&serde_json::json!({ "event": "support_cancelled", "device": device_name }));
             bail!("{device_name} gave up before an answer");
         }
     };
     let Some(access) = allowed else {
         write_msg(send, &HostMsg::AuthResult { ok: false, message: "the person at that computer declined".into() })
             .await?;
-        crate::ui::emit(serde_json::json!({ "event": "declined", "by": "this computer" }));
+        crate::ui::emit(&serde_json::json!({ "event": "declined", "by": "this computer" }));
         let _ = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
         bail!("support request from {device_name} declined");
     };
     state.close_pairing();
     write_msg(send, &HostMsg::AuthResult { ok: true, message: String::new() }).await?;
-    crate::ui::emit(serde_json::json!({ "event": "support_started", "device": device_name, "access": access.code() }));
+    crate::ui::emit(&serde_json::json!({ "event": "support_started", "device": device_name, "access": access.code() }));
     Ok(access)
 }
 
@@ -343,7 +340,7 @@ async fn pair(
     }
     let code = rider_core::sas::compute(conn, &state.identity.fingerprint(), client_fp)?;
     if crate::ui::json() {
-        crate::ui::emit(serde_json::json!({
+        crate::ui::emit(&serde_json::json!({
             "event": "request", "device": device_name, "from": conn.remote_address(), "code": code,
         }));
         return finish_pairing(state, send, recv, client_fp, device_name, crate::ui::answer()).await;
@@ -360,7 +357,6 @@ async fn pair(
     println!("  │  intercepting the connection - answer N.");
     println!("  └──────────────────────────────────────────────────────┘");
     print!("  Codes match and you trust this device? [y/N] ");
-    use std::io::Write;
     let _ = std::io::stdout().flush();
 
     let operator = async {
@@ -381,7 +377,7 @@ async fn finish_pairing(
     recv: &mut quinn::RecvStream,
     client_fp: &Fingerprint,
     device_name: &str,
-    operator: impl std::future::Future<Output = bool>,
+    operator: impl Future<Output = bool>,
 ) -> Result<()> {
     let client = async {
         match read_msg::<ClientMsg>(recv).await {
@@ -394,7 +390,7 @@ async fn finish_pairing(
     write_msg(send, &HostMsg::PairResult { accepted }).await?;
     if !accepted {
         let by = if operator_ok { "the other device" } else { "this computer" };
-        crate::ui::emit(serde_json::json!({ "event": "declined", "by": by }));
+        crate::ui::emit(&serde_json::json!({ "event": "declined", "by": by }));
         bail!("pairing declined");
     }
     {
@@ -406,7 +402,7 @@ async fn finish_pairing(
     *state.config_mtime.lock().unwrap() = config_mtime();
     state.paired.notify_one();
     crate::ui::emit(
-        serde_json::json!({ "event": "paired", "device": device_name, "fingerprint": rider_core::identity::fp_hex(client_fp) }),
+        &serde_json::json!({ "event": "paired", "device": device_name, "fingerprint": rider_core::identity::fp_hex(client_fp) }),
     );
     if crate::ui::json() {
         return Ok(());
@@ -441,7 +437,7 @@ async fn authenticate(
             let mut g = state.auth.lock().unwrap();
             g.failures += 1;
             if g.failures >= 10 {
-                g.locked_until = Some(Instant::now() + Duration::from_secs(15 * 60));
+                g.locked_until = Some(Instant::now() + Duration::from_mins(15));
             }
             Duration::from_secs(1 << g.failures.min(5))
         };
@@ -471,7 +467,7 @@ async fn stream(
     let recorder = Arc::new(Mutex::new(recorder(state, conn, tunnel).await));
     let monitors = capture::monitors()?;
     let list: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
-    let _banner = Banner::show(rider_core::trf!(
+    let _banner = Banner::show(&rider_core::trf!(
         "●  {name} is viewing this screen  —  click here to disconnect",
         "●  {name} bu ekranı izləyir  —  əlaqəni kəsmək üçün bura klikləyin"
     ));
@@ -571,7 +567,7 @@ async fn stream(
                     input.send(InputEvent::ReleaseAll);
                 }
                 tracing::info!("access changed to {}", access.code());
-                crate::ui::emit(serde_json::json!({ "event": "access", "access": access.code() }));
+                crate::ui::emit(&serde_json::json!({ "event": "access", "access": access.code() }));
                 if v4 {
                     let _ = out_tx.send(HostMsg::Permissions(new));
                 }
@@ -662,7 +658,7 @@ async fn stream(
                 let queueing = path.rtt > path.min_rtt + (path.min_rtt / 2).max(Duration::from_millis(25));
                 window.store(video::inflight_window(path.min_rtt, max_fps), Ordering::Relaxed);
 
-                peak = ((peak as f64 * PEAK_DECAY) as u32).max(u32::try_from(bytes * 8 * 2).unwrap_or(u32::MAX));
+                peak = ((f64::from(peak) * PEAK_DECAY) as u32).max(u32::try_from(bytes * 8 * 2).unwrap_or(u32::MAX));
                 let congested = exp > 0 || skips > 2 || queueing || loss > 0.08;
                 let new = next_bitrate(bitrate, max_bitrate, peak, congested, frames, loss);
                 if new.abs_diff(bitrate) > bitrate / 20 {
@@ -735,7 +731,7 @@ async fn stream(
                 ClientMsg::Key { scancode, extended, down } => input.send(InputEvent::Key { scancode, extended, down }),
                 ClientMsg::MouseButton { button, down } => input.send(InputEvent::Button { button, down }),
                 ClientMsg::MouseButtonAt { button, down, x, y, seq } => {
-                    input.send(InputEvent::ButtonAt { button, down, x, y, seq })
+                    input.send(InputEvent::ButtonAt { button, down, x, y, seq });
                 }
                 ClientMsg::MouseWheel { dx, dy } => input.send(InputEvent::Wheel { dx, dy }),
                 ClientMsg::SendSas => {
@@ -796,7 +792,7 @@ async fn stream(
             tokio::time::sleep(Duration::from_millis(200)).await;
             Err(anyhow::anyhow!("video pipeline stopped: {why}"))
         }
-        _ = kicked => {
+        () = kicked => {
             tracing::info!("disconnected by the local user");
             ended = "ended by the host user".into();
             let _ = out_tx.send(HostMsg::Bye { reason: "the host user ended the session".into() });
@@ -854,13 +850,13 @@ const PEAK_DECAY: f64 = 0.97;
 fn next_bitrate(bitrate: u32, max: u32, peak: u32, congested: bool, frames: u32, loss: f64) -> u32 {
     let ceiling = peak.saturating_mul(4).max(START_BITRATE);
     let new = if congested {
-        (bitrate as f64 * 0.75) as u32
+        (f64::from(bitrate) * 0.75) as u32
     } else if frames > 0 && loss < 0.02 {
-        ((bitrate as f64 * 1.08) as u32 + 50_000).min(ceiling.max(bitrate))
+        ((f64::from(bitrate) * 1.08) as u32 + 50_000).min(ceiling.max(bitrate))
     } else {
         bitrate
     };
-    let new = if new > ceiling { new.min(((bitrate as f64 * 0.95) as u32).max(ceiling)) } else { new };
+    let new = if new > ceiling { new.min(((f64::from(bitrate) * 0.95) as u32).max(ceiling)) } else { new };
     new.clamp(MIN_BITRATE, max.max(MIN_BITRATE))
 }
 
@@ -948,12 +944,11 @@ async fn send_frame(conn: &quinn::Connection, p: VideoPacket) -> bool {
         s.stopped().await.ok()
     })
     .await;
-    match delivered {
-        Ok(Some(_)) => true,
-        _ => {
-            let _ = s.reset(0u32.into());
-            false
-        }
+    if let Ok(Some(_)) = delivered {
+        true
+    } else {
+        let _ = s.reset(0u32.into());
+        false
     }
 }
 
@@ -961,7 +956,7 @@ pub(crate) fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std:
     std::fs::create_dir_all(dir)?;
     let p = std::path::Path::new(name);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-    let ext = p.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    let ext = p.extension().and_then(|s| s.to_str()).map_or_default(|e| format!(".{e}"));
     for i in 1..1000 {
         let path = if i == 1 { dir.join(name) } else { dir.join(format!("{stem} ({i}){ext}")) };
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -979,7 +974,7 @@ async fn receive_file(send: quinn::SendStream, recv: quinn::RecvStream) -> Resul
         let name = name.to_owned();
         crate::system::as_console_user(|| create_incoming(&dir, &name))?
     };
-    let got = rider_core::transfer::receive(send, recv, |_, _| {}, create, &Default::default(), |_| {}).await?;
+    let got = rider_core::transfer::receive(send, recv, |_, _| {}, create, &Arc::default(), |_| {}).await?;
     tracing::info!("file saved: {} ({} bytes)", got.path.display(), got.size);
     Ok(())
 }
@@ -1020,12 +1015,12 @@ mod auto_resolution_tests {
         let mut a = AutoResolution::default();
         assert_eq!(a.update(0, 5_000_000), None, "full resolution already");
         assert_eq!(a.update(0, 600_000), None, "not at once");
-        a.pending = a.pending.map(|(p, t)| (p, t - AutoResolution::DOWN_AFTER));
+        a.pending = a.pending.map(|(p, t)| (p, t.checked_sub(AutoResolution::DOWN_AFTER).unwrap()));
         assert_eq!(a.update(0, 600_000), Some(480));
         assert_eq!(a.update(0, 3_000_000), None);
-        a.pending = a.pending.map(|(p, t)| (p, t - AutoResolution::DOWN_AFTER));
+        a.pending = a.pending.map(|(p, t)| (p, t.checked_sub(AutoResolution::DOWN_AFTER).unwrap()));
         assert_eq!(a.update(0, 3_000_000), None, "going up waits longer");
-        a.pending = a.pending.map(|(p, t)| (p, t - AutoResolution::UP_AFTER));
+        a.pending = a.pending.map(|(p, t)| (p, t.checked_sub(AutoResolution::UP_AFTER).unwrap()));
         assert_eq!(a.update(0, 3_000_000), Some(0));
         assert_eq!(a.update(720, 100_000), None);
         assert_eq!(a.update(720, 100_000), None);

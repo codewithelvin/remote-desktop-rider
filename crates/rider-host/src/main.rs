@@ -177,7 +177,7 @@ fn main() -> Result<()> {
                 println!("No paired devices. Run `rider-host pair` to add one.");
             }
             for c in &cfg.trusted_clients {
-                let fp = fp_from_hex(&c.fingerprint).map(|f| fp_short(&f)).unwrap_or_default();
+                let fp = fp_from_hex(&c.fingerprint).map_or_default(|f| fp_short(&f));
                 println!("{:<24} {fp}", c.name);
             }
         }
@@ -344,7 +344,7 @@ fn init_logging(file: Option<std::path::PathBuf>) -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
     match file {
         None if ui::json() => {
-            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::io::stderr).init()
+            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::io::stderr).init();
         }
         None => tracing_subscriber::fmt().with_env_filter(filter).init(),
         Some(path) => {
@@ -409,7 +409,7 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
         let quit = if ui::json() { ui::start_input() } else { Arc::new(tokio::sync::Notify::new()) };
 
         tracing::info!("host \"{name}\" listening on UDP {port}, fingerprint {fp}");
-        ui::emit(serde_json::json!({
+        ui::emit(&serde_json::json!({
             "event": "listening",
             "name": name,
             "port": port,
@@ -439,13 +439,13 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             tokio::select! {
-                _ = state.done.notified(), if support => {
+                () = state.done.notified(), if support => {
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                     break;
                 }
                 _ = tick.tick(), if support => {
                     if state.pairing_expired() && !state.is_busy() {
-                        ui::emit(serde_json::json!({ "event": "expired" }));
+                        ui::emit(&serde_json::json!({ "event": "expired" }));
                         if !ui::json() {
                             println!("The code expired.");
                         }
@@ -459,12 +459,12 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
                 Some(incoming) = async { wan.as_ref()?.accept().await }, if wan.is_some() => {
                     tokio::spawn(session::handle(state.clone(), incoming, false));
                 }
-                _ = state.paired.notified(), if mode == Mode::PairOnce => {
+                () = state.paired.notified(), if mode == Mode::PairOnce => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     break;
                 }
                 _ = tokio::signal::ctrl_c() => break,
-                _ = quit.notified() => {
+                () = quit.notified() => {
                     if support && state.is_busy() {
                         banner::DISCONNECT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = tokio::time::timeout(std::time::Duration::from_secs(3), state.done.notified()).await;

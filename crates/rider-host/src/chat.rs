@@ -56,7 +56,7 @@ impl Chat {
         self.ready.load(Ordering::Relaxed)
     }
 
-    fn emit(&self, event: serde_json::Value) {
+    fn emit(&self, event: &serde_json::Value) {
         match &self.link {
             Link::App => ui::emit(event),
             Link::Panel(p, _) => p.emit(event),
@@ -67,7 +67,7 @@ impl Chat {
     pub fn text_from_viewer(&self, text: &str) {
         let text: String = text.chars().take(MAX_CHAT).collect();
         tracing::info!("chat message from the viewer ({} chars)", text.chars().count());
-        self.emit(json!({ "event": "chat", "text": text }));
+        self.emit(&json!({ "event": "chat", "text": text }));
     }
 
     pub async fn run(self: Arc<Self>, perms: impl Fn() -> Permissions + Send + 'static) {
@@ -100,14 +100,13 @@ impl Chat {
                 let text: String = text.chars().take(MAX_CHAT).collect();
                 let _ = self.out.send(HostMsg::Chat { text });
             }
-            ChatCmd::Text(_) => {}
             ChatCmd::SendFile(path) => self.send_file(path, perms().files),
             ChatCmd::Cancel(id) => {
                 if let Some(c) = self.cancels.lock().unwrap().get(&id) {
                     c.store(true, Ordering::Relaxed);
                 }
             }
-            ChatCmd::Answer(_) => {}
+            ChatCmd::Text(_) | ChatCmd::Answer(_) => {}
             ChatCmd::End => {
                 tracing::info!("session ended from the chat window");
                 crate::banner::DISCONNECT_REQUESTED.store(true, Ordering::SeqCst);
@@ -133,8 +132,8 @@ impl Chat {
         self.cancels.lock().unwrap().remove(&id);
     }
 
-    fn failed(&self, id: u64, reason: String) {
-        self.emit(json!({ "event": "file_failed", "id": id, "reason": reason }));
+    fn failed(&self, id: u64, reason: &str) {
+        self.emit(&json!({ "event": "file_failed", "id": id, "reason": reason }));
         self.end_transfer(id);
     }
 
@@ -152,30 +151,30 @@ impl Chat {
                 _ => None,
             };
             let size = file.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
-            self.emit(json!({ "event": "file", "id": id, "dir": "out", "name": name, "size": size }));
+            self.emit(&json!({ "event": "file", "id": id, "dir": "out", "name": name, "size": size }));
             let file = match (file, self.v5, allowed) {
                 (_, false, _) => {
-                    return self.failed(id, "the other side's version cannot receive files from here".into());
+                    return self.failed(id, "the other side's version cannot receive files from here");
                 }
-                (_, _, false) => return self.failed(id, "files are not allowed in this session".into()),
-                (None, ..) => return self.failed(id, format!("cannot open {}", path.display())),
+                (_, _, false) => return self.failed(id, "files are not allowed in this session"),
+                (None, ..) => return self.failed(id, &format!("cannot open {}", path.display())),
                 (Some(f), ..) => f,
             };
             let mut report = Throttle::new(size);
             let result = transfer::send_open(&self.conn, file, name.clone(), &cancel, |done| {
                 if report.due(done) {
-                    self.emit(json!({ "event": "file_progress", "id": id, "done": done }));
+                    self.emit(&json!({ "event": "file_progress", "id": id, "done": done }));
                 }
             })
             .await;
             match result {
                 Ok(r) if r.ok => {
                     tracing::info!("sent {name} ({size} bytes) to the viewer");
-                    self.emit(json!({ "event": "file_done", "id": id }));
+                    self.emit(&json!({ "event": "file_done", "id": id }));
                     self.end_transfer(id);
                 }
-                Ok(r) => self.failed(id, r.message),
-                Err(e) => self.failed(id, format!("{e:#}")),
+                Ok(r) => self.failed(id, &r.message),
+                Err(e) => self.failed(id, &format!("{e:#}")),
             }
         });
     }
@@ -233,7 +232,7 @@ impl Chat {
             recv,
             |name, size| {
                 announced.store(size, Ordering::Relaxed);
-                self.emit(json!({ "event": "file", "id": id, "dir": "in", "name": name, "size": size }));
+                self.emit(&json!({ "event": "file", "id": id, "dir": "in", "name": name, "size": size }));
             },
             create,
             discard,
@@ -241,7 +240,7 @@ impl Chat {
             |done| {
                 report.size = announced.load(Ordering::Relaxed);
                 if report.due(done) {
-                    self.emit(json!({ "event": "file_progress", "id": id, "done": done }));
+                    self.emit(&json!({ "event": "file_progress", "id": id, "done": done }));
                 }
             },
         )
@@ -249,10 +248,10 @@ impl Chat {
         match result {
             Ok(r) => {
                 tracing::info!("received {} ({} bytes) in the chat", r.name, r.size);
-                self.emit(json!({ "event": "file_done", "id": id, "path": r.path }));
+                self.emit(&json!({ "event": "file_done", "id": id, "path": r.path }));
                 self.end_transfer(id);
             }
-            Err(e) => self.failed(id, format!("{e:#}")),
+            Err(e) => self.failed(id, &format!("{e:#}")),
         }
     }
 }

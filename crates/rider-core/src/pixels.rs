@@ -95,9 +95,9 @@ pub struct Nv12Frame {
 
 #[inline(always)]
 fn yuv_to_xrgb(y: u8, u: u8, v: u8) -> u32 {
-    let c = (y as i32 - 16).max(0) * 298;
-    let d = u as i32 - 128;
-    let e = v as i32 - 128;
+    let c = (i32::from(y) - 16).max(0) * 298;
+    let d = i32::from(u) - 128;
+    let e = i32::from(v) - 128;
     let r = ((c + 459 * e + 128) >> 8).clamp(0, 255) as u32;
     let g = ((c - 55 * d - 136 * e + 128) >> 8).clamp(0, 255) as u32;
     let b = ((c + 541 * d + 128) >> 8).clamp(0, 255) as u32;
@@ -139,7 +139,7 @@ fn mix(p: u32, q: u32, f: u32) -> u32 {
 fn blend_rows_generic(a: &[u8], b: &[u8], f: u32, out: &mut [u16]) {
     let (wa, wb) = ((256 - f) as u16, f as u16);
     for ((o, &p), &q) in out.iter_mut().zip(a).zip(b) {
-        *o = p as u16 * wa + q as u16 * wb;
+        *o = u16::from(p) * wa + u16::from(q) * wb;
     }
 }
 
@@ -147,7 +147,7 @@ fn blend_rows_generic(a: &[u8], b: &[u8], f: u32, out: &mut [u16]) {
 fn xrgb_row_bilinear_generic(y: &[u16], uv: &[u16], xt: &[Tap], ct: &[Tap], out: &mut [u32]) {
     assert!(xt.last().is_none_or(|t| (t.b as usize) < y.len()), "luma tap out of range");
     assert!(ct.last().is_none_or(|t| 2 * t.b as usize + 1 < uv.len()), "chroma tap out of range");
-    let px = |p: u16, q: u16, f: u32| ((mix(p as u32, q as u32, f) + (1 << 15)) >> 16) as u8;
+    let px = |p: u16, q: u16, f: u32| ((mix(u32::from(p), u32::from(q), f) + (1 << 15)) >> 16) as u8;
     for ((o, t), c) in out.iter_mut().zip(xt).zip(ct) {
         unsafe {
             let l = px(*y.get_unchecked(t.a as usize), *y.get_unchecked(t.b as usize), t.f);
@@ -266,8 +266,8 @@ impl Downscaler {
                 for (px, xt) in row.as_chunks_mut::<4>().0.iter_mut().zip(xt) {
                     let (l, r) = (xt.a as usize * 4, xt.b as usize * 4);
                     for c in 0..4 {
-                        let top = mix(r0[l + c] as u32, r0[r + c] as u32, xt.f);
-                        let bottom = mix(r1[l + c] as u32, r1[r + c] as u32, xt.f);
+                        let top = mix(u32::from(r0[l + c]), u32::from(r0[r + c]), xt.f);
+                        let bottom = mix(u32::from(r1[l + c]), u32::from(r1[r + c]), xt.f);
                         px[c] = ((top * (256 - t.f) + bottom * t.f + 32_768) >> 16) as u8;
                     }
                 }
@@ -284,7 +284,7 @@ fn halve(src: &[u8], stride: usize, w: usize, h: usize, out: &mut Vec<u8>) {
         let (r0, r1) = (&src[2 * y * stride..][..w * 8], &src[(2 * y + 1) * stride..][..w * 8]);
         for ((o, a), b) in row.as_chunks_mut::<4>().0.iter_mut().zip(r0.as_chunks::<8>().0).zip(r1.as_chunks::<8>().0) {
             for c in 0..4 {
-                o[c] = ((a[c] as u32 + a[c + 4] as u32 + b[c] as u32 + b[c + 4] as u32 + 2) >> 2) as u8;
+                o[c] = ((u32::from(a[c]) + u32::from(a[c + 4]) + u32::from(b[c]) + u32::from(b[c + 4]) + 2) >> 2) as u8;
             }
         }
     });
@@ -310,7 +310,7 @@ mod tests {
             nv12_to_xrgb_fit(&f, &mut out, w, h);
             let p = out[w * h / 2 + 3];
             let got = ((p >> 16 & 255) as i32, (p >> 8 & 255) as i32, (p & 255) as i32);
-            let want = (colour.0 as i32, colour.1 as i32, colour.2 as i32);
+            let want = (i32::from(colour.0), i32::from(colour.1), i32::from(colour.2));
             assert!(
                 (got.0 - want.0).abs() < 6 && (got.1 - want.1).abs() < 6 && (got.2 - want.2).abs() < 6,
                 "{want:?} -> {got:?}"

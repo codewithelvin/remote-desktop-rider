@@ -2,9 +2,16 @@ use super::{Capturer, Frame};
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL, DXGI_ERROR_WAIT_TIMEOUT,
+    DXGI_OUTDUPL_FRAME_INFO, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
+};
 use windows::core::Interface;
 
 pub struct DxgiCapturer {
@@ -36,9 +43,9 @@ impl DxgiCapturer {
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 None,
                 D3D11_SDK_VERSION,
-                Some(&mut device),
+                Some(&raw mut device),
                 None,
-                Some(&mut context),
+                Some(&raw mut context),
             )
             .context("D3D11CreateDevice")?;
             let mut c = Self {
@@ -90,7 +97,7 @@ impl DxgiCapturer {
         }
         unsafe {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
-            src.GetDesc(&mut desc);
+            src.GetDesc(&raw mut desc);
             desc.Usage = D3D11_USAGE_STAGING;
             desc.BindFlags = 0;
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
@@ -99,7 +106,7 @@ impl DxgiCapturer {
             desc.ArraySize = 1;
             desc.SampleDesc = DXGI_SAMPLE_DESC { Count: 1, Quality: 0 };
             let mut tex = None;
-            self.device.CreateTexture2D(&desc, None, Some(&mut tex))?;
+            self.device.CreateTexture2D(&raw const desc, None, Some(&raw mut tex))?;
             let tex = tex.unwrap();
             self.staging = Some(tex.clone());
             Ok(tex)
@@ -122,7 +129,7 @@ impl Capturer for DxgiCapturer {
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut res = None;
-            match dupl.AcquireNextFrame(timeout_ms, &mut info, &mut res) {
+            match dupl.AcquireNextFrame(timeout_ms, &raw mut info, &raw mut res) {
                 Ok(()) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
                 Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST || e.code() == DXGI_ERROR_INVALID_CALL => {
@@ -142,7 +149,7 @@ impl Capturer for DxgiCapturer {
             dupl.ReleaseFrame()?;
 
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped))?;
             self.mapped = true;
             self.has_frame = true;
             let stride = mapped.RowPitch as usize;

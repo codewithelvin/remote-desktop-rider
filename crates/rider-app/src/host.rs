@@ -308,7 +308,7 @@ impl HostApp {
                     tr("Pairing was declined on this computer.", "Cütləşdirmə bu kompüterdə rədd edildi.").into()
                 } else {
                     tr("Pairing was declined on the other device.", "Cütləşdirmə digər cihazda rədd edildi.").into()
-                })
+                });
             }
             PairEvent::Exited { stderr } => {
                 p.stdin = None;
@@ -355,8 +355,8 @@ impl HostApp {
                 ui.add(egui::Label::new(text).wrap());
             });
             let idle = self.idle();
-            ui.horizontal(|ui| match info.service {
-                Some(running) => {
+            ui.horizontal(|ui| {
+                if let Some(running) = info.service {
                     if !running && widgets::primary(ui, idle, tr("Start", "Başlat")).clicked() {
                         self.run(
                             tr("Starting…", "Başladılır…"),
@@ -379,8 +379,7 @@ impl HostApp {
                             ),
                         );
                     }
-                }
-                None => {
+                } else {
                     if widgets::primary(
                         ui,
                         idle && info.pin_set,
@@ -634,7 +633,7 @@ impl HostApp {
                 let idle = self.busy.is_none();
                 let (addr, fp, invite) =
                     (self.server_addr.trim(), self.server_fp.trim(), self.server_invite.trim().to_owned());
-                let saved_fp = info.server.as_ref().map(|s| s.fingerprint.as_str()).unwrap_or("");
+                let saved_fp = info.server.as_ref().map_or("", |s| s.fingerprint.as_str());
                 let typed = !fp.is_empty() && fp != saved_fp;
                 let changed = info.server.as_ref().is_none_or(|s| s.addr != addr) || typed || !invite.is_empty();
                 if widgets::primary(ui, idle && changed && !addr.is_empty(), tr("Save", "Yadda saxla")).clicked() {
@@ -695,7 +694,7 @@ impl HostApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(widgets::title(tr("Invite code for a new computer", "Yeni kompüter üçün dəvət kodu"), 15.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button(tr("Hide", "Gizlət")).clicked() {
                     self.invite_code = None;
                 }
@@ -722,7 +721,7 @@ impl HostApp {
             ),
         );
         if std::mem::take(&mut self.invite_scroll) {
-            ui.scroll_to_cursor(Some(egui::Align::Max));
+            ui.scroll_to_cursor(Some(Align::Max));
         }
     }
 
@@ -894,7 +893,7 @@ fn parse_event(line: &str) -> Option<PairEvent> {
 
 impl eframe::App for HostApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
-        crate::sys::smooth_monitor_moves(frame);
+        sys::smooth_monitor_moves(frame);
         let ctx = ui.ctx().clone();
         self.handle_messages();
         egui::CentralPanel::default()

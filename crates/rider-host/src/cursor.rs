@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
-use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CURSORINFO, GetCursorInfo, HCURSOR, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_HELP, IDC_IBEAM, IDC_NO,
+    IDC_PIN, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_UPARROW, IDC_WAIT, LoadCursorW,
+};
 use windows::core::PCWSTR;
 
 const POLL: Duration = Duration::from_millis(40);
@@ -13,7 +16,7 @@ pub fn spawn(out: UnboundedSender<HostMsg>, stop: Arc<AtomicBool>) {
     let spawned = std::thread::Builder::new().name("rider-cursor".into()).spawn(move || {
         let known = standard_cursors();
         let mut last = None;
-        let mut checked = Instant::now() - DESKTOP_RECHECK;
+        let mut checked = Instant::now().checked_sub(DESKTOP_RECHECK).unwrap();
         while !stop.load(Ordering::Relaxed) {
             if checked.elapsed() >= DESKTOP_RECHECK {
                 crate::system::follow_input_desktop();
@@ -36,7 +39,10 @@ pub fn spawn(out: UnboundedSender<HostMsg>, stop: Arc<AtomicBool>) {
 }
 
 fn standard_cursors() -> Vec<(HCURSOR, CursorShape)> {
-    use CursorShape::*;
+    use CursorShape::{
+        Arrow, Crosshair, Hand, Help, Move, NotAllowed, Progress, ResizeNESW, ResizeNS, ResizeNWSE, ResizeWE, Text,
+        Wait,
+    };
     let table: [(PCWSTR, CursorShape); 15] = [
         (IDC_ARROW, Arrow),
         (IDC_UPARROW, Arrow),
@@ -59,7 +65,7 @@ fn standard_cursors() -> Vec<(HCURSOR, CursorShape)> {
 
 fn current(known: &[(HCURSOR, CursorShape)]) -> Option<CursorShape> {
     let mut info = CURSORINFO { cbSize: size_of::<CURSORINFO>() as u32, ..Default::default() };
-    unsafe { GetCursorInfo(&mut info) }.ok()?;
+    unsafe { GetCursorInfo(&raw mut info) }.ok()?;
     Some(known.iter().find(|(h, _)| *h == info.hCursor).map_or(CursorShape::Arrow, |(_, s)| *s))
 }
 

@@ -1,7 +1,21 @@
-use crate::mf::*;
+use crate::mf::{
+    Output, init_thread, process_output, provides_samples, sample_bytes, sample_from_bytes, stream_ids, variant_bool,
+    variant_u32, video_type,
+};
 use anyhow::{Context, Result, bail};
 use std::time::{Duration, Instant};
-use windows::Win32::Media::MediaFoundation::*;
+use windows::Win32::Media::MediaFoundation::{
+    CLSID_MSH264EncoderMFT, CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
+    CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame,
+    CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFMediaEventGenerator, IMFSample, IMFTransform,
+    METransformHaveOutput, METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE, MF_E_NOTACCEPTING, MF_EVENT_FLAG_NO_WAIT,
+    MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_MPEG2_PROFILE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
+    MFMediaType_Video, MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_HARDWARE,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+    MFT_OUTPUT_STREAM_INFO, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12,
+    eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_Main,
+};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::core::{Interface, PWSTR};
 
@@ -50,10 +64,10 @@ impl H264Encoder {
             MFTEnumEx(
                 MFT_CATEGORY_VIDEO_ENCODER,
                 MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
-                Some(&input),
-                Some(&output),
-                &mut list,
-                &mut count,
+                Some(&raw const input),
+                Some(&raw const output),
+                &raw mut list,
+                &raw mut count,
             )?;
             let activates: Vec<IMFActivate> = if list.is_null() {
                 Vec::new()
@@ -154,7 +168,7 @@ impl H264Encoder {
                 let _ = c.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &variant_u32(1));
             }
         }
-        let sample = sample_from_bytes(nv12, time_100ns, 10_000_000 / self.fps as i64)?;
+        let sample = sample_from_bytes(nv12, time_100ns, 10_000_000 / i64::from(self.fps))?;
         let mut out = Vec::new();
         if self.events.is_some() {
             self.encode_async(&sample, &mut out)?;
@@ -275,7 +289,7 @@ fn friendly_name(act: &IMFActivate) -> Option<String> {
     unsafe {
         let mut p = PWSTR::null();
         let mut len = 0u32;
-        act.GetAllocatedString(&MFT_FRIENDLY_NAME_Attribute, &mut p, &mut len).ok()?;
+        act.GetAllocatedString(&MFT_FRIENDLY_NAME_Attribute, &raw mut p, &raw mut len).ok()?;
         let s = p.to_string().ok();
         CoTaskMemFree(Some(p.0 as _));
         s

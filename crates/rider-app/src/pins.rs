@@ -11,7 +11,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 const KEY: PCWSTR = w!(r"Software\RemoteDesktopRider\Pins");
 
 fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
-    CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 }
+    CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr().cast_mut() }
 }
 
 fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
@@ -29,11 +29,11 @@ pub fn save(fingerprint: &str, pin: &str) -> Result<()> {
         CryptProtectData(
             &blob(pin.as_bytes()),
             w!("Remote Desktop Rider PIN"),
-            Some(&entropy),
+            Some(&raw const entropy),
             None,
             None,
             CRYPTPROTECT_UI_FORBIDDEN,
-            &mut out,
+            &raw mut out,
         )?;
     }
     let data = take(out);
@@ -49,7 +49,7 @@ pub fn load(fingerprint: &str) -> Option<String> {
     let name = HSTRING::from(fingerprint);
     let mut len = 0u32;
     let data = unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, KEY, &name, RRF_RT_REG_BINARY, None, None, Some(&mut len)).ok().ok()?;
+        RegGetValueW(HKEY_CURRENT_USER, KEY, &name, RRF_RT_REG_BINARY, None, None, Some(&raw mut len)).ok().ok()?;
         let mut buf = vec![0u8; len as usize];
         RegGetValueW(
             HKEY_CURRENT_USER,
@@ -58,7 +58,7 @@ pub fn load(fingerprint: &str) -> Option<String> {
             RRF_RT_REG_BINARY,
             None,
             Some(buf.as_mut_ptr().cast()),
-            Some(&mut len),
+            Some(&raw mut len),
         )
         .ok()
         .ok()?;
@@ -68,7 +68,16 @@ pub fn load(fingerprint: &str) -> Option<String> {
     let mut out = CRYPT_INTEGER_BLOB::default();
     let entropy = blob(fingerprint.as_bytes());
     unsafe {
-        CryptUnprotectData(&blob(&data), None, Some(&entropy), None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out).ok()?;
+        CryptUnprotectData(
+            &blob(&data),
+            None,
+            Some(&raw const entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &raw mut out,
+        )
+        .ok()?;
     }
     String::from_utf8(take(out)).ok()
 }

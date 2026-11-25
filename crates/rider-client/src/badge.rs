@@ -36,7 +36,7 @@ impl Badge {
         if self.text.is_empty() {
             return;
         }
-        if self.scale != scale {
+        if self.scale.to_bits() != scale.to_bits() {
             self.scale = scale;
             self.sprite = None;
         }
@@ -80,9 +80,9 @@ fn render(label: &str, scale: f64) -> Option<Sprite> {
             if shape == 0.0 {
                 continue;
             }
-            let a = (ALPHA as f64 * shape) as u32;
-            let t = coverage[y * w + x] as u32;
-            let mix = |c: u8| ((c as u32 * (255 - t) + 255 * t) / 255 * a + 127) / 255;
+            let a = (f64::from(ALPHA) * shape) as u32;
+            let t = u32::from(coverage[y * w + x]);
+            let mix = |c: u8| ((u32::from(c) * (255 - t) + 255 * t) / 255 * a + 127) / 255;
             px[y * w + x] = a << 24 | mix(BG.0) << 16 | mix(BG.1) << 8 | mix(BG.2);
         }
     }

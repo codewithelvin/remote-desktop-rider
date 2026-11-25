@@ -13,6 +13,7 @@ use rider_core::proto::{Access, ClientMsg, CursorShape, MonitorInfo, MouseButton
 use rider_core::trf;
 use rider_ui::chat::Action as ChatAction;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::pin::Pin;
@@ -50,8 +51,8 @@ pub fn run(
     let diag = report_to.map(|t| Diag::new(t, &session.conn, session.relayed, rt.handle().clone()));
     let v2 = rider_core::tls::speaks_v2(&session.conn);
     let v3 = rider_core::tls::speaks_v3(&session.conn);
-    let prefs = crate::config::ClientConfig::load().map(|c| c.viewer).unwrap_or_default();
-    let net = net::start(rt.handle(), session, proxy.clone(), shared.clone());
+    let prefs = crate::config::ClientConfig::load().map_or_default(|c| c.viewer);
+    let net = net::start(rt.handle(), session, proxy.clone(), &shared);
     let quality = if v2 { prefs.quality } else { 0 };
     if quality != 0 {
         net.send(ClientMsg::SetQuality { max_height: quality });
@@ -234,7 +235,7 @@ impl App {
         if self.monitors.len() > 1 {
             let name = self.monitors.get(self.active_monitor as usize).map_or("", |m| m.name.as_str());
             let name = if name.is_empty() || name.starts_with("DISPLAY") { tr("monitor", "monitor") } else { name };
-            title.push_str(&format!(" · {name} {}/{}", self.active_monitor + 1, self.monitors.len()));
+            let _ = write!(title, " · {name} {}/{}", self.active_monitor + 1, self.monitors.len());
         }
         if let Some(level) = access_label(self.shared.permissions()) {
             title = format!("{} [{level}]{}", self.host_name, &title[self.host_name.len()..]);
@@ -468,7 +469,7 @@ impl App {
         let Some((x0, _, bar_h)) = self.toolbar.button_rect(Action::Quality) else { return };
         let mut pt = POINT { x: x0 as i32, y: bar_h as i32 };
         let cmd = unsafe {
-            let _ = ClientToScreen(h, &mut pt);
+            let _ = ClientToScreen(h, &raw mut pt);
             let Ok(menu) = CreatePopupMenu() else { return };
             let texts: Vec<Vec<u16>> = QUALITIES
                 .iter()
@@ -612,7 +613,7 @@ impl App {
         self.v3 = rider_core::tls::speaks_v3(&session.conn);
         self.remote_cursor = CursorShape::Arrow;
         self.update_cursor();
-        self.net = net::start(&self.rt, session, self.proxy.clone(), self.shared.clone());
+        self.net = net::start(&self.rt, session, self.proxy.clone(), &self.shared);
         #[cfg(windows)]
         if let Some(h) = &self.keyhook {
             h.retarget(self.net.ctrl.clone());

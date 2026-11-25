@@ -28,7 +28,7 @@ pub fn spawn_decoder(
     std::thread::Builder::new()
         .name("rider-decode".into())
         .spawn(move || {
-            if let Err(e) = run(rx, ctrl, shared, proxy.clone()) {
+            if let Err(e) = run(&rx, &ctrl, &shared, &proxy) {
                 let _ =
                     proxy.send_event(UiEvent::Closed { conn, reason: format!("decoder failed: {e:#}"), lost: false });
             }
@@ -37,10 +37,10 @@ pub fn spawn_decoder(
 }
 
 fn run(
-    rx: Receiver<IncomingFrame>,
-    ctrl: UnboundedSender<ClientMsg>,
-    shared: Arc<Shared>,
-    proxy: EventLoopProxy<UiEvent>,
+    rx: &Receiver<IncomingFrame>,
+    ctrl: &UnboundedSender<ClientMsg>,
+    shared: &Shared,
+    proxy: &EventLoopProxy<UiEvent>,
 ) -> anyhow::Result<()> {
     rider_media::init_thread()?;
     let mut decoder: Option<H264Decoder> = None;
@@ -48,7 +48,7 @@ fn run(
     let mut pending: BTreeMap<u64, (IncomingFrame, Instant)> = BTreeMap::new();
     let mut next: Option<u64> = None;
     let mut need_keyframe = true;
-    let mut last_kf_request = Instant::now() - KEYFRAME_RETRY;
+    let mut last_kf_request = Instant::now().checked_sub(KEYFRAME_RETRY).unwrap();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(10)) {
@@ -80,7 +80,7 @@ fn run(
             let n = next.unwrap();
             if let Some((f, _)) = pending.remove(&n) {
                 next = Some(n + 1);
-                if !decode(&mut decoder, &mut dims, f, &shared, &proxy) {
+                if !decode(&mut decoder, &mut dims, &f, shared, proxy) {
                     decoder = None;
                     need_keyframe = true;
                 }
@@ -101,7 +101,7 @@ fn run(
 fn decode(
     decoder: &mut Option<H264Decoder>,
     dims: &mut (u32, u32),
-    f: IncomingFrame,
+    f: &IncomingFrame,
     shared: &Shared,
     proxy: &EventLoopProxy<UiEvent>,
 ) -> bool {

@@ -225,6 +225,8 @@ impl Panel {
         let mut choice = None;
         egui::CentralPanel::default().show(ui, |ui| {
             const CONTENT_H: f32 = 330.0;
+            const BUTTON: egui::Vec2 = egui::vec2(124.0, 34.0);
+            const GAP: f32 = 10.0;
             ui.add_space(((ui.available_height() - CONTENT_H) / 2.0).max(12.0));
             ui.vertical_centered(|ui| {
                 ui.set_max_width(320.0);
@@ -245,10 +247,8 @@ impl Panel {
                     ),
                 );
                 ui.add_space(18.0);
-                const BUTTON: egui::Vec2 = egui::vec2(124.0, 34.0);
-                const GAP: f32 = 10.0;
                 let row = egui::vec2(BUTTON.x * 2.0 + GAP, BUTTON.y);
-                ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     let accept = egui::Button::new(
                         RichText::new(tr("Accept", "Qəbul et")).family(widgets::semibold()).color(egui::Color32::WHITE),

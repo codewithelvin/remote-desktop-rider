@@ -75,7 +75,10 @@ fn parse_release(json: &str) -> Result<Release> {
     let asset = r
         .assets
         .iter()
-        .find(|a| a.name.starts_with(ASSET_PREFIX) && a.name.ends_with(".exe"))
+        .find(|a| {
+            a.name.starts_with(ASSET_PREFIX)
+                && Path::new(&a.name).extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        })
         .context("the release has no installer")?;
     let prefix = format!("https://github.com/{REPO}/releases/download/");
     if !asset.browser_download_url.starts_with(&prefix) {
@@ -198,12 +201,12 @@ pub(crate) mod http {
                 info | WINHTTP_QUERY_FLAG_NUMBER,
                 PCWSTR::null(),
                 Some((&raw mut v).cast()),
-                &mut len,
+                &raw mut len,
                 std::ptr::null_mut(),
             )
         }
         .ok()?;
-        Some(v as u64)
+        Some(u64::from(v))
     }
 
     pub fn get(url: &str, accept: &str, max: u64, sink: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
@@ -245,11 +248,12 @@ pub(crate) mod http {
             let mut got = 0u64;
             loop {
                 let mut n = 0u32;
-                WinHttpReadData(req.0, buf.as_mut_ptr().cast(), buf.len() as u32, &mut n).context("connection lost")?;
+                WinHttpReadData(req.0, buf.as_mut_ptr().cast(), buf.len() as u32, &raw mut n)
+                    .context("connection lost")?;
                 if n == 0 {
                     return Ok(());
                 }
-                got += n as u64;
+                got += u64::from(n);
                 if got > max {
                     bail!("reply too large");
                 }

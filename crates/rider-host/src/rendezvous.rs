@@ -72,7 +72,7 @@ pub async fn run(state: Arc<HostState>, sockets: Vec<Arc<PeerSocket>>, accept: q
             }
             if msg != last_error {
                 tracing::warn!("rendezvous server {}: {msg}", server.addr);
-                crate::ui::emit(serde_json::json!({ "event": "server_error", "server": server.addr, "message": msg }));
+                crate::ui::emit(&serde_json::json!({ "event": "server_error", "server": server.addr, "message": msg }));
                 last_error = msg;
             }
         }
@@ -170,7 +170,7 @@ async fn session(
             msg = read_msg::<ServerMsg>(&mut recv) => match msg? {
                 Some(ServerMsg::Registered { public, pairing_code }) => {
                     tracing::info!("registered with {} as {public}", server.addr);
-                    crate::ui::emit(serde_json::json!({
+                    crate::ui::emit(&serde_json::json!({
                         "event": "registered", "server": server.addr, "public": public, "code": pairing_code,
                     }));
                     if interactive && !crate::ui::json() && pairing_code.is_some() && pairing_code != shown_code {

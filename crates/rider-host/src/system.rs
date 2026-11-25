@@ -46,11 +46,11 @@ pub fn secure_dir(path: &Path) -> Result<()> {
             &wide,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION,
-            Some(&mut owner),
+            Some(&raw mut owner),
             None,
             None,
             None,
-            &mut sd,
+            &raw mut sd,
         );
         if err != ERROR_SUCCESS {
             bail!("reading security of {}: {err:?}", path.display());
@@ -69,24 +69,25 @@ pub fn secure_dir(path: &Path) -> Result<()> {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             &HSTRING::from(PROTECTED_SDDL),
             SDDL_REVISION_1,
-            &mut sd,
+            &raw mut sd,
             None,
         )?;
         let mut present = BOOL(0);
         let mut defaulted = BOOL(0);
         let mut dacl: *mut ACL = std::ptr::null_mut();
-        let result = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted).and_then(|()| {
-            SetNamedSecurityInfoW(
-                &wide,
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                Some(dacl),
-                None,
-            )
-            .ok()
-        });
+        let result =
+            GetSecurityDescriptorDacl(sd, &raw mut present, &raw mut dacl, &raw mut defaulted).and_then(|()| {
+                SetNamedSecurityInfoW(
+                    &wide,
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(dacl),
+                    None,
+                )
+                .ok()
+            });
         let _ = LocalFree(Some(HLOCAL(sd.0)));
         result.with_context(|| format!("protecting {}", path.display()))?;
     }
@@ -117,11 +118,11 @@ pub fn follow_input_desktop() -> bool {
 pub fn incoming_files_dir() -> Result<PathBuf> {
     let profile = unsafe {
         let mut token = HANDLE::default();
-        if WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &mut token).is_ok() {
+        if WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &raw mut token).is_ok() {
             let mut len = 0u32;
-            let _ = GetUserProfileDirectoryW(token, None, &mut len);
+            let _ = GetUserProfileDirectoryW(token, None, &raw mut len);
             let mut buf = vec![0u16; len as usize];
-            let r = GetUserProfileDirectoryW(token, Some(PWSTR(buf.as_mut_ptr())), &mut len);
+            let r = GetUserProfileDirectoryW(token, Some(PWSTR(buf.as_mut_ptr())), &raw mut len);
             let _ = CloseHandle(token);
             r?;
             PathBuf::from(String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]))
@@ -135,24 +136,26 @@ pub fn incoming_files_dir() -> Result<PathBuf> {
     Ok(profile.join("Downloads").join("Rider"))
 }
 
+struct Impersonation(HANDLE);
+
+impl Drop for Impersonation {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = RevertToSelf();
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
 pub fn as_console_user<T>(f: impl FnOnce() -> T) -> Result<T> {
     let mut token = HANDLE::default();
-    if unsafe { WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &mut token) }.is_err() {
+    if unsafe { WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &raw mut token) }.is_err() {
         if is_system_profile() {
             bail!("no user is signed in on the host");
         }
         return Ok(f());
     }
-    struct Guard(HANDLE);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = RevertToSelf();
-                let _ = CloseHandle(self.0);
-            }
-        }
-    }
-    let guard = Guard(token);
+    let guard = Impersonation(token);
     unsafe { ImpersonateLoggedOnUser(guard.0) }.context("acting as the signed-in user")?;
     Ok(f())
 }
@@ -197,15 +200,15 @@ pub fn enable_software_sas() -> Result<bool> {
             SAS_VALUE,
             RRF_RT_REG_DWORD,
             None,
-            Some(&mut data as *mut u32 as _),
-            Some(&mut size),
+            Some((&raw mut data).cast()),
+            Some(&raw mut size),
         );
         if existing == ERROR_SUCCESS {
             return Ok(false);
         }
         let one = 1u32;
         let err =
-            RegSetKeyValueW(HKEY_LOCAL_MACHINE, POLICY_KEY, SAS_VALUE, REG_DWORD.0, Some(&one as *const u32 as _), 4);
+            RegSetKeyValueW(HKEY_LOCAL_MACHINE, POLICY_KEY, SAS_VALUE, REG_DWORD.0, Some((&raw const one).cast()), 4);
         if err != ERROR_SUCCESS {
             bail!("setting SoftwareSASGeneration policy: {err:?}");
         }

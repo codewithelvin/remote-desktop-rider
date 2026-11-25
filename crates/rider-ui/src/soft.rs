@@ -121,6 +121,7 @@ fn triangle(v: [&Vertex; 3], p: [(f32, f32); 3], tex: &Texture, clip: Clip, t: &
         return;
     }
     let bias = |a: (f32, f32), b: (f32, f32)| {
+        #[expect(clippy::float_cmp, reason = "the top-left fill rule needs exact edge equality")]
         let top = a.1 == b.1 && b.0 < a.0;
         let left = b.1 > a.1;
         if top || left { 0.0 } else { -f32::EPSILON }
@@ -128,7 +129,7 @@ fn triangle(v: [&Vertex; 3], p: [(f32, f32); 3], tex: &Texture, clip: Clip, t: &
     let (b0, b1, b2) = (bias(p[1], p[2]), bias(p[2], p[0]), bias(p[0], p[1]));
     let inv = 1.0 / area;
 
-    let col = |c: Color32| [c.r() as f32, c.g() as f32, c.b() as f32, c.a() as f32];
+    let col = |c: Color32| [f32::from(c.r()), f32::from(c.g()), f32::from(c.b()), f32::from(c.a())];
     let (c0, c1, c2) = (col(v[0].color), col(v[1].color), col(v[2].color));
     let flat = v[0].color == v[1].color && v[1].color == v[2].color;
     let (tw, th) = (tex.w as f32, tex.h as f32);
@@ -151,7 +152,7 @@ fn triangle(v: [&Vertex; 3], p: [(f32, f32); 3], tex: &Texture, clip: Clip, t: &
             let tu = (t0.0 * l0 + t1.0 * l1 + t2.0 * l2) as usize;
             let tv = (t0.1 * l0 + t1.1 * l1 + t2.1 * l2) as usize;
             let s = tex.px[tv.min(tex.h - 1) * tex.w + tu.min(tex.w - 1)];
-            let m = |a: f32, b: u8| a * b as f32 / 255.0;
+            let m = |a: f32, b: u8| a * f32::from(b) / 255.0;
             let src = [m(c[0], s.r()), m(c[1], s.g()), m(c[2], s.b()), m(c[3], s.a())];
             if src[3] <= 0.0 && src[0] <= 0.0 && src[1] <= 0.0 && src[2] <= 0.0 {
                 continue;
@@ -231,9 +232,9 @@ mod tests {
         let mut r = SoftRenderer::default();
         let id = TextureId::Managed(0);
         let full = egui::ColorImage::new([4, 2], vec![Color32::BLACK; 8]);
-        r.set(id, &ImageDelta::full(full, Default::default()));
+        r.set(id, &ImageDelta::full(full, egui::TextureOptions::default()));
         let patch = egui::ColorImage::new([2, 1], vec![Color32::WHITE; 2]);
-        r.set(id, &ImageDelta::partial([1, 1], patch, Default::default()));
+        r.set(id, &ImageDelta::partial([1, 1], patch, egui::TextureOptions::default()));
         let t = &r.textures[&id];
         let white: Vec<usize> = (0..8).filter(|&i| t.px[i] == Color32::WHITE).collect();
         assert_eq!(white, [5, 6]);

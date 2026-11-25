@@ -11,7 +11,7 @@ fn main() {
         for _ in 0..n {
             bgra_to_nv12(&bgra, w * 4, w, h, &mut nv12);
         }
-        let enc = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        let enc = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
 
         let frame = Nv12Frame { data: nv12.clone(), stride: w, alloc_height: h, width: w, height: h };
         let mut out = vec![0u32; w * h];
@@ -20,7 +20,7 @@ fn main() {
         for _ in 0..n {
             nv12_to_xrgb_fit(&frame, &mut out, w, h);
         }
-        let dec = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        let dec = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
 
         let (sw, sh) = (1280, 720);
         let mut small = vec![0u32; sw * sh];
@@ -28,7 +28,7 @@ fn main() {
         for _ in 0..n {
             nv12_to_xrgb_fit(&frame, &mut small, sw, sh);
         }
-        let scaled = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        let scaled = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
         println!(
             "{w}x{h}: BGRA->NV12 {enc:.2} ms, NV12->XRGB 1:1 {dec:.2} ms, NV12->XRGB scaled to {sw}x{sh} {scaled:.2} ms"
         );

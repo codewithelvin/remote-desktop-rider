@@ -294,14 +294,14 @@ fn tab(buf: &mut [u32], w: usize, h: usize, scale: f64, hover: bool) {
             let on_grip = (fx - tw as f64 / 2.0).abs() < gw / 2.0 && fy >= gy0 && fy < gy1;
             let (cr, cg, cb) = if on_grip { (grip, grip, grip) } else { bg };
             let d = &mut buf[y * w + x0 + x];
-            *d = blend(premul(cr, cg, cb, (BG.3 as f64 * a) as u8), *d);
+            *d = blend(premul(cr, cg, cb, (f64::from(BG.3) * a) as u8), *d);
         }
     }
 }
 
 fn premul(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    let m = |c: u8| (c as u32 * a as u32 + 127) / 255;
-    (a as u32) << 24 | m(r) << 16 | m(g) << 8 | m(b)
+    let m = |c: u8| (u32::from(c) * u32::from(a) + 127) / 255;
+    u32::from(a) << 24 | m(r) << 16 | m(g) << 8 | m(b)
 }
 
 pub(crate) fn blend(src: u32, dst: u32) -> u32 {
@@ -426,7 +426,7 @@ pub(crate) mod text {
                         OUT_TT_PRECIS,
                         CLIP_DEFAULT_PRECIS,
                         ANTIALIASED_QUALITY,
-                        FF_DONTCARE.0 as u32,
+                        u32::from(FF_DONTCARE.0),
                         PCWSTR(face.as_ptr()),
                     )
                 }
@@ -442,7 +442,7 @@ pub(crate) mod text {
             let mut size = SIZE::default();
             unsafe {
                 SelectObject(self.dc, font.into());
-                let _ = GetTextExtentPoint32W(self.dc, s, &mut size);
+                let _ = GetTextExtentPoint32W(self.dc, s, &raw mut size);
             }
             (size.cx, size.cy)
         }
@@ -455,7 +455,7 @@ pub(crate) mod text {
             self.extent(self.text, &wide(s)).0
         }
 
-        pub fn paint(&self, w: usize, h: usize, labels: &[Label], gap: i32) -> Option<Vec<u8>> {
+        pub fn paint(&self, w: usize, h: usize, labels: &[Label<'_>], gap: i32) -> Option<Vec<u8>> {
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -471,7 +471,9 @@ pub(crate) mod text {
             let hi = h as i32;
             let one = self.scale.round() as i32;
             let mut bits = std::ptr::null_mut();
-            let bmp = unsafe { CreateDIBSection(Some(self.dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }.ok()?;
+            let bmp =
+                unsafe { CreateDIBSection(Some(self.dc), &raw const info, DIB_RGB_COLORS, &raw mut bits, None, 0) }
+                    .ok()?;
             let mut coverage = vec![0u8; w * h];
             unsafe {
                 let old = SelectObject(self.dc, bmp.into());
@@ -589,7 +591,7 @@ pub(crate) mod text {
             self.layout(s, 0.0).1.ceil() as i32
         }
 
-        pub fn paint(&self, w: usize, h: usize, labels: &[Label], _gap: i32) -> Option<Vec<u8>> {
+        pub fn paint(&self, w: usize, h: usize, labels: &[Label<'_>], _gap: i32) -> Option<Vec<u8>> {
             let main = self.fonts[0].as_scaled(self.px);
             let mut coverage = vec![0u8; w * h];
             let baseline = ((h as f32 - (main.ascent() - main.descent())) / 2.0 + main.ascent()).round();
@@ -669,7 +671,7 @@ fn render(
     let w = (x + edge) as usize;
     let hu = h as usize;
 
-    let painted: Vec<Label> = items
+    let painted: Vec<Label<'_>> = items
         .iter()
         .zip(&buttons)
         .map(|((_, icon, text, iw, _), (_, x0, _))| Label { x: *x0 as i32 + pad, icon: *icon, icon_w: *iw, text })
@@ -706,9 +708,9 @@ fn render(
             if a_shape == 0.0 {
                 continue;
             }
-            let a = (BG.3 as f64 * a_shape) as u32;
-            let t = coverage[y * w + x] as u32;
-            let mix = |c: u8| ((c as u32 * (255 - t) + 255 * t) / 255 * a + 127) / 255;
+            let a = (f64::from(BG.3) * a_shape) as u32;
+            let t = u32::from(coverage[y * w + x]);
+            let mix = |c: u8| ((u32::from(c) * (255 - t) + 255 * t) / 255 * a + 127) / 255;
             px[y * w + x] = a << 24 | mix(bg.0) << 16 | mix(bg.1) << 8 | mix(bg.2);
         }
     }
@@ -747,7 +749,7 @@ mod tests {
         assert!(s.w > 300 && s.w < 1000 && s.h == 36);
         assert!(s.px.iter().any(|p| (p & 0xFF) > 200));
         let (a, b) = (s.buttons[0].1, s.buttons[0].2);
-        let x = (t.x + (a + b) / 2) as f64;
+        let x = (t.x + usize::midpoint(a, b)) as f64;
         assert!(t.pointer(x, 10.0));
         assert_eq!(t.hover, Some(Action::Fullscreen));
         assert!(t.press());
@@ -798,7 +800,7 @@ mod tests {
         t.pointer(800.0, 600.0);
         assert!(t.visible() && t.deadline().is_none());
         let (a, b, _) = t.button_rect(Action::Elapsed).unwrap();
-        t.pointer(((a + b) / 2) as f64, 10.0);
+        t.pointer(usize::midpoint(a, b) as f64, 10.0);
         assert_eq!(t.hover, None);
         assert!(t.press());
         assert_eq!(t.release(), (true, None));
@@ -824,7 +826,7 @@ mod tests {
         t.set_extras(Extras { access: Some("View only".into()), no_control: true, ..Extras::default() });
         t.draw(&mut buf, 1600, 900);
         let (a, b, _) = t.button_rect(Action::Access).unwrap();
-        t.pointer(((a + b) / 2) as f64, 10.0);
+        t.pointer(usize::midpoint(a, b) as f64, 10.0);
         assert_eq!(t.hover, None);
         assert!(t.press());
         assert_eq!(t.release(), (true, None));
@@ -840,7 +842,7 @@ mod tests {
         t.visible_until = None;
         let at = |t: &Toolbar| {
             let (a, b, _) = t.button_rect(Action::Disconnect).unwrap();
-            ((a + b) / 2) as f64
+            usize::midpoint(a, b) as f64
         };
         let x = at(&t);
         t.pointer(x, 10.0);
@@ -856,7 +858,7 @@ mod tests {
         t.pointer(x, 10.0);
         t.press();
         t.release();
-        t.confirm_until = Some(Instant::now() - Duration::from_millis(1));
+        t.confirm_until = Some(Instant::now().checked_sub(Duration::from_millis(1)).unwrap());
         assert!(t.expire_confirm());
         assert!(!t.expire_confirm());
         t.draw(&mut buf, 1600, 900);

@@ -99,7 +99,7 @@ pub fn install(port: u16) -> Result<()> {
     service.set_description("Unattended remote access for paired Remote Desktop Rider devices.")?;
     let restart = ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(5) };
     service.update_failure_actions(ServiceFailureActions {
-        reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 3600)),
+        reset_period: ServiceFailureResetPeriod::After(Duration::from_hours(24)),
         reboot_msg: None,
         command: None,
         actions: Some(vec![restart.clone(), restart.clone(), restart]),
@@ -351,7 +351,7 @@ fn supervise(stop: &mpsc::Receiver<()>, updater: Option<&crate::autoupdate::Upda
     let sas = unsafe { CreateEventW(None, false, false, system::SAS_EVENT)? };
     let exe = std::env::current_exe()?;
     let mut agent: Option<Agent> = None;
-    let mut last_spawn = Instant::now() - RESPAWN_DELAY;
+    let mut last_spawn = Instant::now().checked_sub(RESPAWN_DELAY).unwrap();
     loop {
         let session = unsafe { WTSGetActiveConsoleSessionId() };
         let healthy = agent.as_ref().is_some_and(|a| a.alive() && a.session == session);
@@ -397,8 +397,8 @@ fn kill_on_close_job() -> Result<HANDLE> {
         SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
-            &info as *const _ as _,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            (&raw const info).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )?;
         Ok(job)
     }
@@ -420,12 +420,12 @@ fn spawn_agent(exe: &Path, session: u32) -> Result<(HANDLE, HANDLE)> {
 fn own_token_in(session: u32) -> Result<HANDLE> {
     unsafe {
         let mut own = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut own).context("own token")?;
+        OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &raw mut own).context("own token")?;
         let mut token = HANDLE::default();
-        let dup = DuplicateTokenEx(own, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut token);
+        let dup = DuplicateTokenEx(own, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &raw mut token);
         let _ = CloseHandle(own);
         dup.context("copy of own token")?;
-        if let Err(e) = SetTokenInformation(token, TokenSessionId, &session as *const u32 as _, 4) {
+        if let Err(e) = SetTokenInformation(token, TokenSessionId, (&raw const session).cast(), 4) {
             let _ = CloseHandle(token);
             return Err(anyhow::Error::from(e).context("token into the session"));
         }
@@ -438,7 +438,7 @@ fn start_agent(exe: &Path, token: HANDLE, job: HANDLE) -> Result<HANDLE> {
         let result = (|| {
             let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
             let si = STARTUPINFOW {
-                cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                cb: size_of::<STARTUPINFOW>() as u32,
                 lpDesktop: PWSTR(desktop.as_mut_ptr()),
                 ..Default::default()
             };
@@ -454,8 +454,8 @@ fn start_agent(exe: &Path, token: HANDLE, job: HANDLE) -> Result<HANDLE> {
                 CREATE_NO_WINDOW,
                 None,
                 PCWSTR::null(),
-                &si,
-                &mut pi,
+                &raw const si,
+                &raw mut pi,
             )
             .context("start the agent")?;
             let _ = CloseHandle(pi.hThread);

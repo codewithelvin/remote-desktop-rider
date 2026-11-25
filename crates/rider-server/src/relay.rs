@@ -42,7 +42,7 @@ impl RelayPool {
 }
 
 async fn run(socket: UdpSocket, tokens: [Token; 2]) {
-    let port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
+    let port = socket.local_addr().map_or(0, |a| a.port());
     let mut sides: [Option<SocketAddr>; 2] = [None, None];
     let (mut ab, mut ba) = (0u64, 0u64);
     let mut since = None;

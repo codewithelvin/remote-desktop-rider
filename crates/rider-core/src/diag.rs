@@ -47,6 +47,7 @@ pub struct Report {
 }
 
 impl Report {
+    #[must_use]
     pub fn bounded(mut self) -> Self {
         self.samples.truncate(MAX_SAMPLES);
         for s in [&mut self.version, &mut self.encoder] {
@@ -123,7 +124,7 @@ impl Recorder {
     fn cut(&mut self, ended: Option<String>) -> Report {
         self.last_flush = std::time::Instant::now();
         let samples = std::mem::replace(&mut self.report.samples, Vec::with_capacity(MAX_SAMPLES));
-        let r = Report { samples, ended, ..self.report.clone() };
+        let r = Report { ended, samples, ..self.report.clone() };
         self.report.part = self.report.part.saturating_add(1);
         r.bounded()
     }

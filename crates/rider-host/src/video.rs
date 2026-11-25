@@ -89,9 +89,9 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
     let mut capture_us = 0u64;
     let mut have_frame = false;
     let mut force_kf = true;
-    let mut last_kf = Instant::now() - MIN_KEYFRAME_GAP;
+    let mut last_kf = Instant::now().checked_sub(MIN_KEYFRAME_GAP).unwrap();
     let mut refine_left = 0u32;
-    let mut last_encode = Instant::now() - interval;
+    let mut last_encode = Instant::now().checked_sub(interval).unwrap();
     let mut seq = 0u64;
     let mut congested = false;
 
@@ -106,7 +106,6 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
                     have_frame = false;
                     force_kf = true;
                 }
-                VideoCmd::SelectMonitor(_) => {}
                 VideoCmd::Keyframe => force_kf = true,
                 VideoCmd::MaxHeight(m) if m as usize != max_height => {
                     max_height = m as usize;
@@ -115,7 +114,7 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
                     have_frame = false;
                     force_kf = true;
                 }
-                VideoCmd::MaxHeight(_) => {}
+                VideoCmd::SelectMonitor(_) | VideoCmd::MaxHeight(_) => {}
                 VideoCmd::SetBitrate(b) => {
                     bitrate = b;
                     if let Some(e) = enc.as_mut() {
@@ -137,7 +136,7 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
 
         let since = last_encode.elapsed();
         if since < interval {
-            std::thread::sleep(interval - since);
+            std::thread::sleep(interval.checked_sub(since).unwrap());
         }
 
         let fresh = match cap.next_frame(50) {
@@ -181,7 +180,7 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
         if enc.as_ref().is_none_or(|e| e.width as usize != w || e.height as usize != h) {
             drop(enc.take());
             let e = H264Encoder::new(w as u32, h as u32, cfg.max_fps, bitrate, cfg.hardware)?;
-            *stats.encoder.lock().unwrap() = e.name.clone();
+            stats.encoder.lock().unwrap().clone_from(&e.name);
             enc = Some(e);
             force_kf = true;
         }
@@ -195,7 +194,7 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
             force_kf = false;
             last_kf = Instant::now();
         }
-        stats.encode_us.fetch_add(encode_us as u64, Ordering::Relaxed);
+        stats.encode_us.fetch_add(u64::from(encode_us), Ordering::Relaxed);
 
         for p in packets {
             stats.frames.fetch_add(1, Ordering::Relaxed);

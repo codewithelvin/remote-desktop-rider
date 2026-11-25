@@ -1,7 +1,10 @@
 use crate::video::{self, IncomingFrame};
 use rider_core::i18n::tr;
 use rider_core::pixels::Nv12Frame;
-use rider_core::proto::*;
+use rider_core::proto::{
+    ClientMsg, CursorShape, HostMsg, MAX_CHAT, MAX_FRAME_BYTES, MonitorInfo, MouseMove, Permissions, encode,
+    read_known, split_frame, write_msg,
+};
 use rider_core::session_files::SessionFiles;
 use rider_core::transfer::{self, Cancel};
 use std::collections::HashMap;
@@ -237,7 +240,7 @@ pub fn start(
     rt: &tokio::runtime::Handle,
     s: Session,
     proxy: EventLoopProxy<UiEvent>,
-    shared: Arc<Shared>,
+    shared: &Arc<Shared>,
 ) -> NetHandle {
     let Session { conn, send, recv, .. } = s;
     let id = conn.stable_id();
