@@ -1,0 +1,40 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "gusztavvargadr/ubuntu-desktop-2404-lts"
+  config.vm.box_version = "2607.0.0"
+  config.vm.box_architecture = "amd64"
+  config.vm.hostname = "rider-ubuntu"
+  config.vm.boot_timeout = 900
+
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "../..", "/repo"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "rider-test-ubuntu"
+    vb.gui = true
+    vb.memory = 8192
+    vb.cpus = 4
+    vb.customize ["modifyvm", :id, "--graphicscontroller", "vmsvga", "--vram", "128",
+                  "--accelerate3d", "off", "--clipboard-mode", "bidirectional"]
+  end
+
+  config.vm.provision "tools", type: "shell", inline: <<~SH
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -q
+    apt-get install -y -q --no-install-recommends build-essential pkg-config nasm libxkbcommon-dev curl
+    sudo -u vagrant sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --component clippy'
+    printf '[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=vagrant\n' > /etc/gdm3/custom.conf
+  SH
+
+  config.vm.provision "deb", type: "shell", privileged: false, inline: <<~SH
+    set -eu
+    . "$HOME/.cargo/env"
+    mkdir -p ~/src ~/Desktop
+    tar -C /repo --exclude=./target --exclude=./.git --exclude='./test/*/.vagrant' -cf - . | tar -C ~/src -xf -
+    cd ~/src
+    version=$(sed -n 's/^version = "\\(.*\\)"/\\1/p' Cargo.toml | head -1)
+    deb=$(packaging/linux/build-deb.sh "$version" | tail -1)
+    cp "$deb" ~/Desktop/
+    echo "built $(basename "$deb")"
+  SH
+end

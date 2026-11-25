@@ -1,0 +1,41 @@
+[package]
+name = "rider-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Remote Desktop Rider desktop app: computers list, pairing, and host settings"
+
+[[bin]]
+name = "RemoteDesktopRider"
+path = "src/main.rs"
+
+[dependencies]
+rider-core.workspace = true
+rider-ui.workspace = true
+rider-client = { path = "../rider-client" }
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+raw-window-handle = "0.6"
+windows-service.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["wgpu_no_default_features", "default_fonts", "accesskit", "clipboard"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["wgpu_no_default_features", "default_fonts", "accesskit", "clipboard"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
+security-framework = "3"
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard", "x11", "wayland"] }
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+
+[lints]
+workspace = true

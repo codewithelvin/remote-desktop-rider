@@ -1,0 +1,34 @@
+[package]
+name = "rider-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+postcard.workspace = true
+sha2.workspace = true
+hex.workspace = true
+getrandom.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+arboard.workspace = true
+rayon.workspace = true
+
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+rustls-native-certs = "0.8"

@@ -1,0 +1,31 @@
+[Unit]
+Description=Remote Desktop Rider rendezvous and relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/rider-server --state-dir /var/lib/rider-server run --listen 0.0.0.0:47900 --tunnel-listen 127.0.0.1:47900 --relay-ports 47901-47999
+Restart=on-failure
+RestartSec=2
+DynamicUser=yes
+StateDirectory=rider-server
+Environment=RUST_LOG=info,quinn=warn
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

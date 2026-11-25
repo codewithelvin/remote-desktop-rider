@@ -1,0 +1,232 @@
+use crate::config::HostConfig;
+use anyhow::{Context, Result};
+use rider_core::update;
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+use windows::Win32::System::RemoteDesktop::{
+    WTS_CURRENT_SERVER_HANDLE, WTS_PROCESS_INFOW, WTSEnumerateProcessesW, WTSFreeMemory, WTSQueryUserToken,
+};
+use windows::Win32::System::Threading::{
+    CREATE_UNICODE_ENVIRONMENT, CreateEventW, EVENT_MODIFY_STATE, OpenEventW, PROCESS_INFORMATION, ResetEvent,
+    STARTUPINFOW, SetEvent, WaitForSingleObject,
+};
+use windows::core::{PCWSTR, PWSTR, w};
+
+pub const SESSION_EVENT: PCWSTR = w!(r"Global\RemoteDesktopRider-Session");
+
+const FIRST_CHECK: Duration = Duration::from_secs(2 * 60);
+const EVERY: Duration = Duration::from_secs(3600);
+const RETRY: Duration = Duration::from_secs(30 * 60);
+const APP_EXE: &str = "RemoteDesktopRider.exe";
+
+pub fn mark_session(active: bool) {
+    unsafe {
+        if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, SESSION_EVENT) {
+            let _ = if active { SetEvent(event) } else { ResetEvent(event) };
+            let _ = CloseHandle(event);
+        }
+    }
+}
+
+pub struct Updater {
+    event: HANDLE,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Updater {
+    pub fn start() -> Result<Self> {
+        let event = unsafe { CreateEventW(None, true, false, SESSION_EVENT)? };
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ev, st) = (event.0 as usize, stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("autoupdate".into())
+            .spawn(move || run(HANDLE(ev as *mut _), &st))
+            .context("cannot start the update checker")?;
+        Ok(Self { event, stop, thread: Some(thread) })
+    }
+
+    pub fn reset_session(&self) {
+        unsafe {
+            let _ = ResetEvent(self.event);
+        }
+    }
+}
+
+impl Drop for Updater {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        unsafe {
+            let _ = CloseHandle(self.event);
+        }
+    }
+}
+
+fn session_active(event: HANDLE) -> bool {
+    unsafe { WaitForSingleObject(event, 0) == WAIT_OBJECT_0 }
+}
+
+fn run(event: HANDLE, stop: &AtomicBool) {
+    let mut next = Instant::now() + FIRST_CHECK;
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_secs(1));
+        if Instant::now() < next {
+            continue;
+        }
+        next = Instant::now() + EVERY;
+        match HostConfig::load() {
+            Ok(cfg) if !cfg.auto_update => continue,
+            Err(e) => {
+                tracing::warn!("auto-update: cannot read the settings: {e:#}");
+                continue;
+            }
+            Ok(_) => {}
+        }
+        if session_active(event) {
+            tracing::info!("auto-update: a session is active, checking again later");
+            next = Instant::now() + RETRY;
+            continue;
+        }
+        match check_and_install(event, stop) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("auto-update: {e:#}");
+                next = Instant::now() + RETRY;
+            }
+        }
+    }
+}
+
+fn updates_dir() -> Result<PathBuf> {
+    let base = HostConfig::dir()?.parent().context("state dir has no parent")?.join("updates");
+    std::fs::create_dir_all(&base)?;
+    crate::system::secure_dir(&base)?;
+    Ok(base)
+}
+
+fn relaunch_marker() -> Result<PathBuf> {
+    Ok(updates_dir()?.join("reopen-app"))
+}
+
+fn check_and_install(event: HANDLE, stop: &AtomicBool) -> Result<bool> {
+    remove_installers();
+    let Some(release) = update::newer()? else {
+        tracing::debug!("auto-update: up to date ({})", update::Version::current());
+        return Ok(false);
+    };
+    tracing::info!("auto-update: version {} is available, downloading", release.version);
+    let dir = updates_dir()?;
+    let file = dir.join(&release.file_name);
+    update::download(&release, &file, &mut |_, _| {})?;
+    if stop.load(Ordering::SeqCst) || session_active(event) {
+        tracing::info!("auto-update: postponed (stopping or a session started)");
+        let _ = std::fs::remove_file(&file);
+        anyhow::bail!("postponed");
+    }
+    let console = unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() };
+    let marker = relaunch_marker()?;
+    if app_running_in(console) {
+        std::fs::write(&marker, console.to_string())?;
+    } else {
+        let _ = std::fs::remove_file(&marker);
+    }
+    tracing::info!("auto-update: installing {}", release.version);
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    std::process::Command::new(&file)
+        .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+        .arg(format!("/LOG={}", dir.join("install.log").display()))
+        .creation_flags(DETACHED_PROCESS)
+        .spawn()
+        .context("cannot start the installer")?;
+    Ok(true)
+}
+
+fn app_running_in(session: u32) -> bool {
+    let mut list: *mut WTS_PROCESS_INFOW = std::ptr::null_mut();
+    let mut count = 0u32;
+    unsafe {
+        if WTSEnumerateProcessesW(Some(WTS_CURRENT_SERVER_HANDLE), 0, 1, &mut list, &mut count).is_err() {
+            return false;
+        }
+        let found = std::slice::from_raw_parts(list, count as usize).iter().any(|p| {
+            p.SessionId == session && p.pProcessName.to_string().is_ok_and(|n| n.eq_ignore_ascii_case(APP_EXE))
+        });
+        WTSFreeMemory(list.cast());
+        found
+    }
+}
+
+fn remove_installers() {
+    if let Ok(dir) = updates_dir()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for e in entries.flatten() {
+            if e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+pub fn reopen_app_after_update() {
+    remove_installers();
+    let Ok(marker) = relaunch_marker() else { return };
+    let Ok(text) = std::fs::read_to_string(&marker) else { return };
+    let _ = std::fs::remove_file(&marker);
+    let Ok(session) = text.trim().parse::<u32>() else { return };
+    if unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() } != session {
+        return;
+    }
+    let Some(exe) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(APP_EXE))) else { return };
+    match launch_as_user(session, &format!("\"{}\" --tray", exe.display())) {
+        Ok(()) => tracing::info!("auto-update: reopened the app in session {session}"),
+        Err(e) => tracing::warn!("auto-update: cannot reopen the app: {e:#}"),
+    }
+}
+
+fn launch_as_user(session: u32, cmd: &str) -> Result<()> {
+    unsafe {
+        let mut token = HANDLE::default();
+        WTSQueryUserToken(session, &mut token).context("no user signed in")?;
+        let mut env = std::ptr::null_mut();
+        let have_env = CreateEnvironmentBlock(&mut env, Some(token), false).is_ok();
+        let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
+        let si = STARTUPINFOW {
+            cb: size_of::<STARTUPINFOW>() as u32,
+            lpDesktop: PWSTR(desktop.as_mut_ptr()),
+            ..Default::default()
+        };
+        let mut line: Vec<u16> = cmd.encode_utf16().chain(Some(0)).collect();
+        let mut pi = PROCESS_INFORMATION::default();
+        let r = windows::Win32::System::Threading::CreateProcessAsUserW(
+            Some(token),
+            PCWSTR::null(),
+            Some(PWSTR(line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_UNICODE_ENVIRONMENT,
+            have_env.then_some(env as *const _),
+            PCWSTR::null(),
+            &si,
+            &mut pi,
+        );
+        if have_env {
+            let _ = DestroyEnvironmentBlock(env);
+        }
+        let _ = CloseHandle(token);
+        r?;
+        let _ = CloseHandle(pi.hThread);
+        let _ = CloseHandle(pi.hProcess);
+        Ok(())
+    }
+}

@@ -1,0 +1,40 @@
+TEST_PIN = ENV.fetch("RIDER_TEST_PIN", "rider-test-pin")
+HOST_IP = "192.168.56.50"
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "gusztavvargadr/windows-11"
+  config.vm.hostname = "rider-vm"
+  config.vm.communicator = "winrm"
+  config.vm.boot_timeout = 900
+  config.vm.graceful_halt_timeout = 20
+  config.vm.network "private_network", ip: HOST_IP, auto_config: false
+
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "../../target/release", "C:/rider"
+  config.vm.synced_folder "guest", "C:/rider-test"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "rider-test-host"
+    vb.gui = ENV["RIDER_VM_GUI"] == "1"
+    vb.memory = 3072
+    vb.cpus = 4
+    vb.customize ["modifyvm", :id, "--cpu-execution-cap", "80"]
+    vb.customize ["modifyvm", :id, "--graphicscontroller", "vboxsvga", "--vram", "64"]
+    vb.customize ["modifyvm", :id, "--clipboard-mode", "disabled"]
+    vb.customize ["modifyvm", :id, "--audio-enabled", "off", "--usb-ohci", "off", "--usb-ehci", "off", "--usb-xhci", "off"]
+  end
+
+  config.vm.provision "rider", type: "shell", privileged: true, env: { "RIDER_PIN" => TEST_PIN }, inline: <<~'PS1'
+    $ErrorActionPreference = "Stop"
+    $exe = "C:\rider\rider-host.exe"
+    $env:RIDER_PIN | & $exe set-pin --pin-stdin
+    if ($LASTEXITCODE) { throw "set-pin failed" }
+    & $exe service install
+    if ($LASTEXITCODE) { throw "service install failed" }
+    & $exe info
+    Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name EnableLUA -Value 1
+  PS1
+
+  config.vm.provision "setup", type: "shell", privileged: true,
+    inline: '& C:\rider-test\slim.ps1; & C:\rider-test\install-agent.ps1'
+end

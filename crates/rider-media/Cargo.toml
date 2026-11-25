@@ -1,0 +1,24 @@
+[package]
+name = "rider-media"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rider-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+openh264 = { version = "0.9", default-features = false, features = ["source"] }
+
+[dev-dependencies]
+openh264 = { version = "0.9", default-features = false, features = ["source"] }
+
+[lints]
+workspace = true

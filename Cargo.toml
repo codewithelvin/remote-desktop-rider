@@ -1,0 +1,121 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/rider-core", "crates/rider-media", "crates/rider-host", "crates/rider-client", "crates/rider-server", "crates/rider-app",
+  "crates/rider-ui",
+]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+authors = ["Elvin Huseynov"]
+license = "MIT"
+repository = "https://github.com/codewithelvin/remote-desktop-rider"
+
+[workspace.dependencies]
+rider-core = { path = "crates/rider-core" }
+rider-media = { path = "crates/rider-media" }
+rider-ui = { path = "crates/rider-ui" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal", "net"] }
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["use-std"] }
+toml = "1.2"
+sha2 = "0.11"
+hex = "0.4"
+argon2 = "0.6"
+getrandom = "0.4"
+rpassword = "7"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+arboard = "3"
+bytes = "1"
+rayon = "1"
+windows-service = "0.8"
+winit = "0.30"
+softbuffer = "0.4"
+windows = { version = "0.62", features = [
+  "Win32_Devices_Display",
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_NetworkManagement_NetManagement",
+  "Win32_Networking_NetworkListManager",
+  "Win32_Networking_WinHttp",
+  "Win32_Networking_WinSock",
+  "Win32_System_Com",
+  "Win32_System_Environment",
+  "Win32_System_Variant",
+  "Win32_System_Ole",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_Shutdown",
+  "Win32_System_Registry",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
+  "Win32_UI_Shell",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_Media_MediaFoundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1
+
+[profile.release.package."*"]
+codegen-units = 16
+
+[profile.release.package.rider-app]
+codegen-units = 16
+
+[profile.release.package.quinn]
+codegen-units = 1
+[profile.release.package.quinn-proto]
+codegen-units = 1
+[profile.release.package.quinn-udp]
+codegen-units = 1
+[profile.release.package.rustls]
+codegen-units = 1
+[profile.release.package.ring]
+codegen-units = 1
+[profile.release.package.tokio]
+codegen-units = 1
+
+[profile.quick]
+inherits = "release"
+lto = false
+incremental = true
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+[profile.dev]
+opt-level = 1
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
