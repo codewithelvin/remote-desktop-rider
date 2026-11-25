@@ -1,0 +1,258 @@
+//! The chat window of a paired session: `RemoteDesktopRider --session-panel`,
+//! started for the person signed in at this computer while a paired device is
+//! connected (one-time sessions chat in the app that runs the host instead).
+//!
+//! The service's agent runs as SYSTEM, so the window is started with the
+//! signed-in user's token (their rights, environment and desktop) and talks
+//! to the agent over two anonymous pipes, nothing else: no other handle of
+//! the agent is passed on. Lines, one per message:
+//!
+//! * to the window: JSON events, `{"event":"session","device":"…","files":true}`
+//!   first, then the chat events listed in `chat`;
+//! * from the window: `chat "<text>"`, `send-file "<path>"`, `cancel-file <id>`
+//!   and `end` (end the session).
+//!
+//! Closing the window's input (the session ended, or the agent died) closes
+//! the window; a window that does not go is ended after a few seconds.
+
+use crate::ui::{self, ChatCmd};
+use anyhow::{Context, Result, bail};
+use std::io::{BufRead, BufReader, Write};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::Path;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
+use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+use windows::Win32::System::Pipes::CreatePipe;
+use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+use windows::Win32::System::Threading::{
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
+};
+use windows::core::PWSTR;
+
+/// How long a window may take to close by itself after its input closed.
+const CLOSE_GRACE: Duration = Duration::from_secs(3);
+
+/// A running chat window; dropping it closes the window.
+pub struct Panel {
+    /// Lines for the window, written by a thread (a stuck window never blocks the session).
+    lines: std::sync::mpsc::Sender<String>,
+    process: Option<OwnedHandle>,
+}
+
+impl Panel {
+    /// Start the window for `device`. Commands typed in it come out of the receiver,
+    /// which closes when the window is gone.
+    pub fn launch(device: &str, files: bool) -> Result<(Self, mpsc::UnboundedReceiver<ChatCmd>)> {
+        let exe = std::env::current_exe()?.with_file_name("RemoteDesktopRider.exe");
+        if !exe.exists() {
+            bail!("{} is missing", exe.display());
+        }
+        let (process, to_window, from_window) = spawn(&exe)?;
+
+        let (lines, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::Builder::new().name("panel-out".into()).spawn(move || {
+            let mut pipe = to_window;
+            for line in rx {
+                if writeln!(pipe, "{line}").and_then(|()| pipe.flush()).is_err() {
+                    break;
+                }
+            }
+            // Dropping the pipe tells the window to close.
+        })?;
+
+        let (tx, cmds) = mpsc::unbounded_channel();
+        std::thread::Builder::new().name("panel-in".into()).spawn(move || {
+            let mut input = BufReader::new(from_window);
+            let mut bytes = Vec::new();
+            loop {
+                bytes.clear();
+                match input.read_until(b'\n', &mut bytes) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if let Some(cmd) = parse(&String::from_utf8_lossy(&bytes))
+                            && tx.send(cmd).is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        })?;
+
+        let panel = Self { lines, process: Some(process) };
+        panel.emit(serde_json::json!({ "event": "session", "device": device, "files": files }));
+        Ok((panel, cmds))
+    }
+
+    /// Send one event to the window.
+    pub fn emit(&self, event: serde_json::Value) {
+        let _ = self.lines.send(event.to_string());
+    }
+}
+
+impl Drop for Panel {
+    fn drop(&mut self) {
+        // Closing the input lets the window close itself (and delete what it
+        // holds); one that does not is ended shortly after.
+        let (lines, _) = std::sync::mpsc::channel();
+        drop(std::mem::replace(&mut self.lines, lines));
+        if let Some(process) = self.process.take() {
+            std::thread::spawn(move || {
+                let h = HANDLE(process.as_raw_handle());
+                // SAFETY: a process handle owned by `process`, alive for this block.
+                unsafe {
+                    if WaitForSingleObject(h, CLOSE_GRACE.as_millis() as u32).0 != 0 {
+                        let _ = TerminateProcess(h, 0);
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// One line from the window.
+fn parse(line: &str) -> Option<ChatCmd> {
+    match ui::split_line(line) {
+        ("end", "") => Some(ChatCmd::End),
+        (word, arg) => ui::parse_chat(word, arg),
+    }
+}
+
+/// Start `exe --session-panel` as the signed-in console user, with pipes for
+/// its standard input and output: (process, its input, its output).
+fn spawn(exe: &Path) -> Result<(OwnedHandle, std::fs::File, std::fs::File)> {
+    let mut token = HANDLE::default();
+    // SAFETY: plain query into a local; succeeds only for SYSTEM with a user signed in.
+    if unsafe { WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &mut token) }.is_err() {
+        if crate::system::is_system_profile() {
+            bail!("nobody is signed in");
+        }
+        // Not the service's agent: this process already is the user.
+        return spawn_here(exe);
+    }
+    // SAFETY: `token` is a valid primary token, closed exactly once.
+    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+    spawn_as(HANDLE(token.as_raw_handle()), exe)
+}
+
+fn spawn_here(exe: &Path) -> Result<(OwnedHandle, std::fs::File, std::fs::File)> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(exe)
+        .arg("--session-panel")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("starting {}", exe.display()))?;
+    let input = OwnedHandle::from(child.stdin.take().context("no stdin")?);
+    let output = OwnedHandle::from(child.stdout.take().context("no stdout")?);
+    let process = OwnedHandle::from(child);
+    Ok((process, input.into(), output.into()))
+}
+
+/// An anonymous pipe: (read end, write end), the child's end inheritable.
+fn pipe(child_reads: bool) -> Result<(OwnedHandle, OwnedHandle)> {
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        bInheritHandle: true.into(),
+        ..Default::default()
+    };
+    let (mut r, mut w) = (HANDLE::default(), HANDLE::default());
+    // SAFETY: out-pointers are locals; both handles are owned right after.
+    let (r, w) = unsafe {
+        CreatePipe(&mut r, &mut w, Some(&sa), 0)?;
+        (OwnedHandle::from_raw_handle(r.0), OwnedHandle::from_raw_handle(w.0))
+    };
+    let ours = if child_reads { &w } else { &r };
+    // SAFETY: a valid handle owned above.
+    unsafe { SetHandleInformation(HANDLE(ours.as_raw_handle()), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))? };
+    Ok((r, w))
+}
+
+fn spawn_as(token: HANDLE, exe: &Path) -> Result<(OwnedHandle, std::fs::File, std::fs::File)> {
+    let (in_r, in_w) = pipe(true)?;
+    let (out_r, out_w) = pipe(false)?;
+    // Exactly these two handles are passed on, nothing else the agent holds.
+    let inherit = [HANDLE(in_r.as_raw_handle()), HANDLE(out_w.as_raw_handle())];
+    let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
+    let mut cmd: Vec<u16> = format!("\"{}\" --session-panel\0", exe.display()).encode_utf16().collect();
+
+    // SAFETY: the attribute list buffer, environment block, handles and wide
+    // strings all outlive CreateProcessAsUserW; each is released once below.
+    unsafe {
+        let mut size = 0usize;
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
+        let mut buf = vec![0u64; size.div_ceil(8)];
+        let list = LPPROC_THREAD_ATTRIBUTE_LIST(buf.as_mut_ptr().cast());
+        InitializeProcThreadAttributeList(Some(list), 1, None, &mut size)?;
+        let mut env: *mut core::ffi::c_void = std::ptr::null_mut();
+        let result = (|| {
+            UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                Some(inherit.as_ptr().cast()),
+                std::mem::size_of_val(&inherit),
+                None,
+                None,
+            )?;
+            // The user's own variables (TEMP, APPDATA…), not SYSTEM's.
+            CreateEnvironmentBlock(&mut env, Some(token), false)?;
+            let si = STARTUPINFOEXW {
+                StartupInfo: STARTUPINFOW {
+                    cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
+                    lpDesktop: PWSTR(desktop.as_mut_ptr()),
+                    dwFlags: STARTF_USESTDHANDLES,
+                    hStdInput: inherit[0],
+                    hStdOutput: inherit[1],
+                    ..Default::default()
+                },
+                lpAttributeList: list,
+            };
+            let mut pi = PROCESS_INFORMATION::default();
+            CreateProcessAsUserW(
+                Some(token),
+                None,
+                Some(PWSTR(cmd.as_mut_ptr())),
+                None,
+                None,
+                true,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                Some(env),
+                None,
+                &si.StartupInfo,
+                &mut pi,
+            )?;
+            let _ = CloseHandle(pi.hThread);
+            anyhow::Ok(OwnedHandle::from_raw_handle(pi.hProcess.0))
+        })();
+        if !env.is_null() {
+            let _ = DestroyEnvironmentBlock(env);
+        }
+        DeleteProcThreadAttributeList(list);
+        let process = result.context("starting the chat window as the signed-in user")?;
+        // The child's ends close here: only the window holds them now.
+        drop((in_r, out_w));
+        Ok((process, in_w.into(), out_r.into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lines_from_the_window() {
+        assert_eq!(parse("end\n"), Some(ChatCmd::End));
+        assert_eq!(parse(r#"chat "hi""#), Some(ChatCmd::Text("hi".into())));
+        assert_eq!(parse("cancel-file 3"), Some(ChatCmd::Cancel(3)));
+        assert_eq!(parse("end now"), None);
+        assert_eq!(parse("quit"), None);
+    }
+}

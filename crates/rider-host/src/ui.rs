@@ -27,6 +27,25 @@ pub enum ChatCmd {
     Text(String),
     SendFile(PathBuf),
     Cancel(u64),
+    /// End the session (the chat window of a paired session, see `panel`).
+    End,
+}
+
+/// A chat command line: `chat "<text>"`, `send-file "<path>"`, `cancel-file <id>`.
+pub fn parse_chat(word: &str, arg: &str) -> Option<ChatCmd> {
+    match word {
+        "chat" => serde_json::from_str::<String>(arg).ok().map(ChatCmd::Text),
+        "send-file" => serde_json::from_str::<String>(arg).ok().map(|p| ChatCmd::SendFile(p.into())),
+        "cancel-file" => arg.parse().ok().map(ChatCmd::Cancel),
+        _ => None,
+    }
+}
+
+/// A line split into its first word and the (trimmed) rest.
+pub fn split_line(line: &str) -> (&str, &str) {
+    // Some callers (.NET) start the stream with a UTF-8 byte order mark.
+    let line = line.trim().trim_start_matches('\u{feff}');
+    line.split_once(' ').map_or((line, ""), |(w, a)| (w, a.trim()))
 }
 
 type ChatChannel = (mpsc::UnboundedSender<ChatCmd>, Mutex<mpsc::UnboundedReceiver<ChatCmd>>);
@@ -65,19 +84,14 @@ enum Line {
 }
 
 fn parse_line(line: &str) -> Option<Line> {
-    // Some callers (.NET) start the stream with a UTF-8 byte order mark.
-    let line = line.trim().trim_start_matches('\u{feff}');
-    let (word, arg) = line.split_once(' ').map_or((line, ""), |(w, a)| (w, a.trim()));
+    let (word, arg) = split_line(line);
     match word {
         "y" | "yes" if arg.is_empty() => Some(Line::Answer(Some(Access::Full))),
         "y" | "yes" => Access::from_code(arg).map(|a| Line::Answer(Some(a))),
         "n" | "no" => Some(Line::Answer(None)),
         "access" => Access::from_code(arg).map(Line::Access),
-        "chat" => serde_json::from_str::<String>(arg).ok().map(|t| Line::Chat(ChatCmd::Text(t))),
-        "send-file" => serde_json::from_str::<String>(arg).ok().map(|p| Line::Chat(ChatCmd::SendFile(p.into()))),
-        "cancel-file" => arg.parse().ok().map(|id| Line::Chat(ChatCmd::Cancel(id))),
         "quit" => Some(Line::Quit),
-        _ => None,
+        _ => parse_chat(word, arg).map(Line::Chat),
     }
 }
 

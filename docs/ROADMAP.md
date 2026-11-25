@@ -202,7 +202,7 @@ first. Voice and video calls are not planned.
 | # | Feature | Size | State |
 |---|---|---|---|
 | 1 | Access levels: Full access / Standard / View only, changeable during the session | small | **done** for one-time sessions (unattended: with the session panel, #2) |
-| 2 | Chat with file transfer both ways, nothing kept after the session | medium | **done** for one-time sessions (unattended: the session panel, next) |
+| 2 | Chat with file transfer both ways, nothing kept after the session | medium | **done** (one-time and paired sessions) |
 | 3 | Clipboard with images (files go through chat) | small | planned |
 | 4 | Sharp text when the screen is still (a lossless refresh after motion stops) | medium | planned |
 | 5 | TCP tunnels through the session (reach a port on the remote network) | medium | planned |
@@ -261,12 +261,20 @@ the user's rights, not the service's).
   the session: who is connected, the access level (a dropdown) and **End
   session** at the top, the chat below. A message arriving while the app is
   in the background flashes its taskbar button and shows a notification.
-- Unattended sessions: the service agent starts it in the user's session as
-  the user, linked by pipes. It does not open by itself when a session
-  starts (it would sit in the remote picture); it opens when a message
-  arrives or when the person clicks **Chat** on the red banner.
-- The banner gets two parts: **Chat** and **Disconnect** (still one click,
-  for the person at the computer only).
+- Paired (unattended) sessions, as built: the service agent starts
+  `RemoteDesktopRider --session-panel` in the console session with the
+  signed-in user's token and environment, linked by two anonymous pipes
+  (only those two handles are passed on). It waits minimized in the
+  taskbar (it would sit in the remote picture otherwise) and comes up,
+  without taking the keyboard, when the viewer writes or sends a file.
+  Header: who is connected and **End session**; closing it only minimizes
+  it. Nobody signed in, or the window closed: the viewer is told
+  (`ChatReady(false)`). Files are opened and written with the user's
+  rights, never the agent's.
+- Paired sessions are the owner's own devices: received files go to
+  `Downloads\Rider` and are kept (as before chat); one-time sessions keep
+  nothing.
+- Later maybe: a **Chat** part on the red banner.
 
 **Messages and files**
 
@@ -296,3 +304,52 @@ both directions (the host also opens streams), and `FileResult` answers with
 a reason. Without someone at the host (unattended, until the session panel),
 files dropped on the window still go to `Downloads\Rider`. Control messages a peer does not know are
 skipped (from `rider/4` on), so later additions cannot break a session.
+
+## Milestone 7: Enterprise mode (design agreed 2026-11-25, not started)
+
+One admin looks after a company's computers (1000+) from the same app.
+The core (sessions, video, chat, security) is unchanged; what is new is a
+company list on the server and a console for it.
+
+**Two kinds of install, same app**
+
+- Employee computers stay **plain clients**: no console, nothing new to learn.
+- The admin turns on **Enterprise mode** in the app by **signing in to the
+  company server** (server + admin account; no license key). The server
+  confirms the account is the admin and the Enterprise section appears.
+- **One admin** to start with (no roles or scopes yet).
+
+**How computers join**
+
+- The company's computers are domain-joined, so IT pushes RDR to them with
+  Group Policy (or Intune), which also keeps them updated.
+- The admin downloads a **company installer** from Enterprise mode: the
+  normal installer with the company's join token inside. Pushed by Group
+  Policy or run by hand, it installs RDR and the PC joins the company list
+  by itself.
+- A new computer appears under **Unassigned**. The admin places every
+  computer **by hand** (drag to a room). No automatic placement from AD,
+  names or subnets.
+
+**What the admin sees**
+
+- Left: a tree **Floor → Room** (e.g. Floor 3 → Room 310), each with
+  online/total counts; plus search (computer, user, IP) and **Problems**
+  (outdated, service stopped, not seen for days).
+- Right: the room's computers as tiles: name, signed-in user, status
+  (online, offline + last seen, locked, nobody signed in, in a session,
+  waiting for an answer, declined). **No screen thumbnails**: the admin
+  never sees a screen before the employee accepts.
+
+**Connecting**
+
+- Admin clicks **Connect**; the tile shows "waiting". The employee gets an
+  **Accept / Decline** prompt naming the admin; no answer in ~60 s counts
+  as declined. Accepted: a normal session with chat.
+- **Unattended** (connect without asking, e.g. servers, kiosks): only when
+  **both** agree: the computer was installed as unattended-capable (a
+  separate company installer / policy value) **and** the admin turns it on
+  for that computer in the console.
+
+**Open questions for later:** audit log of connections, floor-plan view,
+bulk actions (message a room, push an update), more admins with scopes.

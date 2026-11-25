@@ -118,6 +118,10 @@ pushes for test builds):
   installed older viewer too).
 - `test/vm/paired-session.ps1`: a paired, PIN-protected session to the VM's
   unattended service.
+- `test/vm/paired-chat.ps1`: chat in a paired session. The VM's viewer
+  connects to the VM's own service, so the chat window the service opens
+  and the viewer are both in the VM (all typing there); installs the fresh
+  build into the VM's Program Files first (`guest/update-host.ps1`).
 - `test/lubuntu/access-levels.sh`: the Linux viewer (`.deb`) controls the
   Windows VM.
 - `test/vm/chat.ps1`, `test/lubuntu/chat.sh`, `test/macos/chat.sh`: the

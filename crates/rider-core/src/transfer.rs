@@ -24,11 +24,23 @@ pub async fn send(
     conn: &quinn::Connection,
     path: &Path,
     cancel: &Cancel,
+    progress: impl FnMut(u64),
+) -> Result<FileResult> {
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+    send_open(conn, file, name, cancel, progress).await
+}
+
+/// Send a file already opened (e.g. as another user), as `name`.
+pub async fn send_open(
+    conn: &quinn::Connection,
+    file: std::fs::File,
+    name: String,
+    cancel: &Cancel,
     mut progress: impl FnMut(u64),
 ) -> Result<FileResult> {
-    let mut file = tokio::fs::File::open(path).await.with_context(|| format!("opening {}", path.display()))?;
+    let mut file = tokio::fs::File::from_std(file);
     let size = file.metadata().await?.len();
-    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
     let (mut send, mut recv) = conn.open_bi().await?;
     let _ = send.set_priority(BULK_PRIORITY);
     write_msg(&mut send, &FileHeader { name, size }).await?;
@@ -64,10 +76,27 @@ pub struct Received {
 /// it); `create(name)` makes the file to write into. Any failure, a
 /// cancel or a short transfer removes the partial file.
 pub async fn receive(
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+    announced: impl FnOnce(&str, u64),
+    create: impl FnOnce(&str) -> Result<(PathBuf, std::fs::File)> + Send + 'static,
+    cancel: &Cancel,
+    progress: impl FnMut(u64),
+) -> Result<Received> {
+    let discard = |p: PathBuf| {
+        let _ = std::fs::remove_file(p);
+    };
+    receive_with(send, recv, announced, create, discard, cancel, progress).await
+}
+
+/// [`receive`], removing a partial file with `discard` (e.g. as the user
+/// whose folder it is in, not as SYSTEM).
+pub async fn receive_with(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     announced: impl FnOnce(&str, u64),
     create: impl FnOnce(&str) -> Result<(PathBuf, std::fs::File)> + Send + 'static,
+    discard: impl FnOnce(PathBuf) + Send + 'static,
     cancel: &Cancel,
     mut progress: impl FnMut(u64),
 ) -> Result<Received> {
@@ -108,7 +137,7 @@ pub async fn receive(
     };
     if result.is_err() {
         let p = path.clone();
-        let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(p)).await;
+        let _ = tokio::task::spawn_blocking(move || discard(p)).await;
     }
     let _ = write_msg(&mut send, &answer).await;
     let _ = send.finish();

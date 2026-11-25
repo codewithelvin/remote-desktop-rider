@@ -195,7 +195,7 @@ pub fn as_console_user<T>(f: impl FnOnce() -> T) -> Result<T> {
     Ok(f())
 }
 
-fn is_system_profile() -> bool {
+pub(crate) fn is_system_profile() -> bool {
     std::env::var_os("USERPROFILE").is_some_and(|p| p.to_string_lossy().to_lowercase().contains("systemprofile"))
 }
 

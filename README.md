@@ -37,7 +37,7 @@
 | **Private by design** | Devices pair once by comparing a code. Every session is end-to-end encrypted and needs the computer's PIN. No accounts, no cloud. |
 | **Gets through firewalls** | Direct on the LAN, NAT hole punching or an encrypted relay across the internet. Falls back to a random UDP port, then to an HTTPS (TCP 443) tunnel through the system proxy. |
 | **Works everywhere on the host** | Login screen, lock screen, UAC prompts and after a restart. |
-| **Everyday tools** | Chat with files both ways in one-time sessions (nothing kept afterwards), text clipboard sync, drag-and-drop files, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
+| **Everyday tools** | Chat with files both ways (one-time sessions keep nothing afterwards), text clipboard sync, drag-and-drop files, multi-monitor switching, Ctrl+Alt+Del, lock the remote PC. |
 | **Self-hosted** | The optional `rider-server` runs on any small Linux machine. It introduces devices and relays encrypted traffic; it can't watch or take over sessions. |
 | **Keeps itself current** | Hourly update checks, SHA-256 verified installers, unattended updates for PCs you only reach remotely. |
 | **Quick connect** | One-time help by a short code: no pairing, no PIN, the person at the computer clicks **Allow** with an access level (Full access, Standard or View only) they can change at any time. The code works once and expires after 10 minutes. |
@@ -177,8 +177,8 @@ Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.
 | `Ctrl+Alt+Shift+F` | Toggle full screen |
 | `Ctrl+Alt+Shift+M` | Next monitor |
 | `Ctrl+Alt+Shift+Q` | Disconnect |
-| `Ctrl+Alt+Shift+C` | Open or close the chat (one-time sessions) |
-| Drag a file onto the window | Send it: into the chat in one-time sessions, otherwise to the remote user's `Downloads\Rider` |
+| `Ctrl+Alt+Shift+C` | Open or close the chat |
+| Drag a file onto the window | Send it into the chat (paired sessions: it is kept in the remote user's `Downloads\Rider`) |
 
 The text clipboard syncs both ways. The title bar shows fps, round-trip time,
 estimated latency and the encoder in use.

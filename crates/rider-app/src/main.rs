@@ -5,6 +5,8 @@
 //! * `RemoteDesktopRider --tray` - the same, starting hidden (used at sign-in).
 //! * `RemoteDesktopRider --manage` - this computer's remote-access settings;
 //!   relaunches itself elevated (one UAC prompt).
+//! * `RemoteDesktopRider --session-panel` - the chat window of a paired
+//!   session, started by the host's service (see `panel`).
 //!
 //! Sessions run in `rider-client.exe` viewer windows and host changes go
 //! through `rider-host.exe`, both installed next to this executable.
@@ -17,6 +19,8 @@
 mod client;
 #[cfg(windows)]
 mod host;
+#[cfg(windows)]
+mod panel;
 #[cfg_attr(not(windows), path = "portable/pins.rs")]
 mod pins;
 mod sys;
@@ -30,6 +34,10 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     let has = |flag: &str| std::env::args().any(|a| a == flag);
+    #[cfg(windows)]
+    if has("--session-panel") {
+        return session_panel();
+    }
     // Manage (this computer as a host) exists on Windows only.
     let manage = cfg!(windows) && has("--manage");
     if manage && !sys::is_elevated() && std::env::var_os("RIDER_PREVIEW").is_none() {
@@ -77,6 +85,31 @@ fn main() -> eframe::Result {
             // The tray window must live on this (the event loop's) thread.
             let tray = tray::Tray::create().ok();
             Ok(Box::new(client::ClientApp::new(&cc.egui_ctx, tray, hidden)) as Box<dyn eframe::App>)
+        }),
+    )
+}
+
+/// The chat window of a paired session: its own small window, apart from
+/// the app (which may be running too), never in the tray.
+#[cfg(windows)]
+fn session_panel() -> eframe::Result {
+    let viewport = egui::ViewportBuilder::default()
+        .with_title(panel::TITLE)
+        .with_icon(egui::IconData { rgba: rider_core::icon::rgba(64), width: 64, height: 64 })
+        .with_inner_size([380.0, 520.0])
+        .with_min_inner_size([300.0, 320.0])
+        // Never takes the keyboard from what the person is doing; hidden
+        // until the panel shows it minimized (see `panel`).
+        .with_active(false)
+        .with_visible(false);
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    eframe::run_native(
+        panel::TITLE,
+        options,
+        Box::new(|cc| {
+            widgets::setup(&cc.egui_ctx);
+            widgets::theme_override(&cc.egui_ctx);
+            Ok(Box::new(panel::Panel::new(cc)) as Box<dyn eframe::App>)
         }),
     )
 }

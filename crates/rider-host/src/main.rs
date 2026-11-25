@@ -12,6 +12,7 @@ mod chat;
 mod config;
 mod cursor;
 mod input;
+mod panel;
 mod rendezvous;
 mod service;
 mod session;

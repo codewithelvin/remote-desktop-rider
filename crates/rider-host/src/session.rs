@@ -446,7 +446,8 @@ async fn stream(
     if v4 {
         let _ = out_tx.send(HostMsg::Permissions(access.permissions()));
     }
-    let chat = crate::chat::Chat::new(conn.clone(), out_tx.clone(), v5);
+    let link = chat_link(state, v5, &name, access).await;
+    let chat = crate::chat::Chat::new(conn.clone(), out_tx.clone(), v5, link);
     let chat_task = {
         let perms = perms.clone();
         tokio::spawn(chat.clone().run(move || allows(&perms)))
@@ -570,7 +571,7 @@ async fn stream(
                     if let Ok(size) = refused.await {
                         tracing::info!("refused a file ({size} bytes): not allowed at this access level");
                     }
-                } else if crate::chat::available() {
+                } else if chat.ready() {
                     tokio::spawn(chat.clone().receive_file(s, r));
                 } else {
                     tokio::spawn(async move {
@@ -793,6 +794,33 @@ async fn stream(
     result
 }
 
+/// Where the person at this computer chats in this session: the app for a
+/// one-time session, a chat window for a paired one (viewers that chat only).
+async fn chat_link(state: &HostState, v5: bool, device: &str, access: Access) -> crate::chat::Link {
+    use crate::chat::Link;
+    if state.support {
+        return Link::App;
+    }
+    if !v5 {
+        return Link::None;
+    }
+    let (device, files) = (device.to_owned(), access.permissions().files);
+    match tokio::task::spawn_blocking(move || crate::panel::Panel::launch(&device, files)).await {
+        Ok(Ok(panel)) => {
+            tracing::info!("chat window started");
+            Link::panel(panel)
+        }
+        Ok(Err(e)) => {
+            tracing::info!("no chat window: {e:#}");
+            Link::None
+        }
+        Err(e) => {
+            tracing::warn!("no chat window: {e}");
+            Link::None
+        }
+    }
+}
+
 /// Per 500 ms tick: the recent send-rate peak halves in about 11 s.
 const PEAK_DECAY: f64 = 0.97;
 
@@ -930,7 +958,7 @@ async fn send_frame(conn: &quinn::Connection, p: VideoPacket) -> bool {
 
 /// Create a new file for `name` in `dir` ("name (2).ext" if taken). Runs as
 /// the signed-in user (see `system::as_console_user`).
-fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std::path::PathBuf, std::fs::File)> {
+pub(crate) fn create_incoming(dir: &std::path::Path, name: &str) -> Result<(std::path::PathBuf, std::fs::File)> {
     std::fs::create_dir_all(dir)?;
     let p = std::path::Path::new(name);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
