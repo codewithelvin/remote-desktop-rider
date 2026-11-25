@@ -657,6 +657,136 @@ impl App {
     }
 }
 
+impl App {
+    fn route_to_chat(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let (was, now) =
+                (self.badge.under(self.pointer_px.0, self.pointer_px.1), self.badge.under(position.x, position.y));
+            self.pointer_px = (position.x, position.y);
+            if was != now {
+                self.redraw_soon();
+            }
+        }
+        let to_chat = match event {
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                self.over_chat(self.pointer_px.0)
+            }
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
+                self.chat.as_ref().is_some_and(ChatPanel::typing)
+            }
+            _ => false,
+        };
+        if let (Some(c), Some(w)) = (&mut self.chat, &self.window)
+            && c.on_event(w, event)
+        {
+            w.request_redraw();
+        }
+        if to_chat {
+            if matches!(event, WindowEvent::CursorMoved { .. }) {
+                if self.toolbar.leave() {
+                    self.redraw_soon();
+                }
+                self.update_cursor();
+            }
+            self.update_hook();
+        }
+        to_chat
+    }
+
+    fn pointer_moved(&mut self, px: f64, py: f64) {
+        if self.toolbar.pointer(px, py) {
+            self.redraw_soon();
+        }
+        self.update_cursor();
+        let (ox, oy, w, h) = self.image_rect;
+        if w > 1 && h > 1 {
+            let x = ((px - ox as f64) / (w - 1) as f64).clamp(0.0, 1.0);
+            let y = ((py - oy as f64) / (h - 1) as f64).clamp(0.0, 1.0);
+            let at = ((x * 65535.0) as u16, (y * 65535.0) as u16);
+            self.pointer = Some(at);
+            if self.shared.permissions().control {
+                self.net.mouse_move(at.0, at.1);
+            }
+        }
+    }
+
+    fn toolbar_takes_click(&mut self, el: &ActiveEventLoop, state: ElementState) -> bool {
+        if state == ElementState::Pressed {
+            return self.toolbar.press();
+        }
+        let (taken, action) = self.toolbar.release();
+        if let Some(a) = action {
+            self.act(el, a);
+        }
+        taken
+    }
+
+    fn mouse_input(&mut self, el: &ActiveEventLoop, state: ElementState, button: winit::event::MouseButton) {
+        let Some(b) = remote_button(button) else { return };
+        if b == MouseButton::Left && self.toolbar_takes_click(el, state) {
+            return;
+        }
+        if !self.shared.permissions().control {
+            return;
+        }
+        let down = state == ElementState::Pressed;
+        self.net.send(match self.pointer.filter(|_| self.v3) {
+            Some((x, y)) => ClientMsg::MouseButtonAt { button: b, down, x, y, seq: self.net.mouse_seq() },
+            None => ClientMsg::MouseButton { button: b, down },
+        });
+    }
+
+    fn mouse_wheel(&self, delta: MouseScrollDelta) {
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => ((x * 120.0) as i32, (y * 120.0) as i32),
+            MouseScrollDelta::PixelDelta(p) => (p.x as i32, p.y as i32),
+        };
+        if self.shared.permissions().control {
+            self.net.send(ClientMsg::MouseWheel { dx, dy });
+        }
+    }
+
+    fn key_input(&mut self, el: &ActiveEventLoop, event: &KeyEvent) {
+        let down = event.state == ElementState::Pressed;
+        if down && self.shortcut(el, event) {
+            return;
+        }
+        if !self.shared.permissions().control {
+            return;
+        }
+        let Some((scancode, extended)) = host_scancode(event.physical_key) else { return };
+        if down {
+            self.held_keys.insert((scancode, extended));
+        } else {
+            self.held_keys.remove(&(scancode, extended));
+        }
+        self.net.send(ClientMsg::Key { scancode, extended, down });
+    }
+
+    fn dropped_file(&mut self, path: std::path::PathBuf) {
+        if self.chat_available()
+            && let Some(c) = &mut self.chat
+        {
+            c.set_open(true);
+            self.refresh_extras();
+            self.redraw_soon();
+        }
+        self.net.send_file(path, &self.shared);
+    }
+}
+
+fn remote_button(button: winit::event::MouseButton) -> Option<MouseButton> {
+    use winit::event::MouseButton as W;
+    Some(match button {
+        W::Left => MouseButton::Left,
+        W::Right => MouseButton::Right,
+        W::Middle => MouseButton::Middle,
+        W::Back => MouseButton::Back,
+        W::Forward => MouseButton::Forward,
+        W::Other(_) => return None,
+    })
+}
+
 impl ApplicationHandler<UiEvent> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -807,36 +937,7 @@ impl ApplicationHandler<UiEvent> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let WindowEvent::CursorMoved { position, .. } = &event {
-            let (was, now) =
-                (self.badge.under(self.pointer_px.0, self.pointer_px.1), self.badge.under(position.x, position.y));
-            self.pointer_px = (position.x, position.y);
-            if was != now {
-                self.redraw_soon();
-            }
-        }
-        let to_chat = match &event {
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
-                self.over_chat(self.pointer_px.0)
-            }
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
-                self.chat.as_ref().is_some_and(ChatPanel::typing)
-            }
-            _ => false,
-        };
-        if let (Some(c), Some(w)) = (&mut self.chat, &self.window)
-            && c.on_event(w, &event)
-        {
-            w.request_redraw();
-        }
-        if to_chat {
-            if matches!(event, WindowEvent::CursorMoved { .. }) {
-                if self.toolbar.leave() {
-                    self.redraw_soon();
-                }
-                self.update_cursor();
-            }
-            self.update_hook();
+        if self.route_to_chat(&event) {
             return;
         }
         match event {
@@ -860,98 +961,17 @@ impl ApplicationHandler<UiEvent> for App {
                     h.release();
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                if self.toolbar.pointer(position.x, position.y) {
-                    self.redraw_soon();
-                }
-                self.update_cursor();
-                let (ox, oy, w, h) = self.image_rect;
-                if w > 1 && h > 1 {
-                    let x = ((position.x - ox as f64) / (w - 1) as f64).clamp(0.0, 1.0);
-                    let y = ((position.y - oy as f64) / (h - 1) as f64).clamp(0.0, 1.0);
-                    let at = ((x * 65535.0) as u16, (y * 65535.0) as u16);
-                    self.pointer = Some(at);
-                    if self.shared.permissions().control {
-                        self.net.mouse_move(at.0, at.1);
-                    }
-                }
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let b = match button {
-                    winit::event::MouseButton::Left => MouseButton::Left,
-                    winit::event::MouseButton::Right => MouseButton::Right,
-                    winit::event::MouseButton::Middle => MouseButton::Middle,
-                    winit::event::MouseButton::Back => MouseButton::Back,
-                    winit::event::MouseButton::Forward => MouseButton::Forward,
-                    winit::event::MouseButton::Other(_) => return,
-                };
-                if b == MouseButton::Left {
-                    if state == ElementState::Pressed && self.toolbar.press() {
-                        return;
-                    }
-                    if state == ElementState::Released {
-                        let (taken, action) = self.toolbar.release();
-                        if let Some(a) = action {
-                            self.act(el, a);
-                        }
-                        if taken {
-                            return;
-                        }
-                    }
-                }
-                if !self.shared.permissions().control {
-                    return;
-                }
-                let down = state == ElementState::Pressed;
-                self.net.send(match self.pointer.filter(|_| self.v3) {
-                    Some((x, y)) => ClientMsg::MouseButtonAt { button: b, down, x, y, seq: self.net.mouse_seq() },
-                    None => ClientMsg::MouseButton { button: b, down },
-                });
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => ((x * 120.0) as i32, (y * 120.0) as i32),
-                    MouseScrollDelta::PixelDelta(p) => (p.x as i32, p.y as i32),
-                };
-                if self.shared.permissions().control {
-                    self.net.send(ClientMsg::MouseWheel { dx, dy });
-                }
-            }
-            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
-                if is_synthetic {
-                    return;
-                }
-                let down = event.state == ElementState::Pressed;
-                if down && self.shortcut(el, &event) {
-                    return;
-                }
-                if !self.shared.permissions().control {
-                    return;
-                }
-                let Some((scancode, extended)) = host_scancode(event.physical_key) else { return };
-                if down {
-                    self.held_keys.insert((scancode, extended));
-                } else {
-                    self.held_keys.remove(&(scancode, extended));
-                }
-                self.net.send(ClientMsg::Key { scancode, extended, down });
-            }
+            WindowEvent::CursorMoved { position, .. } => self.pointer_moved(position.x, position.y),
+            WindowEvent::MouseInput { state, button, .. } => self.mouse_input(el, state, button),
+            WindowEvent::MouseWheel { delta, .. } => self.mouse_wheel(delta),
+            WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => self.key_input(el, &event),
             WindowEvent::CursorLeft { .. } => {
                 if self.toolbar.leave() {
                     self.redraw_soon();
                 }
                 self.update_cursor();
             }
-            WindowEvent::DroppedFile(path) => {
-                if self.chat_available()
-                    && let Some(c) = &mut self.chat
-                {
-                    c.set_open(true);
-                    self.refresh_extras();
-                    self.redraw_soon();
-                }
-                self.net.send_file(path, &self.shared);
-            }
+            WindowEvent::DroppedFile(path) => self.dropped_file(path),
             _ => {}
         }
     }

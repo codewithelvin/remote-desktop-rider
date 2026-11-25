@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use rider_client::config::ClientConfig;
+use rider_client::PairPrompt;
+use rider_client::app::Reconnect;
+use rider_client::config::{ClientConfig, KnownHost};
 use rider_core::identity::{Identity, fp_from_hex, fp_short};
 use rider_core::rendezvous::ServerRef;
 use std::io::Write;
@@ -119,140 +121,152 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut cfg = ClientConfig::load()?;
     let identity = Identity::load_or_create(&ClientConfig::dir()?)?;
-
     match cli.cmd {
-        Cmd::List => {
-            if cfg.hosts.is_empty() {
-                println!("No paired hosts. Use `rider-client pair <address>`.");
-            }
-            for h in &cfg.hosts {
-                let fp = fp_from_hex(&h.fingerprint).map_or_default(|f| fp_short(&f));
-                let addr = if h.addr.is_empty() { "(via server)" } else { h.addr.as_str() };
-                println!("{:<20} {:<28} {fp}", h.name, addr);
-            }
-        }
+        Cmd::List => list(&cfg),
         Cmd::Forget { host } => {
             let removed = cfg.forget(&host);
             cfg.save()?;
             println!("Removed {removed} host(s).");
         }
-        Cmd::Info => {
-            println!("Device name:  {}", cfg.device_name);
-            println!("Fingerprint:  {}", fp_short(&identity.fingerprint()));
-            println!(
-                "Server:       {}",
-                cfg.server.as_ref().map_or("none (direct addresses only)", |s| s.addr.as_str())
-            );
-            println!("Config dir:   {}", ClientConfig::dir()?.display());
-        }
-        Cmd::SetServer { addr, fingerprint, off } => {
-            cfg.server = match (off, addr, fingerprint) {
-                (true, ..) => None,
-                (false, Some(a), Some(f)) => Some(ServerRef::new(&a, &f)?),
-                (false, Some(a), None) => Some(ServerRef::discover(&a)?),
-                _ => bail!("give the server address, or --off"),
-            };
-            cfg.save()?;
-            match &cfg.server {
-                Some(s) => println!("Rendezvous server set to {}.", s.addr),
-                None => println!("Rendezvous server disabled."),
-            }
-        }
-        Cmd::Pair { addr, name } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            let host = rt.block_on(rider_client::pair(&mut cfg, &identity, &addr, name, async |p| {
-                println!();
-                println!("  Pairing with \"{}\" at {}", p.host_name, p.remote);
-                println!();
-                println!("  Verification code:   {}", p.code);
-                println!();
-                println!("  The host screen shows a code too. They must be IDENTICAL.");
-                println!("  If they differ, someone may be intercepting: answer N.");
-                print!("  Codes match? [y/N] ");
-                let _ = std::io::stdout().flush();
-                let ok = tokio::task::spawn_blocking(|| {
-                    let mut line = String::new();
-                    let _ = std::io::stdin().read_line(&mut line);
-                    matches!(line.trim(), "y" | "Y" | "yes")
-                })
-                .await
-                .unwrap_or(false);
-                if ok {
-                    println!("  Waiting for the host operator to confirm...");
-                }
-                ok
-            }))?;
-            println!("  Paired with \"{}\" ({}).", host.name, fp_short(&fp_from_hex(&host.fingerprint)?));
-            println!("  Connect any time with:  rider-client connect \"{}\"", host.name);
-        }
-        Cmd::Quick { code } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            let (session, route, host_name) = rt.block_on(rider_client::quick(&cfg, &identity, &code, |p| {
-                println!("Waiting for \"{}\" to allow the connection.", p.host_name);
-                println!("Verification code: {}", p.code);
-            }))?;
-            println!("Connected to \"{host_name}\" ({route}).");
-            let report_to =
-                cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
-            rider_client::app::run(rt, session, host_name, report_to, None)?;
-        }
+        Cmd::Info => info(&cfg, &identity)?,
+        Cmd::SetServer { addr, fingerprint, off } => set_server(&mut cfg, addr, fingerprint, off)?,
+        Cmd::Pair { addr, name } => pair(&mut cfg, &identity, &addr, name)?,
+        Cmd::Quick { code } => quick(&cfg, &identity, &code)?,
         Cmd::Company { action } => company(&mut cfg, &identity, action)?,
-        Cmd::CompanyConnect { fingerprint } => {
-            let host = fp_from_hex(&fingerprint)?;
-            let rt = tokio::runtime::Runtime::new()?;
-            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-            std::thread::spawn(move || {
-                for line in std::io::stdin().lines() {
-                    if line.is_ok_and(|l| l.trim() == "cancel") {
-                        let _ = cancel_tx.send(());
-                        return;
-                    }
-                }
-            });
-            let cancel = async move {
-                if cancel_rx.await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            };
-            let (session, route, host_name) = rt.block_on(rider_client::company_connect(
-                &cfg,
-                &identity,
-                host,
-                |name| {
-                    println!("Waiting for \"{name}\" to accept.");
-                },
-                cancel,
-            ))?;
-            println!("Connected to \"{host_name}\" ({route}).");
-            let report_to =
-                cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
-            rider_client::app::run(rt, session, host_name, report_to, None)?;
-        }
-        Cmd::Connect { host, pin_stdin } => {
-            let known = cfg
-                .find(&host)
-                .cloned()
-                .with_context(|| format!("\"{host}\" is not paired. Run `rider-client pair <address>` first."))?;
-            let rt = tokio::runtime::Runtime::new()?;
-            let piped = if pin_stdin { Some(rider_core::secret_from_stdin()?) } else { None };
-            let reconnect = piped.clone().map(|pin| {
-                let (cfg, identity, known) = (cfg.clone(), identity.clone(), known.clone());
-                Box::new(move || {
-                    let (cfg, identity, known, pin) = (cfg.clone(), identity.clone(), known.clone(), pin.clone());
-                    Box::pin(async move { Ok(rider_client::connect(&cfg, &identity, &known, Some(pin)).await?.0) })
-                        as std::pin::Pin<Box<dyn Future<Output = Result<_>> + Send>>
-                }) as rider_client::app::Reconnect
-            });
-            let (session, route) = rt.block_on(rider_client::connect(&cfg, &identity, &known, piped))?;
-            cfg.touch(&known.fingerprint);
-            if let Err(e) = cfg.save() {
-                tracing::warn!("cannot save last-connected time: {e:#}");
-            }
-            println!("Connected to \"{}\" ({route}).", known.name);
-            let report_to =
-                cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server });
-            rider_client::app::run(rt, session, known.name, report_to, reconnect)?;
-        }
+        Cmd::CompanyConnect { fingerprint } => company_connect(&cfg, &identity, &fingerprint)?,
+        Cmd::Connect { host, pin_stdin } => connect(&mut cfg, &identity, &host, pin_stdin)?,
     }
     Ok(())
+}
+
+fn list(cfg: &ClientConfig) {
+    if cfg.hosts.is_empty() {
+        println!("No paired hosts. Use `rider-client pair <address>`.");
+    }
+    for h in &cfg.hosts {
+        let fp = fp_from_hex(&h.fingerprint).map_or_default(|f| fp_short(&f));
+        let addr = if h.addr.is_empty() { "(via server)" } else { h.addr.as_str() };
+        println!("{:<20} {:<28} {fp}", h.name, addr);
+    }
+}
+
+fn info(cfg: &ClientConfig, identity: &Identity) -> Result<()> {
+    println!("Device name:  {}", cfg.device_name);
+    println!("Fingerprint:  {}", fp_short(&identity.fingerprint()));
+    println!("Server:       {}", cfg.server.as_ref().map_or("none (direct addresses only)", |s| s.addr.as_str()));
+    println!("Config dir:   {}", ClientConfig::dir()?.display());
+    Ok(())
+}
+
+fn set_server(cfg: &mut ClientConfig, addr: Option<String>, fingerprint: Option<String>, off: bool) -> Result<()> {
+    cfg.server = match (off, addr, fingerprint) {
+        (true, ..) => None,
+        (false, Some(a), Some(f)) => Some(ServerRef::new(&a, &f)?),
+        (false, Some(a), None) => Some(ServerRef::discover(&a)?),
+        _ => bail!("give the server address, or --off"),
+    };
+    cfg.save()?;
+    match &cfg.server {
+        Some(s) => println!("Rendezvous server set to {}.", s.addr),
+        None => println!("Rendezvous server disabled."),
+    }
+    Ok(())
+}
+
+async fn confirm_code(p: &PairPrompt) -> bool {
+    println!();
+    println!("  Pairing with \"{}\" at {}", p.host_name, p.remote);
+    println!();
+    println!("  Verification code:   {}", p.code);
+    println!();
+    println!("  The host screen shows a code too. They must be IDENTICAL.");
+    println!("  If they differ, someone may be intercepting: answer N.");
+    print!("  Codes match? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let ok = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        matches!(line.trim(), "y" | "Y" | "yes")
+    })
+    .await
+    .unwrap_or(false);
+    if ok {
+        println!("  Waiting for the host operator to confirm...");
+    }
+    ok
+}
+
+fn pair(cfg: &mut ClientConfig, identity: &Identity, addr: &str, name: Option<String>) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let host = rt.block_on(rider_client::pair(cfg, identity, addr, name, async |p| confirm_code(p).await))?;
+    println!("  Paired with \"{}\" ({}).", host.name, fp_short(&fp_from_hex(&host.fingerprint)?));
+    println!("  Connect any time with:  rider-client connect \"{}\"", host.name);
+    Ok(())
+}
+
+fn report_target(cfg: &ClientConfig, identity: &Identity) -> Option<rider_client::diag::Target> {
+    cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server })
+}
+
+fn quick(cfg: &ClientConfig, identity: &Identity, code: &str) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (session, route, host_name) = rt.block_on(rider_client::quick(cfg, identity, code, |p| {
+        println!("Waiting for \"{}\" to allow the connection.", p.host_name);
+        println!("Verification code: {}", p.code);
+    }))?;
+    println!("Connected to \"{host_name}\" ({route}).");
+    rider_client::app::run(rt, session, host_name, report_target(cfg, identity), None)
+}
+
+fn cancel_on_stdin() -> impl Future<Output = ()> {
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            if line.is_ok_and(|l| l.trim() == "cancel") {
+                let _ = cancel_tx.send(());
+                return;
+            }
+        }
+    });
+    async move {
+        if cancel_rx.await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+fn company_connect(cfg: &ClientConfig, identity: &Identity, fingerprint: &str) -> Result<()> {
+    let host = fp_from_hex(fingerprint)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let waiting = |name: &str| println!("Waiting for \"{name}\" to accept.");
+    let (session, route, host_name) =
+        rt.block_on(rider_client::company_connect(cfg, identity, host, waiting, cancel_on_stdin()))?;
+    println!("Connected to \"{host_name}\" ({route}).");
+    rider_client::app::run(rt, session, host_name, report_target(cfg, identity), None)
+}
+
+fn reconnect_with(cfg: &ClientConfig, identity: &Identity, known: &KnownHost, pin: String) -> Reconnect {
+    let (cfg, identity, known) = (cfg.clone(), identity.clone(), known.clone());
+    Box::new(move || {
+        let (cfg, identity, known, pin) = (cfg.clone(), identity.clone(), known.clone(), pin.clone());
+        Box::pin(async move { Ok(rider_client::connect(&cfg, &identity, &known, Some(pin)).await?.0) })
+            as std::pin::Pin<Box<dyn Future<Output = Result<_>> + Send>>
+    })
+}
+
+fn connect(cfg: &mut ClientConfig, identity: &Identity, host: &str, pin_stdin: bool) -> Result<()> {
+    let known = cfg
+        .find(host)
+        .cloned()
+        .with_context(|| format!("\"{host}\" is not paired. Run `rider-client pair <address>` first."))?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let piped = if pin_stdin { Some(rider_core::secret_from_stdin()?) } else { None };
+    let reconnect = piped.clone().map(|pin| reconnect_with(cfg, identity, &known, pin));
+    let (session, route) = rt.block_on(rider_client::connect(cfg, identity, &known, piped))?;
+    cfg.touch(&known.fingerprint);
+    if let Err(e) = cfg.save() {
+        tracing::warn!("cannot save last-connected time: {e:#}");
+    }
+    println!("Connected to \"{}\" ({route}).", known.name);
+    rider_client::app::run(rt, session, known.name, report_target(cfg, identity), reconnect)
 }

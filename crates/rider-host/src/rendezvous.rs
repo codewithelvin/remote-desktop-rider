@@ -137,85 +137,46 @@ fn current(state: &HostState, port: u16) -> Registration {
     Registration { local: local_candidates(port), allowed, pairing: state.pairing_open() }
 }
 
+struct Registrar<'a> {
+    state: &'a Arc<HostState>,
+    socket: &'a Arc<PeerSocket>,
+    server: &'a ServerRef,
+    interactive: bool,
+    send: quinn::SendStream,
+    reg: Registration,
+    info: Option<rider_core::company::HostInfo>,
+    place: Option<rider_core::company::Whereabouts>,
+    takes_place: bool,
+    shown_code: Option<String>,
+}
+
 async fn session(
     state: &Arc<HostState>,
     socket: &Arc<PeerSocket>,
     server: &ServerRef,
     interactive: bool,
 ) -> Result<()> {
-    let (conn, mut send, mut recv) = socket.connect_server(&state.identity, server).await?;
-    let mut reg = current(state, socket.port());
-    let register = |r: &Registration| PeerMsg::Register {
-        version: VERSION,
-        local: r.local.clone(),
-        allowed: r.allowed.clone(),
-        pairing: r.pairing,
+    let (conn, send, mut recv) = socket.connect_server(&state.identity, server).await?;
+    let mut r = Registrar {
+        state,
+        socket,
+        server,
+        interactive,
+        send,
+        reg: current(state, socket.port()),
+        info: host_info(state),
+        place: None,
+        takes_place: false,
+        shown_code: None,
     };
-    write_msg(&mut send, &register(&reg)).await?;
-    let host_info = || {
-        let cfg = state.config.lock().unwrap();
-        cfg.company.as_ref().map(|c| crate::company::info(&cfg, Some(c)))
-    };
-    let mut info = host_info();
-    if let Some(i) = &info {
-        write_msg(&mut send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
-    }
-    let mut place: Option<rider_core::company::Whereabouts> = None;
-    let mut takes_place = false;
-    let mut shown_code: Option<String> = None;
+    r.register().await?;
+    r.send_info().await?;
     let mut tick = tokio::time::interval(UPDATE_INTERVAL);
     let mut place_tick = tokio::time::interval(PLACE_INTERVAL);
     loop {
         tokio::select! {
             msg = read_msg::<ServerMsg>(&mut recv) => match msg? {
-                Some(ServerMsg::Registered { public, pairing_code }) => {
-                    tracing::info!("registered with {} as {public}", server.addr);
-                    crate::ui::emit(&serde_json::json!({
-                        "event": "registered", "server": server.addr, "public": public, "code": pairing_code,
-                    }));
-                    if interactive && !crate::ui::json() && pairing_code.is_some() && pairing_code != shown_code {
-                        let code = pairing_code.as_deref().unwrap_or_default();
-                        if state.support {
-                            println!("  One-time code (valid 10 minutes):  {code}");
-                            println!("    The helper runs:  rider-client quick {code}");
-                        } else {
-                            println!("  Pairing code (via {}):  {code}", server.addr);
-                            println!("    On the client run:  rider-client pair {code}");
-                        }
-                    }
-                    shown_code = pairing_code;
-                }
-                Some(ServerMsg::Offer { client, candidates, relay }) => {
-                    tracing::info!("connection request from {} via server", fp_short(&client));
-                    let socket = socket.clone();
-                    tokio::spawn(async move { socket.punch(&candidates, relay.as_ref()).await });
-                }
-                Some(ServerMsg::CompanyPolicy { unattended }) => {
-                    tracing::info!("the company admin's unattended switch: {}", if unattended { "on" } else { "off" });
-                    state.company_unattended.store(unattended, std::sync::atomic::Ordering::Relaxed);
-                }
-                Some(ServerMsg::CompanyPolicy2 { unattended }) => {
-                    tracing::info!("the company admin's unattended switch: {}", if unattended { "on" } else { "off" });
-                    state.company_unattended.store(unattended, std::sync::atomic::Ordering::Relaxed);
-                    if !takes_place {
-                        takes_place = true;
-                        let now = tokio::task::spawn_blocking(crate::company::whereabouts).await?;
-                        tracing::info!("place: {:?} ({})", now.place, now.via);
-                        write_msg(&mut send, &PeerMsg::Place { version: VERSION, place: now.clone() }).await?;
-                        place = Some(now);
-                    }
-                }
-                Some(ServerMsg::Error { message }) => bail!("{message}"),
-                Some(
-                    ServerMsg::Ready { .. }
-                    | ServerMsg::Online { .. }
-                    | ServerMsg::Joined
-                    | ServerMsg::InviteCode { .. }
-                    | ServerMsg::Company { .. }
-                    | ServerMsg::Directory(_)
-                    | ServerMsg::Directory2 { .. }
-                    | ServerMsg::Enrolled { .. },
-                ) => {}
+                Some(msg) => r.on_message(msg).await?,
                 None => bail!("server closed the connection"),
             },
             _ = tick.tick() => {
@@ -223,28 +184,112 @@ async fn session(
                     conn.close(0u32.into(), b"reconfigured");
                     bail!(SERVER_CHANGED);
                 }
-                let now = current(state, socket.port());
-                if now != reg {
-                    write_msg(&mut send, &register(&now)).await?;
-                    reg = now;
-                }
-                let now = host_info();
-                if now != info {
-                    if let Some(i) = &now {
-                        write_msg(&mut send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
-                    }
-                    info = now;
-                }
+                r.refresh().await?;
             }
-            _ = place_tick.tick(), if takes_place => {
-                let now = tokio::task::spawn_blocking(crate::company::whereabouts).await?;
-                if place.as_ref() != Some(&now) {
-                    tracing::info!("place: {:?} ({})", now.place, now.via);
-                    write_msg(&mut send, &PeerMsg::Place { version: VERSION, place: now.clone() }).await?;
-                    place = Some(now);
-                }
-            }
+            _ = place_tick.tick(), if r.takes_place => r.report_place(false).await?,
             e = conn.closed() => bail!("{e}"),
         }
+    }
+}
+
+fn host_info(state: &HostState) -> Option<rider_core::company::HostInfo> {
+    let cfg = state.config.lock().unwrap();
+    cfg.company.as_ref().map(|c| crate::company::info(&cfg, Some(c)))
+}
+
+impl Registrar<'_> {
+    async fn register(&mut self) -> Result<()> {
+        let r = &self.reg;
+        let msg = PeerMsg::Register {
+            version: VERSION,
+            local: r.local.clone(),
+            allowed: r.allowed.clone(),
+            pairing: r.pairing,
+        };
+        write_msg(&mut self.send, &msg).await
+    }
+
+    async fn send_info(&mut self) -> Result<()> {
+        if let Some(i) = &self.info {
+            write_msg(&mut self.send, &PeerMsg::HostInfo { version: VERSION, info: i.clone() }).await?;
+        }
+        Ok(())
+    }
+
+    async fn refresh(&mut self) -> Result<()> {
+        let now = current(self.state, self.socket.port());
+        if now != self.reg {
+            self.reg = now;
+            self.register().await?;
+        }
+        let now = host_info(self.state);
+        if now != self.info {
+            self.info = now;
+            self.send_info().await?;
+        }
+        Ok(())
+    }
+
+    async fn report_place(&mut self, always: bool) -> Result<()> {
+        let now = tokio::task::spawn_blocking(crate::company::whereabouts).await?;
+        if always || self.place.as_ref() != Some(&now) {
+            tracing::info!("place: {:?} ({})", now.place, now.via);
+            write_msg(&mut self.send, &PeerMsg::Place { version: VERSION, place: now.clone() }).await?;
+            self.place = Some(now);
+        }
+        Ok(())
+    }
+
+    fn set_policy(&self, unattended: bool) {
+        tracing::info!("the company admin's unattended switch: {}", if unattended { "on" } else { "off" });
+        self.state.company_unattended.store(unattended, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    async fn on_message(&mut self, msg: ServerMsg) -> Result<()> {
+        match msg {
+            ServerMsg::Registered { public, pairing_code } => self.on_registered(public, pairing_code),
+            ServerMsg::Offer { client, candidates, relay } => {
+                tracing::info!("connection request from {} via server", fp_short(&client));
+                let socket = self.socket.clone();
+                tokio::spawn(async move { socket.punch(&candidates, relay.as_ref()).await });
+            }
+            ServerMsg::CompanyPolicy { unattended } => self.set_policy(unattended),
+            ServerMsg::CompanyPolicy2 { unattended } => {
+                self.set_policy(unattended);
+                if !self.takes_place {
+                    self.takes_place = true;
+                    self.report_place(true).await?;
+                }
+            }
+            ServerMsg::Error { message } => bail!("{message}"),
+            ServerMsg::Ready { .. }
+            | ServerMsg::Online { .. }
+            | ServerMsg::Joined
+            | ServerMsg::InviteCode { .. }
+            | ServerMsg::Company { .. }
+            | ServerMsg::Directory(_)
+            | ServerMsg::Directory2 { .. }
+            | ServerMsg::Enrolled { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn on_registered(&mut self, public: SocketAddr, pairing_code: Option<String>) {
+        let server = &self.server.addr;
+        tracing::info!("registered with {server} as {public}");
+        crate::ui::emit(&serde_json::json!({
+            "event": "registered", "server": server, "public": public, "code": pairing_code,
+        }));
+        if self.interactive && !crate::ui::json() && pairing_code.is_some() && pairing_code != self.shown_code {
+            let code = pairing_code.as_deref().unwrap_or_default();
+            if self.state.support {
+                println!("  One-time code (valid 10 minutes):  {code}");
+                println!("    The helper runs:  rider-client quick {code}");
+            } else {
+                println!("  Pairing code (via {server}):  {code}");
+                println!("    On the client run:  rider-client pair {code}");
+            }
+        }
+        self.shown_code = pairing_code;
     }
 }
