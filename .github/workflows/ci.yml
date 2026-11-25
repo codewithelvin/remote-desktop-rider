@@ -18,7 +18,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # tags, for the next version number
       - id: v
@@ -39,7 +39,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set version
         if: env.RELEASE == 'true'
         run: sed -i "0,/^version = \"[^\"]*\"/s//version = \"$VERSION\"/" Cargo.toml
@@ -56,7 +56,7 @@ jobs:
           cp target/release/rider-server dist/rider-server-$VERSION-linux-x86_64
           strip dist/rider-server-$VERSION-linux-x86_64
           ./dist/rider-server-$VERSION-linux-x86_64 --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rider-server-linux
           path: dist/
@@ -74,7 +74,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set version
         if: env.RELEASE == 'true'
         # The first `version = ` line (BSD sed has no GNU `0,/re/` ranges).
@@ -92,7 +92,7 @@ jobs:
         run: |
           dmg=$(packaging/macos/build.sh "$VERSION" | tail -1)
           echo "file=$dmg" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-dmg
           path: ${{ steps.pkg.outputs.file }}
@@ -114,7 +114,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set version
         if: env.RELEASE == 'true'
         run: sed -i "0,/^version = \"[^\"]*\"/s//version = \"$VERSION\"/" Cargo.toml
@@ -131,7 +131,7 @@ jobs:
           deb=$(packaging/linux/build-deb.sh "$VERSION" | tail -1)
           dpkg-deb --info "$deb"
           echo "file=$deb" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-deb
           path: ${{ steps.pkg.outputs.file }}
@@ -170,7 +170,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set version
         if: env.RELEASE == 'true'
@@ -195,7 +195,7 @@ jobs:
           }
           ./packaging/windows/build.ps1 -Version $env:VERSION
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.RELEASE == 'true'
         with:
           name: rider-server-linux
