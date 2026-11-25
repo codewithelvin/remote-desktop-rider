@@ -11,13 +11,13 @@ the latest `v<major>.<minor>.*` tag) and publish
 (`.github/workflows/ci.yml`). Pushes that only touch `*.md`, `docs/` or
 `.claude/` are not built or released.
 
-## 1. Check locally (same as CI, fast profile)
+## 1. Check locally (same as CI)
 
 ```sh
 export PATH="$USERPROFILE/.cargo/bin:$PATH"
 cargo fmt --all --check
 cargo clippy --profile quick --workspace --all-targets -- -D warnings
-cargo test --profile quick --workspace
+cargo test --workspace   # debug build, as CI: debug assertions catch more (0.5.0 failed CI here)
 ```
 
 Fix every failure before going on: a red CI run publishes nothing.
