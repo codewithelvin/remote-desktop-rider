@@ -1,8 +1,17 @@
 use eframe::egui;
 
 #[derive(Clone)]
+pub struct Version(String);
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone)]
 pub struct Release {
-    pub version: String,
+    pub version: Version,
     pub page: String,
     pub size: u64,
 }
@@ -24,6 +33,7 @@ pub struct Updater {
     pub auto: bool,
 }
 
+#[expect(clippy::unused_self, reason = "same interface as the Windows updater")]
 impl Updater {
     pub fn new(_ctx: &egui::Context) -> Self {
         Self { installed: false, auto: false }

@@ -555,6 +555,7 @@ pub(crate) mod text {
             (!fonts.is_empty()).then(|| Self { fonts, px: PxScale::from((16.0 * scale) as f32) })
         }
 
+        #[expect(clippy::unused_self, reason = "same interface as the Windows painter")]
         pub fn icon_width(&self, _c: char) -> i32 {
             0
         }
@@ -591,6 +592,7 @@ pub(crate) mod text {
             self.layout(s, 0.0).1.ceil() as i32
         }
 
+        #[expect(clippy::unnecessary_wraps, reason = "same interface as the Windows painter")]
         pub fn paint(&self, w: usize, h: usize, labels: &[Label<'_>], _gap: i32) -> Option<Vec<u8>> {
             let main = self.fonts[0].as_scaled(self.px);
             let mut coverage = vec![0u8; w * h];
@@ -601,7 +603,7 @@ pub(crate) mod text {
                     let Some(outline) = self.fonts[i].outline_glyph(glyph) else { continue };
                     let b = outline.px_bounds();
                     outline.draw(|gx, gy, v| {
-                        let (px, py) = (b.min.x as i64 + gx as i64, b.min.y as i64 + gy as i64);
+                        let (px, py) = (b.min.x as i64 + i64::from(gx), b.min.y as i64 + i64::from(gy));
                         if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
                             let d = &mut coverage[py as usize * w + px as usize];
                             *d = (*d).max((v.clamp(0.0, 1.0) * 255.0) as u8);

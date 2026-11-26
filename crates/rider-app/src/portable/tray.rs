@@ -5,6 +5,7 @@ pub const MAIN_TITLE: &str = "Remote Desktop Rider";
 #[derive(Debug)]
 pub struct Tray;
 
+#[expect(clippy::unused_self, reason = "same interface as the Windows tray")]
 impl Tray {
     pub fn create() -> Result<Self> {
         bail!("no tray icon on this system")
