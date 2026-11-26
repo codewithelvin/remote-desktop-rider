@@ -371,6 +371,9 @@ impl App {
     fn chat_actions(&mut self) {
         let Some(c) = &mut self.chat else { return };
         let actions = c.take_actions();
+        if actions.is_empty() {
+            return;
+        }
         for a in actions {
             match a {
                 ChatAction::Send(text) => {
