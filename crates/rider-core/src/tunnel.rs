@@ -28,7 +28,7 @@ pub use client::TunnelSocket;
 #[cfg(windows)]
 mod client {
     use super::flow::{Flow, decode_ack};
-    use super::{MAX_DATAGRAM, MAX_QUEUE_DELAY, PATH, PORTS, decode, encode, stale};
+    use super::{MAX_DATAGRAM, PATH, PORTS, decode, encode};
     use anyhow::{Context, Result, bail};
     use quinn::udp::{RecvMeta, Transmit};
     use quinn::{AsyncUdpSocket, UdpPoller};
@@ -202,7 +202,7 @@ mod client {
             let (w, a, f) = (ws.clone(), alive.clone(), flow.clone());
             std::thread::Builder::new().name("tunnel-send".into()).spawn(move || {
                 while let Some((queued, frame)) = out.blocking_recv() {
-                    if admit(&f, queued, frame.len()) && w.send(&frame).is_err() {
+                    if admit(&f, queued, frame.len(), out.is_empty()) && w.send(&frame).is_err() {
                         break;
                     }
                 }
@@ -239,18 +239,21 @@ mod client {
         }
     }
 
-    fn admit(flow: &(Mutex<Flow>, Condvar), queued: Instant, len: usize) -> bool {
+    fn admit(flow: &(Mutex<Flow>, Condvar), queued: Instant, len: usize, nothing_behind: bool) -> bool {
         let mut f = flow.0.lock().unwrap();
+        let mut held = false;
         loop {
             let now = Instant::now();
-            if stale(queued, now) {
+            let waited = now.saturating_duration_since(queued);
+            if waited > f.max_wait() {
                 return false;
             }
             if f.may_send() {
-                f.sent(len, now);
+                f.sent(len, now, nothing_behind && !held);
                 return true;
             }
-            let left = MAX_QUEUE_DELAY.saturating_sub(now.saturating_duration_since(queued));
+            held = true;
+            let left = f.max_wait().saturating_sub(waited);
             f = flow.1.wait_timeout(f, left).unwrap().0;
         }
     }
