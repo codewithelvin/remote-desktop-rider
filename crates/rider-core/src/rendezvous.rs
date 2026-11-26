@@ -543,7 +543,7 @@ fn local_ipv4() -> Vec<std::net::Ipv4Addr> {
     let mut ips = Vec::new();
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
     unsafe {
-        if libc::getifaddrs(&mut list) != 0 {
+        if libc::getifaddrs(&raw mut list) != 0 {
             return ips;
         }
         let mut cur = list;
@@ -552,7 +552,7 @@ fn local_ipv4() -> Vec<std::net::Ipv4Addr> {
             let up = ifa.ifa_flags & (libc::IFF_UP as libc::c_uint) != 0;
             let loopback = ifa.ifa_flags & (libc::IFF_LOOPBACK as libc::c_uint) != 0;
             if up && !loopback && !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
-                let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                let sin = std::ptr::read_unaligned(ifa.ifa_addr.cast::<libc::sockaddr_in>());
                 let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
                 if !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() && !ips.contains(&ip) {
                     ips.push(ip);
