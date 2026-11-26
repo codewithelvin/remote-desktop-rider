@@ -73,6 +73,7 @@ pub(super) async fn stream(
     let recorder = Arc::new(Mutex::new(recorder(state, conn, tunnel).await));
     let monitors = capture::monitors()?;
     let list: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
+    let start = capture::start_index(&list);
     let _banner = Banner::show(&rider_core::trf!(
         "●  {name} is viewing this screen  —  click here to disconnect",
         "●  {name} bu ekranı izləyir  —  əlaqəni kəsmək üçün bura klikləyin"
@@ -80,7 +81,7 @@ pub(super) async fn stream(
 
     let (out_tx, out_rx) = mpsc::unbounded_channel::<HostMsg>();
     let writer = spawn_writer(send, out_rx);
-    let _ = out_tx.send(HostMsg::Monitors { list: list.clone(), active: 0 });
+    let _ = out_tx.send(HostMsg::Monitors { list: list.clone(), active: start as u32 });
     if v4 {
         let _ = out_tx.send(HostMsg::Permissions(access.permissions()));
     }
@@ -95,8 +96,8 @@ pub(super) async fn stream(
     };
 
     let max_bitrate = cfg.max_bitrate_kbps.max(500) * 1000;
-    let mut video = start_video(conn, monitors, &cfg, max_bitrate);
-    let input = input::spawn(list[0].clone());
+    let mut video = start_video(conn, monitors, start, &cfg, max_bitrate);
+    let input = input::spawn(list[start].clone());
     let mouse = spawn_mouse(conn.clone(), input.clone(), perms.clone());
     let access_task = spawn_access_watch(perms.clone(), out_tx.clone(), input.clone(), v4);
     if rider_core::tls::speaks_v3(conn) {
@@ -210,6 +211,7 @@ fn spawn_writer(mut send: quinn::SendStream, mut out: mpsc::UnboundedReceiver<Ho
 fn start_video(
     conn: &quinn::Connection,
     monitors: Vec<capture::Monitor>,
+    start_monitor: usize,
     cfg: &crate::config::HostConfig,
     max_bitrate: u32,
 ) -> Video {
@@ -223,7 +225,7 @@ fn start_video(
     let sharp = rider_core::tls::speaks_v6(conn).then(|| spawn_refresher(conn.clone(), cmds.clone()));
     let thread = video::spawn(video::Pipeline {
         monitors,
-        start_monitor: 0,
+        start_monitor,
         cfg: VideoConfig {
             max_fps: cfg.max_fps,
             start_bitrate_bps: START_BITRATE.min(max_bitrate),
