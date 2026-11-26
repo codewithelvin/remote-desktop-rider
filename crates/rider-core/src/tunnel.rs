@@ -1,6 +1,13 @@
+pub mod flow;
+
 pub const PATH: &str = "/rider-tunnel";
 pub const PORTS: std::ops::RangeInclusive<u16> = 47900..=47999;
 pub const MAX_DATAGRAM: usize = 2048;
+pub const MAX_QUEUE_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+pub fn stale(queued: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(queued) > MAX_QUEUE_DELAY
+}
 
 pub fn encode(port: u16, datagram: &[u8]) -> Vec<u8> {
     let mut f = Vec::with_capacity(2 + datagram.len());
@@ -20,7 +27,8 @@ pub use client::TunnelSocket;
 
 #[cfg(windows)]
 mod client {
-    use super::{MAX_DATAGRAM, PATH, PORTS, decode, encode};
+    use super::flow::{Flow, decode_ack};
+    use super::{MAX_DATAGRAM, MAX_QUEUE_DELAY, PATH, PORTS, decode, encode, stale};
     use anyhow::{Context, Result, bail};
     use quinn::udp::{RecvMeta, Transmit};
     use quinn::{AsyncUdpSocket, UdpPoller};
@@ -30,8 +38,9 @@ mod client {
     use std::net::{IpAddr, SocketAddr};
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::task::{Context as TaskContext, Poll};
+    use std::time::Instant;
     use tokio::sync::mpsc;
     use windows::Win32::Networking::WinHttp::{
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW, WINHTTP_FLAG_SECURE,
@@ -44,7 +53,7 @@ mod client {
     };
     use windows::core::{HSTRING, PCWSTR, w};
 
-    const SEND_QUEUE: usize = 512;
+    const SEND_QUEUE: usize = 128;
 
     struct Handle(*mut c_void);
     unsafe impl Send for Handle {}
@@ -164,7 +173,7 @@ mod client {
 
     pub struct TunnelSocket {
         server_ip: IpAddr,
-        tx: mpsc::Sender<Vec<u8>>,
+        tx: mpsc::Sender<(Instant, Vec<u8>)>,
         rx: Mutex<mpsc::UnboundedReceiver<(u16, Vec<u8>)>>,
         alive: Arc<AtomicBool>,
         ws: Arc<Ws>,
@@ -186,24 +195,28 @@ mod client {
                     .with_context(|| format!("HTTPS tunnel to {host}"))?,
             );
             let alive = Arc::new(AtomicBool::new(true));
-            let (tx, mut out) = mpsc::channel::<Vec<u8>>(SEND_QUEUE);
+            let (tx, mut out) = mpsc::channel::<(Instant, Vec<u8>)>(SEND_QUEUE);
             let (inc, rx) = mpsc::unbounded_channel();
 
-            let (w, a) = (ws.clone(), alive.clone());
+            let flow = Arc::new((Mutex::new(Flow::default()), Condvar::new()));
+            let (w, a, f) = (ws.clone(), alive.clone(), flow.clone());
             std::thread::Builder::new().name("tunnel-send".into()).spawn(move || {
-                while let Some(frame) = out.blocking_recv() {
-                    if w.send(&frame).is_err() {
+                while let Some((queued, frame)) = out.blocking_recv() {
+                    if admit(&f, queued, frame.len()) && w.send(&frame).is_err() {
                         break;
                     }
                 }
                 a.store(false, Ordering::SeqCst);
                 w.close();
             })?;
-            let (r, a) = (ws.clone(), alive.clone());
+            let (r, a, f) = (ws.clone(), alive.clone(), flow);
             std::thread::Builder::new().name("tunnel-recv".into()).spawn(move || {
                 let mut buf = vec![0u8; 2 + MAX_DATAGRAM];
                 while let Ok(Some(n)) = r.recv(&mut buf) {
-                    if let Some((port, data)) = decode(&buf[..n])
+                    if let Some(total) = decode_ack(&buf[..n]) {
+                        f.0.lock().unwrap().acked(total, Instant::now());
+                        f.1.notify_one();
+                    } else if let Some((port, data)) = decode(&buf[..n])
                         && inc.send((port, data.to_vec())).is_err()
                     {
                         break;
@@ -221,8 +234,24 @@ mod client {
         pub fn send_to(&self, datagram: &[u8], to: SocketAddr) {
             let ours = to.ip() == self.server_ip || to.ip().is_loopback();
             if ours && PORTS.contains(&to.port()) && datagram.len() <= MAX_DATAGRAM {
-                let _ = self.tx.try_send(encode(to.port(), datagram));
+                let _ = self.tx.try_send((Instant::now(), encode(to.port(), datagram)));
             }
+        }
+    }
+
+    fn admit(flow: &(Mutex<Flow>, Condvar), queued: Instant, len: usize) -> bool {
+        let mut f = flow.0.lock().unwrap();
+        loop {
+            let now = Instant::now();
+            if stale(queued, now) {
+                return false;
+            }
+            if f.may_send() {
+                f.sent(len, now);
+                return true;
+            }
+            let left = MAX_QUEUE_DELAY.saturating_sub(now.saturating_duration_since(queued));
+            f = flow.1.wait_timeout(f, left).unwrap().0;
         }
     }
 
@@ -298,5 +327,14 @@ mod tests {
         assert_eq!(decode(&encode(48000, b"x")), None);
         assert_eq!(decode(&[0xBB]), None);
         assert_eq!(decode(&encode(47900, &vec![0; MAX_DATAGRAM + 1])), None);
+    }
+
+    #[test]
+    fn packets_waiting_too_long_are_stale() {
+        let t = std::time::Instant::now();
+        assert!(!stale(t, t));
+        assert!(!stale(t, t + MAX_QUEUE_DELAY));
+        assert!(stale(t, t + MAX_QUEUE_DELAY + std::time::Duration::from_millis(1)));
+        assert!(!stale(t + std::time::Duration::from_secs(1), t));
     }
 }

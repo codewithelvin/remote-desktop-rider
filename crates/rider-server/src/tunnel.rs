@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use rider_core::rendezvous::INFO_PATH;
-use rider_core::tunnel::{MAX_DATAGRAM, PATH, PORTS, decode, encode};
+use rider_core::tunnel::flow::{ACK_EVERY, ACK_EVERY_BYTES, encode_ack};
+use rider_core::tunnel::{MAX_DATAGRAM, PATH, PORTS, decode, encode, stale};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -17,6 +18,7 @@ const NEW_PER_MINUTE: u32 = 60;
 const MAX_OPEN: usize = 2000;
 const IDLE: Duration = Duration::from_secs(120);
 const HANDSHAKE: Duration = Duration::from_secs(10);
+const SEND_QUEUE: usize = 128;
 
 #[derive(Default)]
 pub struct Peers(Mutex<HashMap<SocketAddr, IpAddr>>);
@@ -186,11 +188,42 @@ async fn handle(tcp: TcpStream, peer: SocketAddr, limits: &Arc<Limits>, peers: &
     let _registered = Registered(peers, local);
     tracing::debug!("tunnel open for {client}");
 
+    let (mut sink, mut stream) = ws.split();
+    let (tx, mut out) = tokio::sync::mpsc::channel::<(Instant, Bytes)>(SEND_QUEUE);
+    let (ack_tx, mut acks) = tokio::sync::watch::channel(0u64);
+    let mut writer = tokio::spawn(async move {
+        loop {
+            let frame = tokio::select! {
+                biased;
+                changed = acks.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    Bytes::copy_from_slice(&encode_ack(*acks.borrow_and_update()))
+                }
+                next = out.recv() => match next {
+                    Some((queued, _)) if stale(queued, Instant::now()) => continue,
+                    Some((_, frame)) => frame,
+                    None => break,
+                },
+            };
+            if sink.send(Message::Binary(frame)).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
     let mut buf = vec![0u8; MAX_DATAGRAM + 1];
+    let (mut received, mut acked, mut acked_at) = (0u64, 0u64, Instant::now());
     loop {
         tokio::select! {
-            msg = tokio::time::timeout(IDLE, ws.next()) => match msg {
+            msg = tokio::time::timeout(IDLE, stream.next()) => match msg {
                 Ok(Some(Ok(Message::Binary(frame)))) => {
+                    received += frame.len() as u64;
+                    if received - acked >= ACK_EVERY_BYTES || acked_at.elapsed() >= ACK_EVERY {
+                        (acked, acked_at) = (received, Instant::now());
+                        ack_tx.send_replace(received);
+                    }
                     if let Some((port, datagram)) = decode(&frame) {
                         let _ = udp.send_to(datagram, (Ipv4Addr::LOCALHOST, port)).await;
                     }
@@ -201,11 +234,16 @@ async fn handle(tcp: TcpStream, peer: SocketAddr, limits: &Arc<Limits>, peers: &
             r = udp.recv_from(&mut buf) => {
                 let Ok((n, from)) = r else { continue };
                 if from.ip().is_loopback() && PORTS.contains(&from.port()) && n <= MAX_DATAGRAM {
-                    ws.send(Message::Binary(Bytes::from(encode(from.port(), &buf[..n])))).await?;
+                    let _ = tx.try_send((Instant::now(), Bytes::from(encode(from.port(), &buf[..n]))));
                 }
             }
+            _ = &mut writer => break,
         }
     }
+    drop(tx);
+    drop(ack_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+    writer.abort();
     tracing::debug!("tunnel closed for {client}");
     Ok(())
 }
@@ -224,5 +262,75 @@ mod tests {
         drop(slots);
         assert!(limits.admit(ip).is_some(), "slots are released");
         assert!(limits.admit("198.51.100.8".parse().unwrap()).is_some(), "others unaffected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_viewer_that_stops_reading_does_not_stall_the_other_direction() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peers = Arc::new(Peers::default());
+        let p = peers.clone();
+        tokio::spawn(async move {
+            let limits = Arc::<Limits>::default();
+            let (tcp, peer) = listener.accept().await.unwrap();
+            let _ = handle(tcp, peer, &limits, &p).await;
+        });
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://{addr}{PATH}"), tcp).await.unwrap();
+        let tunnel = loop {
+            if let Some(a) = peers.0.lock().unwrap().keys().next().copied() {
+                break a;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let relay = UdpSocket::bind((Ipv4Addr::LOCALHOST, 47_977)).await.unwrap();
+        let payload = vec![7u8; 1200];
+        let flood = Instant::now();
+        while flood.elapsed() < Duration::from_secs(2) {
+            for _ in 0..64 {
+                let _ = relay.send_to(&payload, tunnel).await;
+            }
+            tokio::task::yield_now().await;
+        }
+        ws.send(Message::Binary(Bytes::from(encode(47_977, b"ping")))).await.unwrap();
+        let mut got = [0u8; 16];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), relay.recv_from(&mut got))
+            .await
+            .expect("the upstream datagram is not held up by the stalled downstream")
+            .unwrap();
+        assert_eq!(&got[..n], b"ping");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_server_confirms_what_it_received() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (limits, peers) = (Arc::<Limits>::default(), Peers::default());
+            let (tcp, peer) = listener.accept().await.unwrap();
+            let _ = handle(tcp, peer, &limits, &peers).await;
+        });
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://{addr}{PATH}"), tcp).await.unwrap();
+        let frame = encode(47_978, &[1; 100]);
+        let mut sent = 0;
+        for _ in 0..3 {
+            ws.send(Message::Binary(Bytes::from(frame.clone()))).await.unwrap();
+            sent += frame.len() as u64;
+            tokio::time::sleep(ACK_EVERY * 2).await;
+        }
+        let confirmed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(Ok(Message::Binary(f))) = ws.next().await
+                    && let Some(total) = rider_core::tunnel::flow::decode_ack(&f)
+                    && total == sent
+                {
+                    return total;
+                }
+            }
+        })
+        .await
+        .expect("a confirmation of every byte arrives");
+        assert_eq!(confirmed, sent);
     }
 }
