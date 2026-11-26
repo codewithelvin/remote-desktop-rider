@@ -89,9 +89,9 @@ while (-not $p.HasExited) {
         if (-not $seen.ContainsKey($_.FullName)) {
             Start-Sleep 1
             $zone = Get-Content -Path $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue
-            Log ("got {0} {1} {2}" -f $_.Name, (Get-Item $_.FullName).Length, $(if ("$zone" -like "*ZoneId=3*") { "marked" } else { "unmarked" }))
             $seen[$_.FullName] = (Get-Content $_.FullName -Raw)
             Copy-Item $_.FullName "$dir\received-$($_.Name)" -Force
+            Log ("got {0} {1} {2}" -f $_.Name, (Get-Item $_.FullName).Length, $(if ("$zone" -like "*ZoneId=3*") { "marked" } else { "unmarked" }))
         }
     }
     Start-Sleep -Milliseconds 500

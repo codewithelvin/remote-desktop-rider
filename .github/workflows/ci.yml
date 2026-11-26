@@ -1,6 +1,7 @@
 name: ci
 on:
   push:
+    branches: [main]
     paths-ignore: ["**.md", "docs/**", "site/**", ".github/workflows/pages.yml"]
   pull_request:
 
