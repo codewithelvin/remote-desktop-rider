@@ -18,3 +18,7 @@ clip-*.png
 block-udp
 support.err
 rider-test-cert.pem
+tcp-target.token
+tunnel-panel.args
+tunnel-click
+tunnel-panel.trace

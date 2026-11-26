@@ -167,6 +167,7 @@ Click the small tab at the top centre of the session window to open the toolbar:
 | **Full screen** | Toggle full screen |
 | **Ctrl+Alt+Del** | Send Ctrl+Alt+Del to the remote computer |
 | **1 DELL U2720Q, 2 …** | Switch between remote monitors, by their own names (shown when there are several; the one on screen is also named in the top-left corner) |
+| **Tunnels** | Reach a port on the remote computer or its local network (Full access only; see below) |
 | **Quality ▾** | Auto / 1080p / 720p / 480p |
 | Pin | Keep the toolbar open instead of hiding it |
 | **Disconnect** | End the session (click it twice: the first click asks "Click again to disconnect") |
@@ -187,6 +188,22 @@ Win+P…), Alt+Tab, Alt+Esc, Ctrl+Esc and Alt+F4 act on the remote computer.
 
 The text clipboard syncs both ways. The title bar shows fps, round-trip time,
 estimated latency and the encoder in use.
+
+### TCP tunnels
+
+Reach a web admin page, a NAS or any other TCP port on the remote computer or
+its local network, as if it were on your own computer. In the toolbar, open
+**Tunnels**, type the address there (for example `192.168.1.20:443`) and open
+the local address it gives you (for example `127.0.0.1:51234`). From the
+command line: `rider-client connect office --forward 8443:192.168.1.20:443`.
+
+- Only in **Full access** sessions.
+- The person at that computer approves each new address once per session
+  (the request is declined by itself after 60 seconds).
+- Only that computer and private addresses on its network can be reached,
+  never the internet. Your end listens on `127.0.0.1` only.
+- An administrator can change this per computer with `rider-host tunnels ask|allow|off`
+  (`allow` skips the question for unattended computers; `off` turns tunnels off).
 
 ## Enterprise mode
 
@@ -374,6 +391,7 @@ from services.
 | `info` | Show this host's identity and settings |
 | `set-server <addr> <fingerprint>` | Use a rendezvous server |
 | `auto-update on\|off` | Unattended updates (on by default) |
+| `tunnels ask\|allow\|off` | TCP tunnels into this computer's network: ask the person here for each address (default), allow without asking (Full access only), or off |
 | `run [--pair]` | Serve from the terminal until Ctrl+C, without the service |
 | `language en\|az` | Language of the red session banner the service shows (Manage keeps it in step with the app) |
 | `support <server> <fingerprint>` | One-time support session (quick connect): shows a code and asks before letting anyone in. **No administrator rights needed**; uses a throwaway key and none of the settings above |
@@ -398,6 +416,7 @@ rider-client quick SF6-CK6                      # one-time session; the person t
 | `pair <code or address>` | One-time pairing with a host running `rider-host pair` |
 | `connect <name or address>` | Open a session |
 | `quick <code>` | Quick connect: a one-time session by the code the other computer shows (no pairing or PIN; the person there allows it) |
+| `--forward [LOCAL_PORT:]HOST:PORT` | With `connect`, `quick` or `company-connect`: open a TCP tunnel, repeatable (see [TCP tunnels](#tcp-tunnels)) |
 | `list` / `forget <host>` | List or remove paired hosts |
 | `info` | Show this device's identity |
 | `set-server <addr> <fingerprint>` | Use a rendezvous server |

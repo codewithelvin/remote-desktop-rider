@@ -291,7 +291,11 @@ mod tests {
             let (out, host) = (out.clone(), host.clone());
             tokio::spawn(async move {
                 let (s, mut r) = host.accept_bi().await.unwrap();
-                let BulkHeader::File(header) = read_header(&host, &mut r).await.unwrap() else { panic!("not a file") };
+                let header = match read_header(&host, &mut r).await {
+                    Ok(BulkHeader::File(header)) => header,
+                    Ok(_) => panic!("not a file"),
+                    Err(cancelled_before_the_header) => return Err(cancelled_before_the_header),
+                };
                 let create = move |name: &str| {
                     let p = out.join(name);
                     Ok((p.clone(), std::fs::File::create(p)?))

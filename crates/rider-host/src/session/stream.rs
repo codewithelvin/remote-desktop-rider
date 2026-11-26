@@ -106,7 +106,8 @@ pub(super) async fn stream(
     let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<Clip>();
     rider_core::clipboard::spawn(clip_local_tx, clip_remote_rx, video.stop.clone());
     let clip_fwd = spawn_clipboard_forward(clip_local_rx, out_tx.clone(), perms.clone(), conn.clone());
-    let files = spawn_bulk_receiver(conn.clone(), perms.clone(), chat.clone(), clip_remote_tx.clone());
+    let forwards = Arc::new(super::forward::Forwards::new(cfg.tunnels));
+    let files = spawn_bulk_receiver(conn.clone(), perms.clone(), chat.clone(), clip_remote_tx.clone(), forwards);
     let quality = Arc::new(AtomicU32::new(0));
     let ticker = tokio::spawn(
         Ticker {
@@ -358,14 +359,19 @@ fn spawn_bulk_receiver(
     perms: Perms,
     chat: Arc<Chat>,
     clipboard: std::sync::mpsc::Sender<Clip>,
+    forwards: Arc<super::forward::Forwards>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Ok((s, mut r)) = conn.accept_bi().await {
             let (conn, perms, chat, clipboard) = (conn.clone(), perms.clone(), chat.clone(), clipboard.clone());
+            let forwards = forwards.clone();
             tokio::spawn(async move {
                 match transfer::read_header(&conn, &mut r).await {
                     Ok(BulkHeader::File(header)) => incoming_file(header, s, r, &perms, chat).await,
                     Ok(BulkHeader::ClipboardImage(header)) => incoming_image(header, r, &perms, &clipboard).await,
+                    Ok(BulkHeader::Forward(header)) => {
+                        super::forward::incoming(header, s, r, allows(&perms), &chat, &forwards).await;
+                    }
                     Ok(BulkHeader::SharpRefresh(_)) => {
                         let _ = r.stop(0u32.into());
                     }

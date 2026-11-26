@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use rider_client::PairPrompt;
 use rider_client::app::Reconnect;
 use rider_client::config::{ClientConfig, KnownHost};
+use rider_client::forward::Spec;
 use rider_core::identity::{Identity, fp_from_hex, fp_short};
 use rider_core::rendezvous::ServerRef;
 use std::io::Write;
@@ -25,12 +26,18 @@ enum Cmd {
         host: String,
         #[arg(long)]
         pin_stdin: bool,
+        #[arg(long = "forward", value_name = "[LOCAL_PORT:]HOST:PORT")]
+        forwards: Vec<Spec>,
     },
     Quick {
         code: String,
+        #[arg(long = "forward", value_name = "[LOCAL_PORT:]HOST:PORT")]
+        forwards: Vec<Spec>,
     },
     CompanyConnect {
         fingerprint: String,
+        #[arg(long = "forward", value_name = "[LOCAL_PORT:]HOST:PORT")]
+        forwards: Vec<Spec>,
     },
     Company {
         #[command(subcommand)]
@@ -131,10 +138,10 @@ fn main() -> Result<()> {
         Cmd::Info => info(&cfg, &identity)?,
         Cmd::SetServer { addr, fingerprint, off } => set_server(&mut cfg, addr, fingerprint, off)?,
         Cmd::Pair { addr, name } => pair(&mut cfg, &identity, &addr, name)?,
-        Cmd::Quick { code } => quick(&cfg, &identity, &code)?,
+        Cmd::Quick { code, forwards } => quick(&cfg, &identity, &code, forwards)?,
         Cmd::Company { action } => company(&mut cfg, &identity, action)?,
-        Cmd::CompanyConnect { fingerprint } => company_connect(&cfg, &identity, &fingerprint)?,
-        Cmd::Connect { host, pin_stdin } => connect(&mut cfg, &identity, &host, pin_stdin)?,
+        Cmd::CompanyConnect { fingerprint, forwards } => company_connect(&cfg, &identity, &fingerprint, forwards)?,
+        Cmd::Connect { host, pin_stdin, forwards } => connect(&mut cfg, &identity, &host, pin_stdin, forwards)?,
     }
     Ok(())
 }
@@ -208,14 +215,14 @@ fn report_target(cfg: &ClientConfig, identity: &Identity) -> Option<rider_client
     cfg.server.clone().map(|server| rider_client::diag::Target { identity: identity.clone(), server })
 }
 
-fn quick(cfg: &ClientConfig, identity: &Identity, code: &str) -> Result<()> {
+fn quick(cfg: &ClientConfig, identity: &Identity, code: &str, forwards: Vec<Spec>) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let (session, route, host_name) = rt.block_on(rider_client::quick(cfg, identity, code, |p| {
         println!("Waiting for \"{}\" to allow the connection.", p.host_name);
         println!("Verification code: {}", p.code);
     }))?;
     println!("Connected to \"{host_name}\" ({route}).");
-    rider_client::app::run(rt, session, host_name, report_target(cfg, identity), None)
+    rider_client::app::run(rt, session, host_name, report_target(cfg, identity), None, forwards)
 }
 
 fn cancel_on_stdin() -> impl Future<Output = ()> {
@@ -235,14 +242,14 @@ fn cancel_on_stdin() -> impl Future<Output = ()> {
     }
 }
 
-fn company_connect(cfg: &ClientConfig, identity: &Identity, fingerprint: &str) -> Result<()> {
+fn company_connect(cfg: &ClientConfig, identity: &Identity, fingerprint: &str, forwards: Vec<Spec>) -> Result<()> {
     let host = fp_from_hex(fingerprint)?;
     let rt = tokio::runtime::Runtime::new()?;
     let waiting = |name: &str| println!("Waiting for \"{name}\" to accept.");
     let (session, route, host_name) =
         rt.block_on(rider_client::company_connect(cfg, identity, host, waiting, cancel_on_stdin()))?;
     println!("Connected to \"{host_name}\" ({route}).");
-    rider_client::app::run(rt, session, host_name, report_target(cfg, identity), None)
+    rider_client::app::run(rt, session, host_name, report_target(cfg, identity), None, forwards)
 }
 
 fn reconnect_with(cfg: &ClientConfig, identity: &Identity, known: &KnownHost, pin: String) -> Reconnect {
@@ -254,7 +261,13 @@ fn reconnect_with(cfg: &ClientConfig, identity: &Identity, known: &KnownHost, pi
     })
 }
 
-fn connect(cfg: &mut ClientConfig, identity: &Identity, host: &str, pin_stdin: bool) -> Result<()> {
+fn connect(
+    cfg: &mut ClientConfig,
+    identity: &Identity,
+    host: &str,
+    pin_stdin: bool,
+    forwards: Vec<Spec>,
+) -> Result<()> {
     let known = cfg
         .find(host)
         .cloned()
@@ -268,5 +281,5 @@ fn connect(cfg: &mut ClientConfig, identity: &Identity, host: &str, pin_stdin: b
         tracing::warn!("cannot save last-connected time: {e:#}");
     }
     println!("Connected to \"{}\" ({route}).", known.name);
-    rider_client::app::run(rt, session, known.name, report_target(cfg, identity), reconnect)
+    rider_client::app::run(rt, session, known.name, report_target(cfg, identity), reconnect, forwards)
 }

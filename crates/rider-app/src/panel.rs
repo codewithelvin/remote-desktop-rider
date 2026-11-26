@@ -25,6 +25,7 @@ enum Event {
     FileDone { id: u64, path: Option<PathBuf> },
     FileFailed { id: u64, reason: String },
     Notice(String),
+    Tunnel(crate::tunnel_ask::TunnelEvent),
 }
 
 pub struct Panel {
@@ -34,6 +35,8 @@ pub struct Panel {
     chat: Chat,
     files: HashMap<u64, PathBuf>,
     request: Option<(String, std::time::Instant, f32)>,
+    tunnel: Option<crate::tunnel_ask::TunnelAsk>,
+    tunnels_seen: std::collections::HashSet<String>,
 }
 
 impl Panel {
@@ -59,7 +62,10 @@ impl Panel {
                             if matches!(ev, Event::Chat(_) | Event::File { mine: false, .. }) {
                                 show(SW_SHOWNOACTIVATE);
                             }
-                            if matches!(ev, Event::Request { .. }) {
+                            if matches!(
+                                ev,
+                                Event::Request { .. } | Event::Tunnel(crate::tunnel_ask::TunnelEvent::Request { .. })
+                            ) {
                                 show(if quiet() { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL });
                             }
                             let _ = input_tx.send(ev);
@@ -73,7 +79,16 @@ impl Panel {
         let mut chat = Chat::new("");
         chat.closable = false;
         chat.heading = false;
-        Self { events, tx, device: None, chat, files: HashMap::new(), request: None }
+        Self {
+            events,
+            tx,
+            device: None,
+            chat,
+            files: HashMap::new(),
+            request: None,
+            tunnel: None,
+            tunnels_seen: std::collections::HashSet::new(),
+        }
     }
 
     fn send(line: &str) {
@@ -117,6 +132,7 @@ impl Panel {
                 }
                 Event::FileFailed { id, reason } => self.chat.file_failed(id, reason),
                 Event::Notice(text) => self.chat.notice(text),
+                Event::Tunnel(t) => self.tunnel_event(t, ctx),
                 Event::Request { company, seconds } => {
                     let seconds = seconds.clamp(5, 300);
                     let until = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
@@ -205,6 +221,41 @@ impl Panel {
 }
 
 impl Panel {
+    fn tunnel_event(&mut self, t: crate::tunnel_ask::TunnelEvent, ctx: &egui::Context) {
+        use crate::tunnel_ask::{TunnelAsk, TunnelEvent, opened_notice};
+        match t {
+            TunnelEvent::Request { id, target, seconds } => {
+                self.tunnel = Some(TunnelAsk::new(id, target, seconds));
+                if !quiet() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                attention(ctx);
+            }
+            TunnelEvent::Expired(id) => {
+                if self.tunnel.as_ref().is_some_and(|a| a.id == id) {
+                    self.tunnel = None;
+                }
+            }
+            TunnelEvent::Opened(target) => {
+                if self.tunnels_seen.insert(target.clone()) {
+                    self.chat.notice(opened_notice(&target));
+                }
+            }
+        }
+    }
+
+    fn tunnel_banner(&mut self, ui: &mut Ui) {
+        if self.tunnel.as_ref().is_some_and(crate::tunnel_ask::TunnelAsk::expired) {
+            self.tunnel = None;
+        }
+        let device = self.device.clone().unwrap_or_default();
+        let answer = self.tunnel.as_ref().and_then(|a| crate::tunnel_ask::banner(ui, a, &device).map(|c| a.reply(c)));
+        if let Some(line) = answer {
+            Self::send(&line);
+            self.tunnel = None;
+        }
+    }
+
     fn answer(&mut self, yes: bool) {
         self.request = None;
         Self::send(if yes { "accept" } else { "decline" });
@@ -319,6 +370,7 @@ impl eframe::App for Panel {
             show(SW_MINIMIZE);
         }
         self.header(ui);
+        self.tunnel_banner(ui);
         let mut actions = Vec::new();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
@@ -331,6 +383,9 @@ fn parse(line: &str) -> Option<Event> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or_default();
+    if let Some(t) = crate::tunnel_ask::parse(&v) {
+        return Some(Event::Tunnel(t));
+    }
     Some(match v.get("event")?.as_str()? {
         "session" => Event::Session {
             device: s("device"),

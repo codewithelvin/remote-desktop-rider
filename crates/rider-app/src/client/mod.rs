@@ -137,6 +137,7 @@ enum SupportEvent {
     FileProgress { id: u64, done: u64 },
     FileDone { id: u64, path: Option<std::path::PathBuf> },
     FileFailed { id: u64, reason: String },
+    Tunnel(crate::tunnel_ask::TunnelEvent),
 }
 
 #[derive(Clone)]
@@ -159,6 +160,8 @@ struct Support {
     stage: SupportStage,
     chat: Chat,
     files: HashMap<u64, std::path::PathBuf>,
+    tunnel: Option<crate::tunnel_ask::TunnelAsk>,
+    tunnels_seen: HashSet<String>,
 }
 
 impl Support {
@@ -176,6 +179,8 @@ impl Support {
             stage,
             chat,
             files: HashMap::new(),
+            tunnel: None,
+            tunnels_seen: HashSet::new(),
         }
     }
 
@@ -554,6 +559,26 @@ impl ClientApp {
                 }
             }
             SupportEvent::FileFailed { id, reason } => s.chat.file_failed(id, reason),
+            SupportEvent::Tunnel(t) => {
+                use crate::tunnel_ask::{TunnelAsk, TunnelEvent, opened_notice};
+                match t {
+                    TunnelEvent::Request { id, target, seconds } => {
+                        let title = trf!("{} asks for a TCP tunnel", "{} TCP tuneli istəyir", s.chat.peer);
+                        s.tunnel = Some(TunnelAsk::new(id, target.clone(), seconds));
+                        self.attention(&title, &target);
+                    }
+                    TunnelEvent::Expired(id) => {
+                        if s.tunnel.as_ref().is_some_and(|a| a.id == id) {
+                            s.tunnel = None;
+                        }
+                    }
+                    TunnelEvent::Opened(target) => {
+                        if s.tunnels_seen.insert(target.clone()) {
+                            s.chat.notice(opened_notice(&target));
+                        }
+                    }
+                }
+            }
             SupportEvent::Ended => s.stage = SupportStage::Ended,
             SupportEvent::Cancelled => {
                 s.stage = SupportStage::Waiting;
@@ -828,6 +853,9 @@ fn parse_support_event(line: &str) -> Option<SupportEvent> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or_default();
+    if let Some(t) = crate::tunnel_ask::parse(&v) {
+        return Some(SupportEvent::Tunnel(t));
+    }
     Some(match v.get("event")?.as_str()? {
         "registered" => SupportEvent::Code(v.get("code").and_then(|c| c.as_str()).map(str::to_owned)),
         "server_error" => SupportEvent::ServerError(s("message")),

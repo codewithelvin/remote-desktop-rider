@@ -74,12 +74,12 @@ Get-Process rider-client, RemoteDesktopRider -ErrorAction SilentlyContinue | Sto
 & $client set-server $server $fp | Out-Null
 
 $pair = Start-Client "pair $code --name self"
-Until { Select-String -Path "$dir\pair.out" -Pattern '"event":"request"' -Quiet } 60 | Out-Null
+Until { Select-String -Path "$dir\pair.out" -Pattern '"event":"request"' -Quiet -ErrorAction SilentlyContinue } 60 | Out-Null
 Start-Sleep 1
 $pair.StandardInput.WriteLine("y"); $pair.StandardInput.Flush()
 $pair.WaitForExit(60000) | Out-Null
 Log "paired $($pair.ExitCode)"
-Until { Select-String -Path "$dir\pair.out" -Pattern '^exit=' -Quiet } 30 | Out-Null
+Until { Select-String -Path "$dir\pair.out" -Pattern '^exit=' -Quiet -ErrorAction SilentlyContinue } 30 | Out-Null
 Start-Sleep 4
 
 $viewer = Start-Client "connect self --pin-stdin"

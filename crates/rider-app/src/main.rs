@@ -11,6 +11,7 @@ mod pins;
 mod sys;
 #[cfg_attr(not(windows), path = "portable/tray.rs")]
 mod tray;
+mod tunnel_ask;
 #[cfg_attr(not(windows), path = "portable/updates.rs")]
 mod updates;
 mod widgets;

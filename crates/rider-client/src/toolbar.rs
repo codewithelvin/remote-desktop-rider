@@ -12,6 +12,7 @@ pub enum Action {
     Elapsed,
     Access,
     Chat,
+    Tunnels,
 }
 
 impl Action {
@@ -29,6 +30,8 @@ pub struct Extras {
     pub no_control: bool,
     pub chat: Option<usize>,
     pub chat_open: bool,
+    pub tunnels: Option<usize>,
+    pub tunnels_open: bool,
     pub monitor_names: Vec<String>,
 }
 
@@ -363,6 +366,11 @@ fn labels(
         let text = if unread > 0 { format!("{label} \u{2022} {unread}") } else { label.into() };
         v.push((Action::Chat, icon('\u{E8BD}'), text));
     }
+    if let Some(open) = extras.tunnels {
+        let label = tr("Tunnels", "Tunellər");
+        let text = if open > 0 { format!("{label} \u{2022} {open}") } else { label.into() };
+        v.push((Action::Tunnels, icon('\u{E71B}'), text));
+    }
     if let Some(q) = &extras.quality {
         v.push((Action::Quality, icon('\u{E7B3}'), format!("{q}  \u{25BE}")));
     }
@@ -686,6 +694,7 @@ fn render(
     let pinned = extras.pinned.then(|| pill(Action::Pin)).flatten().map(|(a, b)| (a, b, ACCENT));
     let chat_lit = extras.chat_open || extras.chat.is_some_and(|n| n > 0);
     let chat = chat_lit.then(|| pill(Action::Chat)).flatten().map(|(a, b)| (a, b, ACCENT));
+    let tunnels = extras.tunnels_open.then(|| pill(Action::Tunnels)).flatten().map(|(a, b)| (a, b, ACCENT));
     let confirm = confirming.then(|| pill(Action::Disconnect)).flatten().map(|(a, b)| (a, b, DANGER));
     let hovered = hover
         .and_then(|h| pill(h).map(|(a, b)| (a, b, if h == Action::Disconnect { DANGER } else { HOVER })))
@@ -701,6 +710,7 @@ fn render(
                 .or_else(|| in_pill(active))
                 .or_else(|| in_pill(pinned))
                 .or_else(|| in_pill(chat))
+                .or_else(|| in_pill(tunnels))
                 .unwrap_or((BG.0, BG.1, BG.2));
             let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
             let cx = fx.clamp(r, w as f64 - r);
