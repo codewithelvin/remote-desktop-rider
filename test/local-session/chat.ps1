@@ -8,9 +8,8 @@ public static class Front {
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    // A key press first lets this process hand the foreground to the window.
     public static bool Bring(IntPtr h) {
-        keybd_event(0x87, 0, 0, UIntPtr.Zero); keybd_event(0x87, 0, 2, UIntPtr.Zero); // F24
+        keybd_event(0x87, 0, 0, UIntPtr.Zero); keybd_event(0x87, 0, 2, UIntPtr.Zero);
         SetForegroundWindow(h);
         System.Threading.Thread.Sleep(300);
         return GetForegroundWindow() == h;

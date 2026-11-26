@@ -30,7 +30,6 @@ public static class Rdr {
 
     public static void DpiAware() { SetProcessDpiAwarenessContext(new IntPtr(-4)); }
 
-    // The "tab strip": a topmost window that counts left clicks.
     public static int Clicks;
     public static Point LastClick;
     static Form form;
@@ -48,7 +47,6 @@ public static class Rdr {
     }
     public static void CloseTarget() { if (form != null) form.Invoke((Action)(() => form.Close())); }
 
-    // A child process with its output collected line by line.
     public class Proc {
         public Process P;
         public List<string> Lines = new List<string>();
@@ -70,8 +68,6 @@ public static class Rdr {
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
-    // The process's main window: winit also keeps a small visible helper
-    // window ("Winit Thread Event Target"), which must not be taken for it.
     public static IntPtr WindowOf(int pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p);
@@ -82,7 +78,7 @@ public static class Rdr {
     }
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
     public static string Title(IntPtr h) { var b = new System.Text.StringBuilder(1024); GetWindowText(h, b, 1024); return b.ToString(); }
-    public static void Place(IntPtr h, int x, int y, int w, int hh) { SetWindowPos(h, new IntPtr(-1), x, y, w, hh, 0x0040); } // topmost: nothing covers it
+    public static void Place(IntPtr h, int x, int y, int w, int hh) { SetWindowPos(h, new IntPtr(-1), x, y, w, hh, 0x0040); }
 
     public static void Post(IntPtr h, uint m, int w, IntPtr l) { PostMessage(h, m, new IntPtr(w), l); }
 
@@ -91,23 +87,16 @@ public static class Rdr {
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(60); mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
     }
 
-    // Click in the viewer at the point that shows host pixel (hx, hy) of a
-    // hw x hh screen (the picture is letterboxed to keep its aspect).
     public static string ClickHostPixel(IntPtr viewer, int hx, int hy, int hw, int hh) {
         RECT r; GetClientRect(viewer, out r);
         POINT o = new POINT(); ClientToScreen(viewer, ref o);
         double cw = r.R, ch = r.B, s = Math.Min(cw / hw, ch / hh);
         double ox = (cw - hw * s) / 2, oy = (ch - hh * s) / 2;
         int cx = (int)(ox + hx * s), cy = (int)(oy + hy * s);
-        // Posted to the viewer, not real input: viewer and host share this
-        // PC's one pointer, which the host moves when it replays the click.
-        // Posted messages come before real input, so the viewer handles the
-        // whole click before it sees the host's pointer move.
         IntPtr lp = new IntPtr((cy << 16) | (cx & 0xFFFF));
-        PostMessage(viewer, 0x0200, IntPtr.Zero, lp); // WM_MOUSEMOVE
-        Thread.Sleep(100);
-        PostMessage(viewer, 0x0201, new IntPtr(1), lp); // WM_LBUTTONDOWN
-        PostMessage(viewer, 0x0202, IntPtr.Zero, lp); // WM_LBUTTONUP
+        PostMessage(viewer, 0x0200, IntPtr.Zero, lp);
+        PostMessage(viewer, 0x0201, new IntPtr(1), lp);
+        PostMessage(viewer, 0x0202, IntPtr.Zero, lp);
         int x = o.X + cx, y = o.Y + cy;
         return x + "," + y;
     }

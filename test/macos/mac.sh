@@ -54,5 +54,18 @@ setup)
         sudo -n defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool false
         sudo -n pmset -a sleep 0 displaysleep 0
         echo 'set up: auto-login, shutdown without password, animations off'" ;;
-*) sed -n 2,11p "$0"; exit 1 ;;
+*)
+    cat <<'EOF'
+The macOS test VM (Docker-OSX container rider-macos: SSH on
+127.0.0.1:50922, VNC on 127.0.0.1:5999). Run from the repo root in Git Bash.
+
+  test/macos/mac.sh up       start it; through the boot picker; wait for SSH
+  test/macos/mac.sh build    copy this source over and build the viewer there
+  test/macos/mac.sh down     shut macOS down cleanly and stop the container
+  test/macos/mac.sh ssh ...  run a command on the Mac
+  MAC_PASS=... test/macos/mac.sh setup   once: log in automatically at
+                             start, allow shutdown without a password
+EOF
+    exit 1
+    ;;
 esac
