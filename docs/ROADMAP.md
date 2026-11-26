@@ -191,13 +191,12 @@ ends remote sessions while it waits).
 
 - [x] Cursor shape sync.
 - Host→client file transfer: now part of chat (Milestone 6).
-- Audio.
 - Session log / audit on the host (who connected, when, from where).
 
 ## Milestone 6: What other remote desktop apps have (from Remoteer, 2026-11-24)
 
 Compared with Remoteer (Windows, macOS and browser; WebRTC). Small items
-first. Voice and video calls are not planned.
+first. Audio, voice and video calls are not planned.
 
 | # | Feature | Size | State |
 |---|---|---|---|

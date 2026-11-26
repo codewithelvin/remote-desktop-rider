@@ -58,7 +58,7 @@ pub fn monitors() -> Result<Vec<Monitor>> {
             a += 1;
         }
     }
-    list.sort_by_key(|m| (!m.info.primary, m.info.x, m.info.y));
+    list.sort_by_key(|m| layout_order(&m.info));
     list.dedup_by(|a, b| a.info.x == b.info.x && a.info.y == b.info.y && a.info.width == b.info.width);
     for (i, m) in list.iter_mut().enumerate() {
         m.info.index = i as u32;
@@ -73,6 +73,14 @@ pub fn monitors() -> Result<Vec<Monitor>> {
         anyhow::bail!("no monitors attached to the desktop");
     }
     Ok(list)
+}
+
+fn layout_order(m: &MonitorInfo) -> (i32, i32) {
+    (m.x, m.y)
+}
+
+pub fn start_index(list: &[MonitorInfo]) -> usize {
+    list.iter().position(|m| m.primary).unwrap_or(0)
 }
 
 fn friendly_names() -> std::collections::HashMap<String, String> {
@@ -149,6 +157,25 @@ pub fn open(m: &Monitor) -> Result<Box<dyn Capturer>> {
 
 #[cfg(test)]
 mod tests {
+    use rider_core::proto::MonitorInfo;
+
+    fn screen(name: &str, x: i32, y: i32) -> MonitorInfo {
+        MonitorInfo { index: 0, name: name.into(), x, y, width: 1920, height: 1080, primary: x == 0 && y == 0 }
+    }
+
+    #[test]
+    fn monitors_are_listed_left_to_right_and_the_session_starts_on_the_primary() {
+        let mut list = vec![screen("Built-in", 0, 0), screen("LEN X24A", 1920, 0), screen("HP Z22i", -1920, 120)];
+        list.sort_by_key(super::layout_order);
+        let names: Vec<&str> = list.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["HP Z22i", "Built-in", "LEN X24A"]);
+        assert_eq!(super::start_index(&list), 1);
+        let mut stacked = vec![screen("Lower", 0, 0), screen("Upper", 0, -1080)];
+        stacked.sort_by_key(super::layout_order);
+        assert_eq!(stacked[0].name, "Upper");
+        assert_eq!(super::start_index(&stacked), 1);
+    }
+
     #[test]
     #[ignore = "needs a real display"]
     fn monitors_have_names() {
