@@ -15,6 +15,7 @@ const KEYFRAME_RETRY: Duration = Duration::from_millis(300);
 
 pub struct IncomingFrame {
     pub header: FrameHeader,
+    pub dirty: Vec<u8>,
     pub data: Vec<u8>,
 }
 
@@ -49,10 +50,12 @@ fn run(
     let mut next: Option<u64> = None;
     let mut need_keyframe = true;
     let mut last_kf_request = Instant::now().checked_sub(KEYFRAME_RETRY).unwrap();
+    let mut highest = 0u64;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(10)) {
             Ok(f) => {
+                highest = highest.max(f.header.seq);
                 if next.is_none_or(|n| f.header.seq >= n) {
                     pending.insert(f.header.seq, (f, Instant::now()));
                 }
@@ -83,6 +86,7 @@ fn run(
                 if !decode(&mut decoder, &mut dims, &f, shared, proxy) {
                     decoder = None;
                     need_keyframe = true;
+                    shared.sharp_lost(highest, ctrl);
                 }
                 continue;
             }
@@ -91,6 +95,7 @@ fn run(
             if stalled {
                 tracing::debug!("frame {n} lost; requesting keyframe");
                 need_keyframe = true;
+                shared.sharp_lost(highest, ctrl);
                 continue;
             }
             break;
@@ -136,6 +141,7 @@ fn decode(
         shared.latency_us.store(latency, Ordering::Relaxed);
         shared.decode_us.store(decode_us, Ordering::Relaxed);
         shared.frames.fetch_add(1, Ordering::Relaxed);
+        shared.sharp.lock().unwrap().frame(h.seq, h.width as usize, h.height as usize, &f.dirty);
         *shared.latest.lock().unwrap() = Some(pic);
         let _ = proxy.send_event(UiEvent::NewFrame);
     }

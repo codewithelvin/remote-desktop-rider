@@ -204,6 +204,51 @@ pub fn nv12_to_xrgb_fit(f: &Nv12Frame, dst: &mut [u32], dw: usize, dh: usize) ->
     rect
 }
 
+pub fn xrgb_fit(
+    src: &[u32],
+    sw: usize,
+    sh: usize,
+    dst: &mut [u32],
+    dw: usize,
+    dh: usize,
+) -> (usize, usize, usize, usize) {
+    assert!(src.len() >= sw * sh && dst.len() >= dw * dh, "buffer too small");
+    let rect @ (ox, oy, w, h) = fit_rect(sw, sh, dw, dh);
+    if w == 0 || h == 0 {
+        dst[..dw * dh].fill(BACKGROUND);
+        return rect;
+    }
+    let same = w == sw && h == sh;
+    let (xt, yt) = if same { Default::default() } else { (taps(sw, w), taps(sh, h)) };
+    dst[..dw * dh].par_chunks_exact_mut(dw).enumerate().with_min_len(MIN_ROWS_PER_TASK).for_each(|(row, line)| {
+        if row < oy || row >= oy + h {
+            line.fill(BACKGROUND);
+            return;
+        }
+        line[..ox].fill(BACKGROUND);
+        line[ox + w..].fill(BACKGROUND);
+        let out = &mut line[ox..ox + w];
+        let r = row - oy;
+        if same {
+            out.copy_from_slice(&src[r * sw..(r + 1) * sw]);
+            return;
+        }
+        let t = yt[r];
+        let (a, b) = (&src[t.a as usize * sw..][..sw], &src[t.b as usize * sw..][..sw]);
+        for (o, x) in out.iter_mut().zip(&xt) {
+            let (xa, xb) = (x.a as usize, x.b as usize);
+            let channel = |shift: u32| {
+                let c = |p: u32| (p >> shift) & 255;
+                let top = mix(c(a[xa]), c(a[xb]), x.f);
+                let bottom = mix(c(b[xa]), c(b[xb]), x.f);
+                ((top * (256 - t.f) + bottom * t.f + (1 << 15)) >> 16) & 255
+            };
+            *o = (channel(16) << 16) | (channel(8) << 8) | channel(0);
+        }
+    });
+    rect
+}
+
 pub fn fit_rect(sw: usize, sh: usize, dw: usize, dh: usize) -> (usize, usize, usize, usize) {
     if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
         return (0, 0, 0, 0);
@@ -293,6 +338,20 @@ fn halve(src: &[u8], stride: usize, w: usize, h: usize, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xrgb_fit_copies_at_full_size_and_blends_when_smaller() {
+        let src: Vec<u32> = (0..8 * 4).map(|i| i * 0x0001_0203).collect();
+        let mut dst = vec![0u32; 8 * 4];
+        assert_eq!(xrgb_fit(&src, 8, 4, &mut dst, 8, 4), (0, 0, 8, 4));
+        assert_eq!(dst, src);
+        let flat = vec![0x0012_3456u32; 64 * 32];
+        let mut small = vec![0u32; 20 * 20];
+        let (ox, oy, w, h) = xrgb_fit(&flat, 64, 32, &mut small, 20, 20);
+        assert_eq!((w, h), (20, 10));
+        assert!(small[(oy + 3) * 20 + ox..][..w].iter().all(|&p| p == 0x0012_3456));
+        assert_eq!(small[0], BACKGROUND);
+    }
 
     fn solid_bgra(w: usize, h: usize, (r, g, b): (u8, u8, u8)) -> Vec<u8> {
         [b, g, r, 255].repeat(w * h)

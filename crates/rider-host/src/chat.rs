@@ -1,7 +1,7 @@
 use crate::panel::Panel;
 use crate::ui::{self, ChatCmd};
 use anyhow::Result;
-use rider_core::proto::{HostMsg, MAX_CHAT, Permissions};
+use rider_core::proto::{FileHeader, HostMsg, MAX_CHAT, Permissions};
 use rider_core::session_files::SessionFiles;
 use rider_core::transfer::{self, Cancel};
 use serde_json::json;
@@ -179,7 +179,7 @@ impl Chat {
         });
     }
 
-    pub async fn receive_file(self: Arc<Self>, send: quinn::SendStream, recv: quinn::RecvStream) {
+    pub async fn receive_file(self: Arc<Self>, header: FileHeader, send: quinn::SendStream, recv: quinn::RecvStream) {
         let paired = matches!(self.link, Link::Panel(..));
         let session_files = if paired {
             None
@@ -228,6 +228,7 @@ impl Chat {
         let announced = AtomicU64::new(0);
         let mut report = Throttle::new(0);
         let result = transfer::receive_with(
+            header,
             send,
             recv,
             |name, size| {

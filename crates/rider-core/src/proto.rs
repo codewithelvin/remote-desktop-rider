@@ -42,6 +42,7 @@ pub enum ClientMsg {
     LockScreen,
     MouseButtonAt { button: MouseButton, down: bool, x: u16, y: u16, seq: u32 },
     Chat { text: String },
+    SharpLost,
 }
 
 pub const MAX_CHAT: usize = 4000;
@@ -173,6 +174,20 @@ pub struct FileHeader {
     pub size: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageHeader {
+    pub width: u32,
+    pub height: u32,
+    pub size: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum BulkHeader {
+    File(FileHeader),
+    ClipboardImage(ImageHeader),
+    SharpRefresh(crate::sharp::RefreshHeader),
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FileResult {
     pub ok: bool,
@@ -249,9 +264,38 @@ pub fn frame_prefix(h: &FrameHeader) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+pub fn frame_prefix_dirty(h: &FrameHeader, dirty: &[u8]) -> Result<Vec<u8>> {
+    let mut buf = frame_prefix(h)?;
+    buf.extend_from_slice(&(dirty.len() as u32).to_le_bytes());
+    buf.extend_from_slice(dirty);
+    Ok(buf)
+}
+
+pub fn split_frame_dirty(buf: &[u8]) -> Result<(FrameHeader, &[u8], &[u8])> {
+    let (header, rest) = split_frame(buf)?;
+    if rest.len() < 4 {
+        bail!("missing changed-tile list");
+    }
+    let n = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+    if rest.len() < 4 + n {
+        bail!("truncated changed-tile list");
+    }
+    Ok((header, &rest[4..4 + n], &rest[4 + n..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_carries_its_changed_tiles() {
+        let h = FrameHeader { seq: 7, capture_us: 1, encode_us: 2, keyframe: true, width: 640, height: 480 };
+        let mut buf = frame_prefix_dirty(&h, &[0b101, 0xFF]).unwrap();
+        buf.extend_from_slice(b"h264");
+        let (got, dirty, payload) = split_frame_dirty(&buf).unwrap();
+        assert_eq!((got.seq, got.width, dirty, payload), (7, 640, &[0b101, 0xFF][..], &b"h264"[..]));
+        assert!(split_frame_dirty(&buf[..buf.len() - 7]).is_err());
+    }
 
     #[test]
     fn cursor_shapes_round_trip_and_unknown_is_arrow() {

@@ -1,9 +1,10 @@
 use crate::video::{self, IncomingFrame};
+use rider_core::clipboard::Clip;
 use rider_core::i18n::tr;
 use rider_core::pixels::Nv12Frame;
 use rider_core::proto::{
-    ClientMsg, CursorShape, HostMsg, MAX_CHAT, MAX_FRAME_BYTES, MonitorInfo, MouseMove, Permissions, encode,
-    read_known, split_frame, write_msg,
+    BulkHeader, ClientMsg, CursorShape, FileHeader, HostMsg, ImageHeader, MAX_CHAT, MAX_FRAME_BYTES, MonitorInfo,
+    MouseMove, Permissions, encode, read_known, split_frame, split_frame_dirty, write_msg,
 };
 use rider_core::session_files::SessionFiles;
 use rider_core::transfer::{self, Cancel};
@@ -28,6 +29,7 @@ const MAX_FRAMES_READING: usize = 64;
 #[derive(Debug)]
 pub enum UiEvent {
     NewFrame,
+    Sharpened,
     Monitors(Vec<MonitorInfo>, u32),
     Cursor(CursorShape),
     Permissions(Permissions),
@@ -59,6 +61,8 @@ pub struct Shared {
     next_file: AtomicU64,
     cancels: Mutex<HashMap<u64, Cancel>>,
     received: Mutex<Option<Arc<SessionFiles>>>,
+    pub sharp: Mutex<rider_core::sharp::Overlay>,
+    sharp_on: AtomicBool,
 }
 
 impl Shared {
@@ -113,6 +117,13 @@ impl Shared {
             c.store(true, Ordering::Relaxed);
         }
         self.received.lock().unwrap().take();
+    }
+
+    pub fn sharp_lost(&self, seq: u64, ctrl: &UnboundedSender<ClientMsg>) {
+        self.sharp.lock().unwrap().lost(seq);
+        if self.sharp_on.load(Ordering::Relaxed) {
+            let _ = ctrl.send(ClientMsg::SharpLost);
+        }
     }
 
     fn received_files(&self) -> anyhow::Result<Arc<SessionFiles>> {
@@ -204,6 +215,7 @@ impl NetHandle {
 }
 
 async fn receive_file(
+    header: FileHeader,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
     proxy: EventLoopProxy<UiEvent>,
@@ -225,6 +237,7 @@ async fn receive_file(
     let announced = AtomicU64::new(0);
     let mut report = Throttle { size: 0, next: 0 };
     let result = transfer::receive(
+        header,
         send,
         recv,
         |name, size| {
@@ -259,17 +272,23 @@ pub fn start(
     let id = conn.stable_id();
     shared.best_rtt_us.store(0, Ordering::Relaxed);
     shared.heard();
+    *shared.sharp.lock().unwrap() = rider_core::sharp::Overlay::new();
+    shared.sharp_on.store(rider_core::tls::speaks_v6(&conn), Ordering::Relaxed);
     let (ctrl_tx, ctrl_rx) = mpsc::unbounded_channel::<ClientMsg>();
     rt.spawn(write_control(send, ctrl_rx));
 
     let stop = Arc::new(AtomicBool::new(false));
-    let (clip_local_tx, clip_local_rx) = mpsc::unbounded_channel::<String>();
-    let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<String>();
+    let (clip_local_tx, clip_local_rx) = mpsc::unbounded_channel::<Clip>();
+    let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<Clip>();
     rider_core::clipboard::spawn(clip_local_tx, clip_remote_rx, stop.clone());
-    rt.spawn(forward_clipboard(clip_local_rx, ctrl_tx.clone(), shared.clone()));
+    rt.spawn(forward_clipboard(clip_local_rx, ctrl_tx.clone(), shared.clone(), conn.clone()));
 
-    let reader =
-        HostReader { conn: conn.clone(), proxy: proxy.clone(), shared: shared.clone(), clipboard: clip_remote_tx };
+    let reader = HostReader {
+        conn: conn.clone(),
+        proxy: proxy.clone(),
+        shared: shared.clone(),
+        clipboard: clip_remote_tx.clone(),
+    };
     rt.spawn(reader.run(recv, id, stop));
     rt.spawn(ping(ctrl_tx.clone()));
 
@@ -277,7 +296,7 @@ pub fn start(
     video::spawn_decoder(id, frame_rx, ctrl_tx.clone(), shared.clone(), proxy.clone());
     rt.spawn(read_frames(conn.clone(), shared.clone(), frame_tx));
     if rider_core::tls::speaks_v5(&conn) {
-        rt.spawn(accept_files(conn.clone(), proxy.clone(), shared.clone()));
+        rt.spawn(accept_streams(conn.clone(), proxy.clone(), shared.clone(), clip_remote_tx));
     }
 
     NetHandle { conn, ctrl: ctrl_tx, rt: rt.clone(), proxy, mouse_seq: Arc::new(AtomicU32::new(0)) }
@@ -292,13 +311,29 @@ async fn write_control(mut send: quinn::SendStream, mut ctrl: mpsc::UnboundedRec
 }
 
 async fn forward_clipboard(
-    mut local: mpsc::UnboundedReceiver<String>,
+    mut local: mpsc::UnboundedReceiver<Clip>,
     ctrl: UnboundedSender<ClientMsg>,
     shared: Arc<Shared>,
+    conn: quinn::Connection,
 ) {
-    while let Some(text) = local.recv().await {
-        if shared.permissions().clipboard {
-            let _ = ctrl.send(ClientMsg::Clipboard { text });
+    let images = rider_core::tls::speaks_v6(&conn);
+    while let Some(clip) = local.recv().await {
+        if !shared.permissions().clipboard {
+            continue;
+        }
+        match clip {
+            Clip::Text(text) => {
+                let _ = ctrl.send(ClientMsg::Clipboard { text });
+            }
+            Clip::Image(image) if images => {
+                let conn = conn.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = transfer::send_image(&conn, &image).await {
+                        tracing::warn!("clipboard image not sent: {e:#}");
+                    }
+                });
+            }
+            Clip::Image(_) => {}
         }
     }
 }
@@ -315,24 +350,96 @@ async fn ping(ctrl: UnboundedSender<ClientMsg>) {
 
 async fn read_frames(conn: quinn::Connection, shared: Arc<Shared>, frames: std::sync::mpsc::Sender<IncomingFrame>) {
     let reading = Arc::new(tokio::sync::Semaphore::new(MAX_FRAMES_READING));
+    let dirty_lists = rider_core::tls::speaks_v6(&conn);
     while let Ok(mut s) = conn.accept_uni().await {
         shared.heard();
         let tx = frames.clone();
         let Ok(permit) = reading.clone().acquire_owned().await else { break };
         tokio::spawn(async move {
             let _permit = permit;
-            if let Ok(buf) = s.read_to_end(MAX_FRAME_BYTES).await
-                && let Ok((header, payload)) = split_frame(&buf)
-            {
-                let _ = tx.send(IncomingFrame { header, data: payload.to_vec() });
+            let Ok(buf) = s.read_to_end(MAX_FRAME_BYTES).await else { return };
+            let frame = if dirty_lists {
+                split_frame_dirty(&buf).map(|(header, dirty, payload)| IncomingFrame {
+                    header,
+                    dirty: dirty.to_vec(),
+                    data: payload.to_vec(),
+                })
+            } else {
+                split_frame(&buf).map(|(header, payload)| IncomingFrame {
+                    header,
+                    dirty: Vec::new(),
+                    data: payload.to_vec(),
+                })
+            };
+            if let Ok(f) = frame {
+                let _ = tx.send(f);
             }
         });
     }
 }
 
-async fn accept_files(conn: quinn::Connection, proxy: EventLoopProxy<UiEvent>, shared: Arc<Shared>) {
-    while let Ok((s, r)) = conn.accept_bi().await {
-        tokio::spawn(receive_file(s, r, proxy.clone(), shared.clone()));
+async fn accept_streams(
+    conn: quinn::Connection,
+    proxy: EventLoopProxy<UiEvent>,
+    shared: Arc<Shared>,
+    clipboard: std::sync::mpsc::Sender<Clip>,
+) {
+    while let Ok((s, mut r)) = conn.accept_bi().await {
+        let (conn, proxy, shared, clipboard) = (conn.clone(), proxy.clone(), shared.clone(), clipboard.clone());
+        tokio::spawn(async move {
+            match transfer::read_header(&conn, &mut r).await {
+                Ok(BulkHeader::File(header)) => receive_file(header, s, r, proxy, shared).await,
+                Ok(BulkHeader::ClipboardImage(header)) => receive_image(header, r, &shared, &clipboard).await,
+                Ok(BulkHeader::SharpRefresh(header)) => receive_refresh(header, r, &shared, &proxy).await,
+                Err(e) => tracing::warn!("incoming stream: {e:#}"),
+            }
+        });
+    }
+}
+
+async fn receive_refresh(
+    header: rider_core::sharp::RefreshHeader,
+    r: quinn::RecvStream,
+    shared: &Arc<Shared>,
+    proxy: &EventLoopProxy<UiEvent>,
+) {
+    let tiles = match transfer::receive_refresh(r, header).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::debug!("sharp refresh not received: {e:#}");
+            return;
+        }
+    };
+    let shared = shared.clone();
+    let applied = tokio::task::spawn_blocking(move || {
+        let (w, h) = (header.width as usize, header.height as usize);
+        let grid = rider_core::sharp::Grid::new(w, h);
+        let decoded: Vec<_> = tiles.iter().filter_map(|t| rider_core::sharp::decode_tile(grid, t).ok()).collect();
+        let mut overlay = shared.sharp.lock().unwrap();
+        decoded.iter().filter(|(i, px)| overlay.insert(header.seq, w, h, *i, px)).count()
+    })
+    .await
+    .unwrap_or(0);
+    if applied > 0 {
+        let _ = proxy.send_event(UiEvent::Sharpened);
+    }
+}
+
+async fn receive_image(
+    header: ImageHeader,
+    mut r: quinn::RecvStream,
+    shared: &Shared,
+    clipboard: &std::sync::mpsc::Sender<Clip>,
+) {
+    if !shared.permissions().clipboard {
+        let _ = r.stop(0u32.into());
+        return;
+    }
+    match transfer::receive_image(r, header).await {
+        Ok(image) => {
+            let _ = clipboard.send(Clip::Image(image));
+        }
+        Err(e) => tracing::warn!("clipboard image not received: {e:#}"),
     }
 }
 
@@ -340,7 +447,7 @@ struct HostReader {
     conn: quinn::Connection,
     proxy: EventLoopProxy<UiEvent>,
     shared: Arc<Shared>,
-    clipboard: std::sync::mpsc::Sender<String>,
+    clipboard: std::sync::mpsc::Sender<Clip>,
 }
 
 impl HostReader {
@@ -369,7 +476,7 @@ impl HostReader {
         let event = match msg {
             HostMsg::Monitors { list, active } => UiEvent::Monitors(list, active),
             HostMsg::Clipboard { text } => {
-                let _ = self.clipboard.send(text);
+                let _ = self.clipboard.send(Clip::Text(text));
                 return;
             }
             HostMsg::Permissions(p) => {

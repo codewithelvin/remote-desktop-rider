@@ -203,8 +203,8 @@ first. Voice and video calls are not planned.
 |---|---|---|---|
 | 1 | Access levels: Full access / Standard / View only, changeable during the session | small | **done** for one-time sessions (unattended: with the session panel, #2) |
 | 2 | Chat with file transfer both ways, nothing kept after the session | medium | **done** (one-time and paired sessions) |
-| 3 | Clipboard with images (files go through chat) | small | planned |
-| 4 | Sharp text when the screen is still (a lossless refresh after motion stops) | medium | planned |
+| 3 | Clipboard with images (files go through chat) | small | done |
+| 4 | Sharp text when the screen is still (a lossless refresh after motion stops) | medium | done |
 | 5 | TCP tunnels through the session (reach a port on the remote network) | medium | planned |
 | 6 | Browser client (phones included) | large | later |
 | 7 | macOS as the controlled computer | large | later |

@@ -8,7 +8,7 @@ use crate::overlay::Overlay;
 use crate::toolbar::{Action, Extras, Toolbar};
 use anyhow::Result;
 use rider_core::i18n::tr;
-use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit};
+use rider_core::pixels::{Nv12Frame, nv12_to_xrgb_fit, xrgb_fit};
 use rider_core::proto::{Access, ClientMsg, CursorShape, MonitorInfo, MouseButton, Permissions, QUALITIES};
 use rider_core::trf;
 use rider_ui::chat::Action as ChatAction;
@@ -95,6 +95,7 @@ pub fn run(
         chat: None,
         chat_ready: false,
         scratch: Vec::new(),
+        sharp_buf: Vec::new(),
         pointer_px: (-1.0, -1.0),
         hook_on: true,
     };
@@ -165,6 +166,7 @@ struct App {
     chat: Option<ChatPanel>,
     chat_ready: bool,
     scratch: Vec<u32>,
+    sharp_buf: Vec<u32>,
     pointer_px: (f64, f64),
     hook_on: bool,
 }
@@ -189,7 +191,7 @@ impl App {
             &mut scratch
         };
         match &self.current {
-            Some(f) => self.image_rect = nv12_to_xrgb_fit(f, area, vw, h),
+            Some(f) => self.image_rect = draw_frame(f, &self.shared, &mut self.sharp_buf, area, vw, h),
             None => area.fill(0x0010_1014),
         }
         self.overlay.draw(area, vw, h, window.scale_factor());
@@ -650,6 +652,15 @@ impl App {
         }
     }
 
+    fn show_frame(&mut self) {
+        if let Some(f) = self.shared.latest.lock().unwrap().take() {
+            self.current = Some(f);
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
+    }
+
     fn redraw_soon(&self) {
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -837,12 +848,10 @@ impl ApplicationHandler<UiEvent> for App {
 
     fn user_event(&mut self, el: &ActiveEventLoop, ev: UiEvent) {
         match ev {
-            UiEvent::NewFrame => {
-                if let Some(f) = self.shared.latest.lock().unwrap().take() {
-                    self.current = Some(f);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
+            UiEvent::NewFrame => self.show_frame(),
+            UiEvent::Sharpened => {
+                if let Some(w) = &self.window {
+                    w.request_redraw();
                 }
             }
             UiEvent::Monitors(list, active) => {
@@ -1002,6 +1011,25 @@ impl ApplicationHandler<UiEvent> for App {
         }
         el.set_control_flow(ControlFlow::WaitUntil(wake));
     }
+}
+
+fn draw_frame(
+    f: &Nv12Frame,
+    shared: &Shared,
+    full: &mut Vec<u32>,
+    area: &mut [u32],
+    vw: usize,
+    h: usize,
+) -> (usize, usize, usize, usize) {
+    let overlay = shared.sharp.lock().unwrap();
+    if !overlay.covers(f.width, f.height) {
+        return nv12_to_xrgb_fit(f, area, vw, h);
+    }
+    full.resize(f.width * f.height, 0);
+    nv12_to_xrgb_fit(f, full, f.width, f.height);
+    overlay.paint(full);
+    drop(overlay);
+    xrgb_fit(full, f.width, f.height, area, vw, h)
 }
 
 fn access_label(p: Permissions) -> Option<String> {
