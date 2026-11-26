@@ -53,5 +53,22 @@ case "${1:-}" in
     ;;
   sh) shift; docker exec "$NAME" "$@" ;;
   down) docker rm -f "$NAME" >/dev/null 2>&1 || true; echo "removed $NAME" ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *)
+    cat <<'EOF'
+A local test rider-server, installed like a production one: Ubuntu 22.04
+with systemd in Docker, the Linux build of this tree, deploy/install.sh,
+the systemd unit from deploy/. Reachable at 192.168.56.1 on UDP 47900
+and relay ports 47901-47999.
+
+  test/server/server.sh build     Linux rider-server -> target/dist-linux/
+  test/server/server.sh up        (re)create the container and install the build
+  test/server/server.sh install   install the build again (upgrade in place)
+  test/server/server.sh fp        the server's fingerprint
+  test/server/server.sh sh CMD    run CMD in the container (e.g. journalctl ...)
+  test/server/server.sh down      remove the container (and its state)
+
+RIDER_SERVER_BIN=<file>: install that Linux binary instead.
+EOF
+    exit 1
+    ;;
 esac

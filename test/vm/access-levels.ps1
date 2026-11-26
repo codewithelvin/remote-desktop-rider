@@ -51,7 +51,7 @@ try {
     $end = (Get-Date).AddSeconds(20)
     do { Start-Sleep -Milliseconds 300; $win = [Rdr]::WindowOf($viewer.P.Id) } while ($win -eq [IntPtr]::Zero -and (Get-Date) -lt $end)
     if ($win -eq [IntPtr]::Zero) { throw "no viewer window: $($viewer.All())" }
-    [Rdr]::Place($win, 100, 100, 1280, 800)
+    [Rdr]::Place($win, 100, 100, 1000, 900)
     Wait-Until { [Rdr]::Title($win) -match ' [1-9]\d* fps' } 20 | Out-Null
     Start-Sleep 3
 

@@ -11,8 +11,26 @@ die() {
 }
 
 usage() {
-  sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
-  echo "usage: install.sh [PUBLIC_IP] [--domain NAME --email ADDRESS] [--version X.Y.Z]"
+  cat <<'EOF'
+One-line install or upgrade of rider-server (Remote Desktop Rider's
+rendezvous + relay server) from the latest GitHub release:
+
+  curl -fsSL https://codewithelvin.github.io/remote-desktop-rider/install.sh | sudo bash -s -- [PUBLIC_IP] [options]
+
+Options:
+  PUBLIC_IP              address peers use to reach the relay ports. Detected
+                         when left out; give it behind cloud NAT to be sure.
+  --domain NAME          also set up the HTTPS fallback for networks that
+                         block UDP: nginx + a Let's Encrypt certificate for
+                         NAME (DNS must already point here; TCP 80/443 open).
+  --email ADDRESS        contact for Let's Encrypt (with --domain).
+  --version X.Y.Z        install this release instead of the latest.
+
+Safe to run again (upgrades in place). The server key in
+/var/lib/rider-server is kept, so the fingerprint never changes.
+
+usage: install.sh [PUBLIC_IP] [--domain NAME --email ADDRESS] [--version X.Y.Z]
+EOF
 }
 
 is_private_ipv4() {
