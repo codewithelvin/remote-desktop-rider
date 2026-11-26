@@ -4,12 +4,15 @@ use crate::banner::{self, Banner};
 use crate::capture;
 use crate::chat::Chat;
 use crate::input::{self, InputEvent, InputHandle};
-use crate::video::{self, VideoCmd, VideoConfig, VideoPacket, VideoStats};
+use crate::video::{self, RefreshJob, SharpSink, VideoCmd, VideoConfig, VideoPacket, VideoStats};
 use anyhow::Result;
+use rider_core::clipboard::Clip;
 use rider_core::diag::{self, Recorder, Role, Route};
 use rider_core::proto::{
-    Access, ClientMsg, HostMsg, MonitorInfo, MouseMove, Permissions, decode, frame_prefix, read_known, write_msg,
+    Access, BulkHeader, ClientMsg, FileHeader, HostMsg, ImageHeader, MonitorInfo, MouseMove, Permissions, decode,
+    frame_prefix, frame_prefix_dirty, read_known, write_msg,
 };
+use rider_core::transfer;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,7 +52,7 @@ struct Control<'a> {
     out: &'a Outbox,
     input: &'a InputHandle,
     video: &'a std::sync::mpsc::Sender<VideoCmd>,
-    clipboard: &'a std::sync::mpsc::Sender<String>,
+    clipboard: &'a std::sync::mpsc::Sender<Clip>,
     quality: &'a AtomicU32,
     monitors: &'a [MonitorInfo],
     chat: &'a Chat,
@@ -99,11 +102,11 @@ pub(super) async fn stream(
     if rider_core::tls::speaks_v3(conn) {
         crate::cursor::spawn(out_tx.clone(), video.stop.clone());
     }
-    let (clip_local_tx, clip_local_rx) = mpsc::unbounded_channel::<String>();
-    let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<String>();
+    let (clip_local_tx, clip_local_rx) = mpsc::unbounded_channel::<Clip>();
+    let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<Clip>();
     rider_core::clipboard::spawn(clip_local_tx, clip_remote_rx, video.stop.clone());
-    let clip_fwd = spawn_clipboard_forward(clip_local_rx, out_tx.clone(), perms.clone());
-    let files = spawn_file_receiver(conn.clone(), perms.clone(), chat.clone());
+    let clip_fwd = spawn_clipboard_forward(clip_local_rx, out_tx.clone(), perms.clone(), conn.clone());
+    let files = spawn_bulk_receiver(conn.clone(), perms.clone(), chat.clone(), clip_remote_tx.clone());
     let quality = Arc::new(AtomicU32::new(0));
     let ticker = tokio::spawn(
         Ticker {
@@ -216,6 +219,7 @@ fn start_video(
     let expired = Arc::new(AtomicU32::new(0));
     let (vtx, vrx) = mpsc::channel::<VideoPacket>(4);
     let (cmds, cmd_rx) = std::sync::mpsc::channel::<VideoCmd>();
+    let sharp = rider_core::tls::speaks_v6(conn).then(|| spawn_refresher(conn.clone(), cmds.clone()));
     let thread = video::spawn(video::Pipeline {
         monitors,
         start_monitor: 0,
@@ -230,9 +234,42 @@ fn start_video(
         window: window.clone(),
         stats: stats.clone(),
         stop: stop.clone(),
+        sharp,
     });
     let sender = spawn_frame_sender(conn.clone(), vrx, inflight, expired.clone());
     Video { thread, cmds, sender, stats, window, expired, stop }
+}
+
+fn spawn_refresher(conn: quinn::Connection, cmds: std::sync::mpsc::Sender<VideoCmd>) -> SharpSink {
+    let (jobs, mut rx) = mpsc::unbounded_channel::<RefreshJob>();
+    let busy = Arc::new(AtomicBool::new(false));
+    let flag = busy.clone();
+    tokio::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            let count = job.tiles.len();
+            let sent = async {
+                let RefreshJob { header, grid, tiles } = job;
+                let pngs = tokio::task::spawn_blocking(move || {
+                    tiles
+                        .iter()
+                        .map(|(i, rgb)| rider_core::sharp::encode_tile(grid, *i, rgb))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .await??;
+                transfer::send_refresh(&conn, header, &pngs).await
+            }
+            .await;
+            match sent {
+                Ok(()) => tracing::debug!("sharp refresh: {count} tiles"),
+                Err(e) => {
+                    tracing::debug!("sharp refresh not delivered: {e:#}");
+                    let _ = cmds.send(VideoCmd::SharpLost);
+                }
+            }
+            flag.store(false, Ordering::Release);
+        }
+    });
+    SharpSink { jobs, busy }
 }
 
 fn spawn_frame_sender(
@@ -285,35 +322,96 @@ fn spawn_access_watch(perms: Perms, out: Outbox, input: InputHandle, v4: bool) -
     })
 }
 
-fn spawn_clipboard_forward(mut local: mpsc::UnboundedReceiver<String>, out: Outbox, perms: Perms) -> JoinHandle<()> {
+fn spawn_clipboard_forward(
+    mut local: mpsc::UnboundedReceiver<Clip>,
+    out: Outbox,
+    perms: Perms,
+    conn: quinn::Connection,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(text) = local.recv().await {
-            if allows(&perms).clipboard {
-                let _ = out.send(HostMsg::Clipboard { text });
+        let images = rider_core::tls::speaks_v6(&conn);
+        while let Some(clip) = local.recv().await {
+            if !allows(&perms).clipboard {
+                continue;
+            }
+            match clip {
+                Clip::Text(text) => {
+                    let _ = out.send(HostMsg::Clipboard { text });
+                }
+                Clip::Image(image) if images => {
+                    let conn = conn.clone();
+                    tokio::spawn(async move {
+                        match transfer::send_image(&conn, &image).await {
+                            Ok(()) => tracing::info!("clipboard image sent ({} bytes)", image.png.len()),
+                            Err(e) => tracing::warn!("clipboard image not sent: {e:#}"),
+                        }
+                    });
+                }
+                Clip::Image(_) => {}
             }
         }
     })
 }
 
-fn spawn_file_receiver(conn: quinn::Connection, perms: Perms, chat: Arc<Chat>) -> JoinHandle<()> {
+fn spawn_bulk_receiver(
+    conn: quinn::Connection,
+    perms: Perms,
+    chat: Arc<Chat>,
+    clipboard: std::sync::mpsc::Sender<Clip>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Ok((s, r)) = conn.accept_bi().await {
-            if !allows(&perms).files {
-                let refused = rider_core::transfer::refuse(s, r, "the person at that computer does not allow files");
-                if let Ok(size) = refused.await {
-                    tracing::info!("refused a file ({size} bytes): not allowed at this access level");
-                }
-            } else if chat.ready() {
-                tokio::spawn(chat.clone().receive_file(s, r));
-            } else {
-                tokio::spawn(async move {
-                    if let Err(e) = receive_file(s, r).await {
-                        tracing::warn!("file transfer failed: {e:#}");
+        while let Ok((s, mut r)) = conn.accept_bi().await {
+            let (conn, perms, chat, clipboard) = (conn.clone(), perms.clone(), chat.clone(), clipboard.clone());
+            tokio::spawn(async move {
+                match transfer::read_header(&conn, &mut r).await {
+                    Ok(BulkHeader::File(header)) => incoming_file(header, s, r, &perms, chat).await,
+                    Ok(BulkHeader::ClipboardImage(header)) => incoming_image(header, r, &perms, &clipboard).await,
+                    Ok(BulkHeader::SharpRefresh(_)) => {
+                        let _ = r.stop(0u32.into());
                     }
-                });
-            }
+                    Err(e) => tracing::warn!("incoming stream: {e:#}"),
+                }
+            });
         }
     })
+}
+
+async fn incoming_file(
+    header: FileHeader,
+    s: quinn::SendStream,
+    r: quinn::RecvStream,
+    perms: &AtomicU8,
+    chat: Arc<Chat>,
+) {
+    if !allows(perms).files {
+        if transfer::refuse(s, r, "the person at that computer does not allow files").await.is_ok() {
+            tracing::info!("refused a file ({} bytes): not allowed at this access level", header.size);
+        }
+    } else if chat.ready() {
+        chat.receive_file(header, s, r).await;
+    } else if let Err(e) = receive_file(header, s, r).await {
+        tracing::warn!("file transfer failed: {e:#}");
+    }
+}
+
+async fn incoming_image(
+    header: ImageHeader,
+    mut r: quinn::RecvStream,
+    perms: &AtomicU8,
+    clipboard: &std::sync::mpsc::Sender<Clip>,
+) {
+    if !allows(perms).clipboard {
+        let _ = r.stop(0u32.into());
+        tracing::info!("refused a clipboard image: not allowed at this access level");
+        return;
+    }
+    match transfer::receive_image(r, header).await {
+        Ok(image) => {
+            tracing::info!("clipboard image received ({}x{})", image.width, image.height);
+            let _ = clipboard.send(Clip::Image(image));
+        }
+        Err(e) => tracing::warn!("clipboard image not received: {e:#}"),
+    }
 }
 
 impl Control<'_> {
@@ -365,11 +463,14 @@ impl Control<'_> {
             }
             ClientMsg::SelectMonitor { index } => self.select_monitor(index),
             ClientMsg::Clipboard { text } => {
-                let _ = self.clipboard.send(text);
+                let _ = self.clipboard.send(Clip::Text(text));
             }
             ClientMsg::SetQuality { max_height } => self.set_quality(max_height),
             ClientMsg::LockScreen => lock_screen(),
             ClientMsg::Chat { text } => self.chat.text_from_viewer(&text),
+            ClientMsg::SharpLost => {
+                let _ = self.video.send(VideoCmd::SharpLost);
+            }
             ClientMsg::Hello { .. } | ClientMsg::Auth { .. } | ClientMsg::PairConfirm { .. } => {}
         }
         Ok(())
@@ -445,7 +546,12 @@ pub(super) fn send_report(state: &Arc<HostState>, report: diag::Report, tunnel: 
 async fn send_frame(conn: &quinn::Connection, p: VideoPacket) -> bool {
     let Ok(mut s) = conn.open_uni().await else { return false };
     let _ = s.set_priority(-((p.header.seq % 1_000_000_000) as i32));
-    let Ok(prefix) = frame_prefix(&p.header) else { return false };
+    let prefix = if rider_core::tls::speaks_v6(conn) {
+        frame_prefix_dirty(&p.header, &p.dirty)
+    } else {
+        frame_prefix(&p.header)
+    };
+    let Ok(prefix) = prefix else { return false };
     let delivered = tokio::time::timeout(FRAME_DEADLINE, async {
         s.write_all(&prefix).await.ok()?;
         s.write_all(&p.data).await.ok()?;
@@ -461,13 +567,13 @@ async fn send_frame(conn: &quinn::Connection, p: VideoPacket) -> bool {
     }
 }
 
-async fn receive_file(send: quinn::SendStream, recv: quinn::RecvStream) -> Result<()> {
+async fn receive_file(header: FileHeader, send: quinn::SendStream, recv: quinn::RecvStream) -> Result<()> {
     let dir = crate::system::incoming_files_dir()?;
     let create = move |name: &str| {
         let name = name.to_owned();
         crate::system::as_console_user(|| create_incoming(&dir, &name))?
     };
-    let got = rider_core::transfer::receive(send, recv, |_, _| {}, create, &Arc::default(), |_| {}).await?;
+    let got = transfer::receive(header, send, recv, |_, _| {}, create, &Arc::default(), |_| {}).await?;
     tracing::info!("file saved: {} ({} bytes)", got.path.display(), got.size);
     Ok(())
 }

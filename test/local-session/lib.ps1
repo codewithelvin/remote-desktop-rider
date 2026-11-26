@@ -82,6 +82,21 @@ public static class Rdr {
 
     public static void Post(IntPtr h, uint m, int w, IntPtr l) { PostMessage(h, m, new IntPtr(w), l); }
 
+    public static int[] Client(IntPtr h) {
+        RECT r; GetClientRect(h, out r);
+        POINT o = new POINT(); ClientToScreen(h, ref o);
+        return new int[] { o.X, o.Y, r.R, r.B };
+    }
+
+    public static int[] PlaceClient(IntPtr h, int x, int y, int cw, int ch) {
+        Place(h, x, y, cw, ch);
+        Thread.Sleep(300);
+        var c = Client(h);
+        Place(h, x, y, cw + (cw - c[2]), ch + (ch - c[3]));
+        Thread.Sleep(300);
+        return Client(h);
+    }
+
     public static void ClickAt(int x, int y) {
         SetCursorPos(x, y); Thread.Sleep(100);
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(60); mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);

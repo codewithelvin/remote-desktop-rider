@@ -195,7 +195,7 @@ pub async fn connect(
                     }
                 }
             };
-            (conn, path.to_string(), matches!(path, Path::Relay(_)))
+            (conn, route(path, server), matches!(path, Path::Relay(_)))
         }
         None if host.addr.is_empty() => {
             bail!("\"{}\" is only reachable via a rendezvous server: run `rider-client set-server`", host.name)
@@ -280,7 +280,7 @@ pub async fn quick(
         _ => bail!(tr("the other computer closed the connection", "digər kompüter bağlantını bağladı")),
     }
     let relayed = matches!(path, Path::Relay(_));
-    Ok((net::Session { conn, send, recv, relayed }, path.to_string(), host_name))
+    Ok((net::Session { conn, send, recv, relayed }, route(path, server), host_name))
 }
 
 pub async fn company_connect(
@@ -329,7 +329,27 @@ pub async fn company_connect(
         _ => bail!(tr("the other computer closed the connection", "digər kompüter bağlantını bağladı")),
     }
     let relayed = matches!(path, Path::Relay(_));
-    Ok((net::Session { conn, send, recv, relayed }, path.to_string(), host_name))
+    Ok((net::Session { conn, send, recv, relayed }, route(path, server), host_name))
+}
+
+fn route(path: Path, server: &ServerRef) -> String {
+    match path {
+        Path::Relay(_) => format!("relayed via {}", server_host(&server.addr)),
+        Path::Direct(_) => path.to_string(),
+    }
+}
+
+fn server_host(addr: &str) -> &str {
+    match addr.rsplit_once(':') {
+        Some((host, port))
+            if !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit())
+                && (!host.contains(':') || host.ends_with(']')) =>
+        {
+            host
+        }
+        _ => addr,
+    }
 }
 
 pub async fn online(identity: &Identity, server: &ServerRef, hosts: &[Fingerprint]) -> Result<Vec<bool>> {
@@ -343,5 +363,22 @@ pub async fn online(identity: &Identity, server: &ServerRef, hosts: &[Fingerprin
         Some(ServerMsg::Online { online }) if online.len() == hosts.len() => Ok(online),
         Some(ServerMsg::Error { message }) => bail!("{}", rendezvous::explain(&message)),
         _ => bail!("unexpected reply from the rendezvous server"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_relayed_route_names_the_server_not_its_address() {
+        let server = ServerRef { addr: "rdm.example.org:47900".into(), fingerprint: String::new() };
+        let relay = Path::Relay("51.210.43.4:47976".parse().unwrap());
+        assert_eq!(route(relay, &server), "relayed via rdm.example.org");
+        let direct = Path::Direct("192.168.1.5:47800".parse().unwrap());
+        assert_eq!(route(direct, &server), "direct 192.168.1.5:47800");
+        assert_eq!(server_host("rdm.example.org"), "rdm.example.org");
+        assert_eq!(server_host("[2001:db8::1]:47900"), "[2001:db8::1]");
+        assert_eq!(server_host("2001:db8::1"), "2001:db8::1");
     }
 }

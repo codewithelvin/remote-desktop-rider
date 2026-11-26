@@ -44,5 +44,14 @@ say)
     xdotool key Return ;;
 files) find "${TMPDIR:-/tmp}/RemoteDesktopRider/sessions" -type f ! -name .lock -printf '%f %s\n' 2>/dev/null || true ;;
 shot) import -window root "$2" ;;
+clip-get)
+    for _ in $(seq 40); do xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -q image/png && break; sleep 0.5; done
+    xclip -selection clipboard -t image/png -o >"$2" 2>/dev/null && echo "got $(stat -c %s "$2")" || echo none ;;
+clip-set)
+    nohup xclip -selection clipboard -t image/png -i "$2" >/dev/null 2>&1 &
+    sleep 1
+    echo set ;;
+clip-text) printf '%s' "$2" | xclip -selection clipboard -i && echo text ;;
+has-xclip) command -v xclip >/dev/null && echo yes || echo no ;;
 stop) pkill -x rider-client || true ;;
 esac

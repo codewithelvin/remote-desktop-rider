@@ -1,6 +1,7 @@
 use crate::capture::{self, Monitor};
 use rider_core::pixels::bgra_to_nv12;
 use rider_core::proto::FrameHeader;
+use rider_core::sharp::{Grid, RefreshHeader, Tracker};
 use rider_media::H264Encoder;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
@@ -12,6 +13,7 @@ const MAX_INFLIGHT: usize = 16;
 const REFINE_FRAMES: u32 = 6;
 const REFINE_INTERVAL: Duration = Duration::from_millis(120);
 const MIN_KEYFRAME_GAP: Duration = Duration::from_millis(250);
+const STILL: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy)]
 pub enum VideoCmd {
@@ -19,11 +21,24 @@ pub enum VideoCmd {
     Keyframe,
     SetBitrate(u32),
     MaxHeight(u32),
+    SharpLost,
 }
 
 pub struct VideoPacket {
     pub header: FrameHeader,
+    pub dirty: Vec<u8>,
     pub data: Vec<u8>,
+}
+
+pub struct RefreshJob {
+    pub header: RefreshHeader,
+    pub grid: Grid,
+    pub tiles: Vec<(usize, Vec<u8>)>,
+}
+
+pub struct SharpSink {
+    pub jobs: tokio::sync::mpsc::UnboundedSender<RefreshJob>,
+    pub busy: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -52,6 +67,7 @@ pub struct Pipeline {
     pub window: Arc<AtomicUsize>,
     pub stats: Arc<VideoStats>,
     pub stop: Arc<AtomicBool>,
+    pub sharp: Option<SharpSink>,
 }
 
 pub fn inflight_window(rtt: Duration, max_fps: u32) -> usize {
@@ -76,6 +92,8 @@ pub fn spawn(p: Pipeline) -> std::thread::JoinHandle<()> {
 #[derive(Default)]
 struct Picture {
     nv12: Vec<u8>,
+    bgra: Vec<u8>,
+    keep_bgra: bool,
     scaler: rider_core::pixels::Downscaler,
     width: usize,
     height: usize,
@@ -89,9 +107,19 @@ impl Picture {
             self.width = (sw * self.height / sh) & !1;
             let small = self.scaler.scale(f.data, f.stride, sw, sh, self.width, self.height);
             bgra_to_nv12(small, self.width * 4, self.width, self.height, &mut self.nv12);
+            if self.keep_bgra {
+                self.bgra.clear();
+                self.bgra.extend_from_slice(&small[..self.width * self.height * 4]);
+            }
         } else {
             (self.width, self.height) = (sw, sh);
             bgra_to_nv12(f.data, f.stride, self.width, self.height, &mut self.nv12);
+            if self.keep_bgra {
+                self.bgra.clear();
+                for row in f.data.chunks(f.stride).take(self.height) {
+                    self.bgra.extend_from_slice(&row[..self.width * 4]);
+                }
+            }
         }
     }
 }
@@ -120,6 +148,9 @@ struct Streamer {
     last_encode: Instant,
     seq: u64,
     congested: bool,
+    tracker: Option<Tracker>,
+    dirty: Vec<u8>,
+    last_fresh: Instant,
 }
 
 fn run(p: Pipeline) -> anyhow::Result<()> {
@@ -139,8 +170,12 @@ fn run(p: Pipeline) -> anyhow::Result<()> {
             Grab::Unchanged => false,
             Grab::Reopened => continue,
         };
-        if s.have_frame && s.due(fresh) && !s.encode_and_send()? {
-            return Ok(());
+        if s.have_frame && s.due(fresh) {
+            if !s.encode_and_send()? {
+                return Ok(());
+            }
+        } else if !fresh {
+            s.refresh_if_still();
         }
     }
     Ok(())
@@ -152,6 +187,8 @@ impl Streamer {
         let monitor = p.start_monitor.min(p.monitors.len() - 1);
         let cap = capture::open(&p.monitors[monitor])?;
         tracing::info!("capturing {} via {}", p.monitors[monitor].info.name, cap.backend());
+        let tracker = p.sharp.as_ref().map(|_| Tracker::new());
+        let picture = Picture { keep_bgra: tracker.is_some(), ..Picture::default() };
         Ok(Self {
             interval,
             epoch: Instant::now(),
@@ -160,7 +197,7 @@ impl Streamer {
             enc: None,
             bitrate: p.cfg.start_bitrate_bps,
             max_height: 0,
-            picture: Picture::default(),
+            picture,
             capture_us: 0,
             have_frame: false,
             force_kf: true,
@@ -169,6 +206,9 @@ impl Streamer {
             last_encode: Instant::now().checked_sub(interval).unwrap(),
             seq: 0,
             congested: false,
+            tracker,
+            dirty: Vec::new(),
+            last_fresh: Instant::now(),
             p,
         })
     }
@@ -197,6 +237,11 @@ impl Streamer {
                 self.force_kf = true;
             }
             VideoCmd::SelectMonitor(_) | VideoCmd::MaxHeight(_) => {}
+            VideoCmd::SharpLost => {
+                if let Some(t) = self.tracker.as_mut() {
+                    t.lost();
+                }
+            }
             VideoCmd::SetBitrate(b) => {
                 self.bitrate = b;
                 if let Some(e) = self.enc.as_mut() {
@@ -230,6 +275,15 @@ impl Streamer {
                 self.capture_us = rider_core::now_us();
                 self.have_frame = true;
                 self.refine_left = REFINE_FRAMES;
+                self.last_fresh = Instant::now();
+                if let Some(t) = self.tracker.as_mut() {
+                    let dirty = t.update(&self.picture.bgra, self.picture.width, self.picture.height);
+                    if self.dirty.len() == dirty.len() {
+                        self.dirty.iter_mut().zip(&dirty).for_each(|(a, b)| *a |= b);
+                    } else {
+                        self.dirty = dirty;
+                    }
+                }
                 Ok(Grab::Fresh)
             }
             Ok(None) => Ok(Grab::Unchanged),
@@ -279,6 +333,25 @@ impl Streamer {
         Ok((packets, t0.elapsed().as_micros() as u32, want_kf))
     }
 
+    fn refresh_if_still(&mut self) {
+        let (Some(t), Some(sink)) = (self.tracker.as_mut(), self.p.sharp.as_ref()) else { return };
+        if self.seq == 0 || self.last_fresh.elapsed() < STILL || sink.busy.load(Ordering::Acquire) {
+            return;
+        }
+        let unsent = t.unsent();
+        if unsent.is_empty() {
+            return;
+        }
+        let grid = t.grid();
+        let header = RefreshHeader { seq: self.seq - 1, width: grid.width as u32, height: grid.height as u32, size: 0 };
+        let tiles = t.take(&unsent);
+        sink.busy.store(true, Ordering::Release);
+        if sink.jobs.send(RefreshJob { header, grid, tiles }).is_err() {
+            sink.busy.store(false, Ordering::Release);
+            t.lost();
+        }
+    }
+
     fn encode_and_send(&mut self) -> anyhow::Result<bool> {
         let (packets, encode_us, keyframe) = self.encode()?;
         self.last_encode = Instant::now();
@@ -301,7 +374,8 @@ impl Streamer {
             };
             self.seq += 1;
             self.p.inflight.fetch_add(1, Ordering::AcqRel);
-            if self.p.tx.blocking_send(VideoPacket { header, data: p.data }).is_err() {
+            let dirty = std::mem::take(&mut self.dirty);
+            if self.p.tx.blocking_send(VideoPacket { header, dirty, data: p.data }).is_err() {
                 return Ok(false);
             }
         }

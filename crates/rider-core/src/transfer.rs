@@ -1,4 +1,6 @@
-use crate::proto::{FileHeader, FileResult, read_msg, write_msg};
+use crate::clipboard::Image;
+use crate::proto::{BulkHeader, FileHeader, FileResult, ImageHeader, read_msg, write_msg};
+use crate::sharp::{RefreshHeader, TilePng};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,7 +34,12 @@ pub async fn send_open(
     let size = file.metadata().await?.len();
     let (mut send, mut recv) = conn.open_bi().await?;
     let _ = send.set_priority(BULK_PRIORITY);
-    write_msg(&mut send, &FileHeader { name, size }).await?;
+    let header = FileHeader { name, size };
+    if crate::tls::speaks_v6(conn) {
+        write_msg(&mut send, &BulkHeader::File(header)).await?;
+    } else {
+        write_msg(&mut send, &header).await?;
+    }
     let mut buf = vec![0u8; CHUNK];
     let mut sent = 0u64;
     loop {
@@ -52,6 +59,60 @@ pub async fn send_open(
     read_msg::<FileResult>(&mut recv).await?.context("the other side closed the transfer")
 }
 
+pub async fn send_image(conn: &quinn::Connection, image: &Image) -> Result<()> {
+    let (mut send, _recv) = conn.open_bi().await?;
+    let _ = send.set_priority(BULK_PRIORITY);
+    let header = ImageHeader { width: image.width, height: image.height, size: image.png.len() as u64 };
+    write_msg(&mut send, &BulkHeader::ClipboardImage(header)).await?;
+    send.write_all(&image.png).await?;
+    send.finish()?;
+    let _ = send.stopped().await;
+    Ok(())
+}
+
+pub async fn read_header(conn: &quinn::Connection, recv: &mut quinn::RecvStream) -> Result<BulkHeader> {
+    if crate::tls::speaks_v6(conn) {
+        read_msg::<BulkHeader>(recv).await?.context("missing stream header")
+    } else {
+        Ok(BulkHeader::File(read_msg::<FileHeader>(recv).await?.context("missing file header")?))
+    }
+}
+
+pub async fn receive_image(mut recv: quinn::RecvStream, header: ImageHeader) -> Result<Image> {
+    let size = usize::try_from(header.size).ok().filter(|&n| n <= crate::clipboard::MAX_PNG_BYTES);
+    let Some(size) = size else {
+        let _ = recv.stop(0u32.into());
+        bail!("clipboard image too large ({} bytes)", header.size);
+    };
+    let png = recv.read_to_end(size).await.context("reading a clipboard image")?;
+    if png.len() != size {
+        bail!("clipboard image incomplete");
+    }
+    Ok(Image { width: header.width, height: header.height, png })
+}
+
+pub async fn send_refresh(conn: &quinn::Connection, header: RefreshHeader, tiles: &[TilePng]) -> Result<()> {
+    let body = crate::proto::encode(&tiles)?;
+    let (mut send, _recv) = conn.open_bi().await?;
+    let _ = send.set_priority(BULK_PRIORITY);
+    let header = RefreshHeader { size: body.len() as u64, ..header };
+    write_msg(&mut send, &BulkHeader::SharpRefresh(header)).await?;
+    send.write_all(&body).await?;
+    send.finish()?;
+    let _ = send.stopped().await;
+    Ok(())
+}
+
+pub async fn receive_refresh(mut recv: quinn::RecvStream, header: RefreshHeader) -> Result<Vec<TilePng>> {
+    let size = usize::try_from(header.size).ok().filter(|&n| n <= crate::sharp::MAX_REFRESH_BYTES);
+    let Some(size) = size else {
+        let _ = recv.stop(0u32.into());
+        bail!("sharp refresh too large ({} bytes)", header.size);
+    };
+    let body = recv.read_to_end(size).await.context("reading a sharp refresh")?;
+    crate::proto::decode(&body)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Received {
     pub name: String,
@@ -60,6 +121,7 @@ pub struct Received {
 }
 
 pub async fn receive(
+    header: FileHeader,
     send: quinn::SendStream,
     recv: quinn::RecvStream,
     announced: impl FnOnce(&str, u64),
@@ -70,10 +132,12 @@ pub async fn receive(
     let discard = |p: PathBuf| {
         let _ = std::fs::remove_file(p);
     };
-    receive_with(send, recv, announced, create, discard, cancel, progress).await
+    receive_with(header, send, recv, announced, create, discard, cancel, progress).await
 }
 
+#[expect(clippy::too_many_arguments, reason = "the callbacks differ for each receiving side")]
 pub async fn receive_with(
+    header: FileHeader,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     announced: impl FnOnce(&str, u64),
@@ -82,7 +146,6 @@ pub async fn receive_with(
     cancel: &Cancel,
     mut progress: impl FnMut(u64),
 ) -> Result<Received> {
-    let header: FileHeader = read_msg(&mut recv).await?.context("missing file header")?;
     let name = safe_file_name(&header.name).context("invalid file name")?;
     announced(&name, header.size);
     let (path, file) = {
@@ -126,12 +189,11 @@ pub async fn receive_with(
     result.map(|()| Received { name, size: header.size, path })
 }
 
-pub async fn refuse(mut send: quinn::SendStream, mut recv: quinn::RecvStream, message: &str) -> Result<u64> {
-    let header: Option<FileHeader> = read_msg(&mut recv).await?;
+pub async fn refuse(mut send: quinn::SendStream, mut recv: quinn::RecvStream, message: &str) -> Result<()> {
     let _ = recv.stop(0u32.into());
     write_msg(&mut send, &FileResult { ok: false, message: message.into() }).await?;
     let _ = send.finish();
-    Ok(header.map_or(0, |h| h.size))
+    Ok(())
 }
 
 pub fn safe_file_name(raw: &str) -> Option<String> {
@@ -185,10 +247,12 @@ mod tests {
         let receiver = {
             let (cancel, out, host) = (cancel.clone(), out.clone(), host.clone());
             tokio::spawn(async move {
-                let (s, r) = host.accept_bi().await.unwrap();
+                let (s, mut r) = host.accept_bi().await.unwrap();
+                let BulkHeader::File(header) = read_header(&host, &mut r).await.unwrap() else { panic!("not a file") };
                 let mut seen = Vec::new();
                 let mut steps = 0;
                 let got = receive(
+                    header,
                     s,
                     r,
                     |name, size| seen.push((name.to_owned(), size)),
@@ -226,12 +290,13 @@ mod tests {
         let receiver = {
             let (out, host) = (out.clone(), host.clone());
             tokio::spawn(async move {
-                let (s, r) = host.accept_bi().await.unwrap();
+                let (s, mut r) = host.accept_bi().await.unwrap();
+                let BulkHeader::File(header) = read_header(&host, &mut r).await.unwrap() else { panic!("not a file") };
                 let create = move |name: &str| {
                     let p = out.join(name);
                     Ok((p.clone(), std::fs::File::create(p)?))
                 };
-                receive(s, r, |_, _| {}, create, &Cancel::default(), |_| {}).await
+                receive(header, s, r, |_, _| {}, create, &Cancel::default(), |_| {}).await
             })
         };
         let cancel = Cancel::default();
@@ -241,6 +306,44 @@ mod tests {
         assert!(receiver.await.unwrap().is_err(), "the receiver sees it fail");
         assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "no partial file");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_clipboard_image_arrives_tagged() {
+        let (client, host, _e1, _e2) = pair().await;
+        let rgba: Vec<u8> = (0..64u32 * 48 * 4).map(|i| (i % 251) as u8).collect();
+        let image = crate::clipboard::encode_png(64, 48, &rgba).unwrap();
+        let receiver = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                let (_s, mut r) = host.accept_bi().await.unwrap();
+                match read_header(&host, &mut r).await.unwrap() {
+                    BulkHeader::ClipboardImage(h) => receive_image(r, h).await,
+                    other => panic!("taken for {other:?}"),
+                }
+            })
+        };
+        send_image(&client, &image).await.unwrap();
+        let got = receiver.await.unwrap().unwrap();
+        assert_eq!(got, image);
+        assert_eq!(crate::clipboard::decode_png(&got).unwrap(), rgba);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_clipboard_image_is_refused() {
+        let (client, host, _e1, _e2) = pair().await;
+        let receiver = tokio::spawn(async move {
+            let (_s, mut r) = host.accept_bi().await.unwrap();
+            let BulkHeader::ClipboardImage(h) = read_header(&host, &mut r).await.unwrap() else {
+                panic!("not an image")
+            };
+            receive_image(r, h).await
+        });
+        let (mut send, _recv) = client.open_bi().await.unwrap();
+        let header = ImageHeader { width: 1, height: 1, size: crate::clipboard::MAX_PNG_BYTES as u64 + 1 };
+        write_msg(&mut send, &BulkHeader::ClipboardImage(header)).await.unwrap();
+        let err = receiver.await.unwrap().unwrap_err();
+        assert!(format!("{err:#}").contains("too large"), "{err:#}");
     }
 
     #[test]
