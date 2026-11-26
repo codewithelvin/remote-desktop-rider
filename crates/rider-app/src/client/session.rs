@@ -33,6 +33,14 @@ impl ClientApp {
                     });
                 });
             });
+        if s.tunnel.as_ref().is_some_and(crate::tunnel_ask::TunnelAsk::expired) {
+            s.tunnel = None;
+        }
+        let answer = s.tunnel.as_ref().and_then(|a| crate::tunnel_ask::banner(ui, a, &device).map(|c| a.reply(c)));
+        if let Some(line) = answer {
+            s.send(&line);
+            s.tunnel = None;
+        }
         let mut chat_actions = Vec::new();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             let full = ui.available_rect_before_wrap();

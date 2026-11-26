@@ -3,6 +3,7 @@ mod badge;
 mod chat;
 pub mod config;
 pub mod diag;
+pub mod forward;
 #[cfg(windows)]
 mod keyhook;
 #[cfg(any(not(windows), test))]

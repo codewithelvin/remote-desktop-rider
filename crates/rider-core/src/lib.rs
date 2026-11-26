@@ -3,6 +3,7 @@ pub mod company;
 pub mod diag;
 #[cfg(windows)]
 pub mod dpi;
+pub mod forward;
 pub mod https;
 pub mod i18n;
 pub mod icon;

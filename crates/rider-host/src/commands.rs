@@ -157,6 +157,28 @@ pub fn auto_update(cfg: &mut HostConfig, state: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn tunnels(cfg: &mut HostConfig, policy: &str) -> Result<()> {
+    cfg.tunnels = match policy {
+        "allow" => crate::config::TunnelPolicy::Allow,
+        "off" => crate::config::TunnelPolicy::Off,
+        _ => crate::config::TunnelPolicy::Ask,
+    };
+    cfg.save()?;
+    let how = match cfg.tunnels {
+        crate::config::TunnelPolicy::Ask => rider_core::i18n::tr(
+            "the person at this computer approves each new address",
+            "bu kompüterdəki şəxs hər yeni ünvanı təsdiqləyir",
+        ),
+        crate::config::TunnelPolicy::Allow => rider_core::i18n::tr(
+            "allowed without asking, in Full access sessions only",
+            "soruşmadan icazə verilir, yalnız Tam giriş sessiyalarında",
+        ),
+        crate::config::TunnelPolicy::Off => rider_core::i18n::tr("off", "söndürülüb"),
+    };
+    println!("{}: {how}.", rider_core::i18n::tr("TCP tunnels", "TCP tunelləri"));
+    Ok(())
+}
+
 pub fn info(cfg: &HostConfig, dir: &Path) -> Result<()> {
     let identity = Identity::load_or_create(dir)?;
     if ui::json() {

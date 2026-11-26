@@ -63,6 +63,7 @@ pub struct Shared {
     received: Mutex<Option<Arc<SessionFiles>>>,
     pub sharp: Mutex<rider_core::sharp::Overlay>,
     sharp_on: AtomicBool,
+    pub conn: Mutex<Option<quinn::Connection>>,
 }
 
 impl Shared {
@@ -270,6 +271,7 @@ pub fn start(
 ) -> NetHandle {
     let Session { conn, send, recv, .. } = s;
     let id = conn.stable_id();
+    *shared.conn.lock().unwrap() = Some(conn.clone());
     shared.best_rtt_us.store(0, Ordering::Relaxed);
     shared.heard();
     *shared.sharp.lock().unwrap() = rider_core::sharp::Overlay::new();
@@ -391,6 +393,9 @@ async fn accept_streams(
                 Ok(BulkHeader::File(header)) => receive_file(header, s, r, proxy, shared).await,
                 Ok(BulkHeader::ClipboardImage(header)) => receive_image(header, r, &shared, &clipboard).await,
                 Ok(BulkHeader::SharpRefresh(header)) => receive_refresh(header, r, &shared, &proxy).await,
+                Ok(BulkHeader::Forward(_)) => {
+                    let _ = rider_core::forward::refuse(s, rider_core::forward::Refusal::TurnedOff).await;
+                }
                 Err(e) => tracing::warn!("incoming stream: {e:#}"),
             }
         });

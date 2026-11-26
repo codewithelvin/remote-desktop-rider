@@ -1,6 +1,7 @@
 use egui::{Rect, ViewportId, pos2, vec2};
 use rider_ui::chat::{Action, Chat};
 use rider_ui::soft::{SoftRenderer, Target};
+use rider_ui::tunnels::{self, Tunnels};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -8,6 +9,12 @@ use winit::event::WindowEvent;
 use winit::window::{CursorIcon, Window};
 
 const WIDTH_PT: f64 = 290.0;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Page {
+    Chat,
+    Tunnels,
+}
 
 pub struct ChatPanel {
     ctx: egui::Context,
@@ -24,6 +31,9 @@ pub struct ChatPanel {
     cursor: egui::CursorIcon,
     actions: Vec<Action>,
     paths: HashMap<u64, PathBuf>,
+    pub tunnels: Tunnels,
+    page: Page,
+    tunnel_actions: Vec<tunnels::Action>,
 }
 
 impl ChatPanel {
@@ -53,6 +63,9 @@ impl ChatPanel {
             cursor: egui::CursorIcon::Default,
             actions: Vec::new(),
             paths: HashMap::new(),
+            tunnels: Tunnels::default(),
+            page: Page::Chat,
+            tunnel_actions: Vec::new(),
         }
     }
 
@@ -68,6 +81,21 @@ impl ChatPanel {
                 self.chat.focus();
             }
         }
+    }
+
+    pub fn page(&self) -> Page {
+        self.page
+    }
+
+    pub fn show_page(&mut self, page: Page) {
+        if page != self.page {
+            self.page = page;
+            self.dirty = true;
+        }
+    }
+
+    pub fn take_tunnel_actions(&mut self) -> Vec<tunnels::Action> {
+        std::mem::take(&mut self.tunnel_actions)
     }
 
     pub fn changed(&mut self) {
@@ -153,15 +181,20 @@ impl ChatPanel {
         let ppp = egui_winit::pixels_per_point(&self.ctx, window);
         let mut raw = self.input.take_egui_input(window);
         raw.screen_rect = Some(Rect::from_min_size(pos2(x0 as f32 / ppp, 0.0), vec2(pw as f32 / ppp, h as f32 / ppp)));
-        let chat = &mut self.chat;
+        let (chat, tunnels, page) = (&mut self.chat, &mut self.tunnels, self.page);
         let mut actions = Vec::new();
+        let mut tunnel_actions = Vec::new();
         let out = self.ctx.run_ui(raw, |ui| {
-            actions = chat.show(ui);
+            match page {
+                Page::Chat => actions = chat.show(ui),
+                Page::Tunnels => tunnel_actions = tunnels.show(ui),
+            }
             let r = ui.max_rect();
             let line = ui.visuals().widgets.noninteractive.bg_stroke;
             ui.painter().vline(r.left() + 0.5, r.y_range(), line);
         });
         self.actions.extend(actions);
+        self.tunnel_actions.extend(tunnel_actions);
         let mut platform = out.platform_output;
         self.cursor = std::mem::replace(&mut platform.cursor_icon, egui::CursorIcon::Default);
         self.input.handle_platform_output(window, platform);

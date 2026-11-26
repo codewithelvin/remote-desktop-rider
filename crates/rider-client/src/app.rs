@@ -1,5 +1,5 @@
 use crate::badge::Badge;
-use crate::chat::ChatPanel;
+use crate::chat::{ChatPanel, Page};
 use crate::diag::{self, Diag};
 #[cfg(windows)]
 use crate::keyhook::KeyHook;
@@ -44,6 +44,7 @@ pub fn run(
     host_name: String,
     report_to: Option<diag::Target>,
     reconnect: Option<Reconnect>,
+    forwards: Vec<crate::forward::Spec>,
 ) -> Result<()> {
     let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -53,6 +54,7 @@ pub fn run(
     let v3 = rider_core::tls::speaks_v3(&session.conn);
     let prefs = crate::config::ClientConfig::load().map_or_default(|c| c.viewer);
     let net = net::start(rt.handle(), session, proxy.clone(), &shared);
+    let forwards = start_forwards(&rt, forwards, &shared, &proxy, &net.conn)?;
     let quality = if v2 { prefs.quality } else { 0 };
     if quality != 0 {
         net.send(ClientMsg::SetQuality { max_height: quality });
@@ -98,6 +100,7 @@ pub fn run(
         sharp_buf: Vec::new(),
         pointer_px: (-1.0, -1.0),
         hook_on: true,
+        forwards,
     };
     app.refresh_extras();
     event_loop.run_app(&mut app)?;
@@ -169,6 +172,32 @@ struct App {
     sharp_buf: Vec<u32>,
     pointer_px: (f64, f64),
     hook_on: bool,
+    forwards: Vec<crate::forward::Listening>,
+}
+
+fn start_forwards(
+    rt: &tokio::runtime::Runtime,
+    specs: Vec<crate::forward::Spec>,
+    shared: &Arc<Shared>,
+    proxy: &EventLoopProxy<UiEvent>,
+    conn: &quinn::Connection,
+) -> Result<Vec<crate::forward::Listening>> {
+    if !specs.is_empty() && !rider_core::tls::speaks_v7(conn) {
+        eprintln!(
+            "{}",
+            tr(
+                "The other computer runs an older version without TCP tunnels: update it.",
+                "Digər kompüterdə TCP tunelləri olmayan köhnə versiya var: onu yeniləyin."
+            )
+        );
+    }
+    let mut open = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let l = rt.block_on(crate::forward::listen(spec, shared.clone(), proxy.clone()))?;
+        println!("{}", rider_core::trf!("Tunnel: {} -> {}", "Tunel: {} -> {}", l.local, l.target));
+        open.push(l);
+    }
+    Ok(open)
 }
 
 impl App {
@@ -327,14 +356,8 @@ impl App {
                 self.refresh_extras();
                 self.redraw_soon();
             }
-            Action::Chat => {
-                if let Some(c) = &mut self.chat {
-                    let open = !c.is_open();
-                    c.set_open(open);
-                }
-                self.refresh_extras();
-                self.redraw_soon();
-            }
+            Action::Chat => self.toggle_page(Page::Chat),
+            Action::Tunnels => self.toggle_page(Page::Tunnels),
             Action::Elapsed | Action::Access => {}
             Action::Disconnect => {
                 self.release_keys();
@@ -359,9 +382,77 @@ impl App {
             access: access_label(p),
             no_control: !p.control,
             chat: chat.map(|c| c.chat.unread),
-            chat_open: chat.is_some_and(ChatPanel::is_open),
+            chat_open: chat.is_some_and(|c| c.is_open() && c.page() == Page::Chat),
+            tunnels: self.tunnels_available().then_some(self.forwards.len()),
+            tunnels_open: self.chat.as_ref().is_some_and(|c| c.is_open() && c.page() == Page::Tunnels),
             monitor_names: self.monitors.iter().map(|m| m.name.clone()).collect(),
         })
+    }
+
+    fn tunnels_available(&self) -> bool {
+        rider_core::tls::speaks_v7(&self.net.conn) && self.shared.permissions().is_full()
+    }
+
+    fn toggle_page(&mut self, page: Page) {
+        if let Some(c) = &mut self.chat {
+            let open = !(c.is_open() && c.page() == page);
+            c.show_page(page);
+            c.set_open(open);
+        }
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
+    fn tunnel_actions(&mut self) {
+        let Some(c) = &mut self.chat else { return };
+        let actions = c.take_tunnel_actions();
+        if actions.is_empty() {
+            return;
+        }
+        for a in actions {
+            match a {
+                rider_ui::tunnels::Action::Add(text) => self.open_tunnel(&text),
+                rider_ui::tunnels::Action::Close(i) if i < self.forwards.len() => {
+                    self.forwards.remove(i);
+                }
+                rider_ui::tunnels::Action::Close(_) => {}
+                rider_ui::tunnels::Action::Hide => {
+                    if let Some(c) = &mut self.chat {
+                        c.set_open(false);
+                    }
+                }
+            }
+        }
+        self.sync_tunnels();
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
+    fn open_tunnel(&mut self, text: &str) {
+        let opened = text
+            .parse::<crate::forward::Spec>()
+            .and_then(|spec| self.rt.block_on(crate::forward::listen(spec, self.shared.clone(), self.proxy.clone())));
+        let error = match opened {
+            Ok(l) => {
+                self.forwards.push(l);
+                None
+            }
+            Err(e) => Some(format!("{e:#}")),
+        };
+        if let Some(c) = &mut self.chat {
+            c.tunnels.error = error;
+        }
+    }
+
+    fn sync_tunnels(&mut self) {
+        if let Some(c) = &mut self.chat {
+            c.tunnels.open = self
+                .forwards
+                .iter()
+                .map(|f| rider_ui::tunnels::Open { local: f.local.to_string(), target: f.target.clone() })
+                .collect();
+            c.changed();
+        }
     }
 
     fn chat_available(&self) -> bool {
@@ -845,6 +936,7 @@ impl ApplicationHandler<UiEvent> for App {
         chat.ready = self.chat_ready;
         chat.chat.files_allowed = self.shared.permissions().files;
         self.chat = Some(chat);
+        self.sync_tunnels();
         self.window = Some(window);
         self.refresh_extras();
     }
@@ -1004,6 +1096,7 @@ impl ApplicationHandler<UiEvent> for App {
             self.redraw_soon();
         }
         self.chat_actions();
+        self.tunnel_actions();
         self.update_hook();
         if self.chat.as_ref().is_some_and(ChatPanel::due) {
             self.redraw_soon();

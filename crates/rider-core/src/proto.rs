@@ -79,6 +79,12 @@ pub enum Access {
     ViewOnly,
 }
 
+impl Permissions {
+    pub fn is_full(self) -> bool {
+        self.control && self.clipboard && self.files
+    }
+}
+
 impl Access {
     pub const ALL: [Access; 3] = [Access::Full, Access::Standard, Access::ViewOnly];
 
@@ -186,6 +192,7 @@ pub enum BulkHeader {
     File(FileHeader),
     ClipboardImage(ImageHeader),
     SharpRefresh(crate::sharp::RefreshHeader),
+    Forward(crate::forward::ForwardHeader),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

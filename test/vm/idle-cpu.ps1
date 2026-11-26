@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)][string]$Server,
     [Parameter(Mandatory)][string]$Fingerprint,
     [string]$Client = "",
-    [double]$MaxCorePercent = 5
+    [double]$MaxCorePercent = 2
 )
 . "$PSScriptRoot\..\local-session\lib.ps1"
 if (-not $Client) { $Client = Join-Path $repo "target\release\rider-client.exe" }

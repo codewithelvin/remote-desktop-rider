@@ -76,6 +76,10 @@ enum Cmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    Tunnels {
+        #[arg(value_parser = ["ask", "allow", "off"])]
+        policy: String,
+    },
     Service {
         #[command(subcommand)]
         action: ServiceCmd,
@@ -154,6 +158,7 @@ fn dispatch(cmd: Cmd, mut cfg: HostConfig, dir: &std::path::Path) -> Result<()> 
         Cmd::Support { server, fingerprint } => support(&server, &fingerprint),
         Cmd::Language { lang } => commands::language(&mut cfg, lang),
         Cmd::AutoUpdate { state } => commands::auto_update(&mut cfg, &state),
+        Cmd::Tunnels { policy } => commands::tunnels(&mut cfg, &policy),
         Cmd::Info => commands::info(&cfg, dir),
         Cmd::Pair => commands::pair(cfg, dir),
         Cmd::Run { pair } => commands::run(cfg, dir, pair),

@@ -14,6 +14,7 @@ pub enum ChatCmd {
     Cancel(u64),
     End,
     Answer(bool),
+    Tunnel { id: u64, allow: bool },
 }
 
 pub fn parse_chat(word: &str, arg: &str) -> Option<ChatCmd> {
@@ -21,6 +22,8 @@ pub fn parse_chat(word: &str, arg: &str) -> Option<ChatCmd> {
         "chat" => serde_json::from_str::<String>(arg).ok().map(ChatCmd::Text),
         "send-file" => serde_json::from_str::<String>(arg).ok().map(|p| ChatCmd::SendFile(p.into())),
         "cancel-file" => arg.parse().ok().map(ChatCmd::Cancel),
+        "tunnel-allow" => arg.parse().ok().map(|id| ChatCmd::Tunnel { id, allow: true }),
+        "tunnel-deny" => arg.parse().ok().map(|id| ChatCmd::Tunnel { id, allow: false }),
         _ => None,
     }
 }

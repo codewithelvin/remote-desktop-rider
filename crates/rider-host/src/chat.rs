@@ -9,7 +9,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
+
+const TUNNEL_ANSWER_TIME: Duration = Duration::from_secs(60);
 
 pub enum Link {
     App,
@@ -32,6 +36,7 @@ pub struct Chat {
     next_id: AtomicU64,
     cancels: Mutex<HashMap<u64, Cancel>>,
     files: Mutex<Option<Arc<SessionFiles>>>,
+    tunnel_asks: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
 }
 
 impl Chat {
@@ -49,6 +54,7 @@ impl Chat {
             next_id: AtomicU64::new(1),
             cancels: Mutex::default(),
             files: Mutex::default(),
+            tunnel_asks: Mutex::default(),
         })
     }
 
@@ -62,6 +68,32 @@ impl Chat {
             Link::Panel(p, _) => p.emit(event),
             Link::None => {}
         }
+    }
+
+    pub async fn ask_tunnel(&self, target: &str) -> Option<bool> {
+        if !self.ready() {
+            return None;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.tunnel_asks.lock().unwrap().insert(id, tx);
+        self.emit(
+            &json!({ "event": "tunnel_request", "id": id, "target": target, "seconds": TUNNEL_ANSWER_TIME.as_secs() }),
+        );
+        let answer = tokio::time::timeout(TUNNEL_ANSWER_TIME, rx).await;
+        self.tunnel_asks.lock().unwrap().remove(&id);
+        match answer {
+            Ok(Ok(allow)) => Some(allow),
+            Ok(Err(_)) => None,
+            Err(_) => {
+                self.emit(&json!({ "event": "tunnel_request_expired", "id": id }));
+                Some(false)
+            }
+        }
+    }
+
+    pub fn tunnel_event(&self, event: &str, target: &str) {
+        self.emit(&json!({ "event": event, "target": target }));
     }
 
     pub fn text_from_viewer(&self, text: &str) {
@@ -104,6 +136,11 @@ impl Chat {
             ChatCmd::Cancel(id) => {
                 if let Some(c) = self.cancels.lock().unwrap().get(&id) {
                     c.store(true, Ordering::Relaxed);
+                }
+            }
+            ChatCmd::Tunnel { id, allow } => {
+                if let Some(tx) = self.tunnel_asks.lock().unwrap().remove(&id) {
+                    let _ = tx.send(allow);
                 }
             }
             ChatCmd::Text(_) | ChatCmd::Answer(_) => {}
