@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use config::{ClientConfig, KnownHost};
 use rider_core::i18n::tr;
 use rider_core::identity::{Fingerprint, Identity, fp_from_hex, fp_hex};
-use rider_core::proto::*;
+use rider_core::proto::{ClientMsg, HostMsg, PROTOCOL_VERSION, read_msg, write_msg};
 use rider_core::rendezvous::{self, Path, PeerMsg, ServerMsg, ServerRef, Target};
 use std::net::SocketAddr;
 
@@ -110,7 +110,7 @@ pub async fn pair(
     alias: Option<String>,
     confirm: impl AsyncFnOnce(&PairPrompt) -> bool,
 ) -> Result<KnownHost> {
-    let hint = rider_core::i18n::tr(
+    let hint = tr(
         "On the other computer, open This computer → Manage this computer → Add a device and enter the code it \
          shows, e.g. SF6-CK6. Codes expire after 10 minutes.",
         "Digər kompüterdə «Bu kompüter» → «Bu kompüteri idarə et» → «Cihaz əlavə et» düyməsini basın və göstərilən \
@@ -180,7 +180,7 @@ pub async fn connect(
                     tokio::pin!(via);
                     let first = tokio::select! {
                         r = &mut via => Some(r),
-                        _ = tokio::time::sleep(SERVER_GRACE) => None,
+                        () = tokio::time::sleep(SERVER_GRACE) => None,
                     };
                     match first {
                         Some(Ok(done)) => done,
@@ -288,7 +288,7 @@ pub async fn company_connect(
     identity: &Identity,
     host: Fingerprint,
     waiting: impl FnOnce(&str),
-    cancel: impl std::future::Future<Output = ()>,
+    cancel: impl Future<Output = ()>,
 ) -> Result<(net::Session, String, String)> {
     let Some(server) = &cfg.server else {
         bail!(tr("Enterprise mode needs the company's server", "Müəssisə rejimi üçün şirkətin serveri lazımdır"));

@@ -2,7 +2,10 @@ use super::{Capturer, Frame};
 use anyhow::{Result, bail};
 use rider_core::proto::MonitorInfo;
 use std::time::{Duration, Instant};
-use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+    DeleteObject, GetDC, GetDIBits, HBITMAP, HDC, ReleaseDC, SRCCOPY, SelectObject,
+};
 
 pub struct GdiCapturer {
     x: i32,
@@ -40,7 +43,7 @@ impl GdiCapturer {
                 bitmap,
                 buf: vec![0; m.width as usize * m.height as usize * 4],
                 prev_hash: 0,
-                last: Instant::now() - Duration::from_secs(1),
+                last: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
             })
         }
     }
@@ -57,9 +60,9 @@ impl Drop for GdiCapturer {
 }
 
 fn quick_hash(data: &[u8]) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
     for chunk in data.as_chunks::<8>().0 {
-        h = (h ^ u64::from_le_bytes(*chunk)).wrapping_mul(0x100000001b3);
+        h = (h ^ u64::from_le_bytes(*chunk)).wrapping_mul(0x0100_0000_01b3);
     }
     h
 }
@@ -72,8 +75,8 @@ impl Capturer for GdiCapturer {
     fn next_frame(&mut self, timeout_ms: u32) -> Result<Option<Frame<'_>>> {
         let period = Duration::from_millis(33);
         let wait = period.saturating_sub(self.last.elapsed());
-        if wait > Duration::from_millis(timeout_ms as u64) {
-            std::thread::sleep(Duration::from_millis(timeout_ms as u64));
+        if wait > Duration::from_millis(u64::from(timeout_ms)) {
+            std::thread::sleep(Duration::from_millis(u64::from(timeout_ms)));
             return Ok(None);
         }
         std::thread::sleep(wait);
@@ -82,7 +85,7 @@ impl Capturer for GdiCapturer {
             BitBlt(self.mem, 0, 0, self.width as i32, self.height as i32, Some(self.screen), self.x, self.y, SRCCOPY)?;
             let mut bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: self.width as i32,
                     biHeight: -(self.height as i32),
                     biPlanes: 1,
@@ -97,8 +100,8 @@ impl Capturer for GdiCapturer {
                 self.bitmap,
                 0,
                 self.height as u32,
-                Some(self.buf.as_mut_ptr() as _),
-                &mut bmi,
+                Some(self.buf.as_mut_ptr().cast()),
+                &raw mut bmi,
                 DIB_RGB_COLORS,
             );
             if lines == 0 {

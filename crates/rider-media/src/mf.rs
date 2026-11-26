@@ -1,8 +1,14 @@
 use anyhow::Result;
 use std::mem::ManuallyDrop;
 use std::sync::Once;
-use windows::Win32::Foundation::VARIANT_TRUE;
-use windows::Win32::Media::MediaFoundation::*;
+use windows::Win32::Foundation::{VARIANT_BOOL, VARIANT_TRUE};
+use windows::Win32::Media::MediaFoundation::{
+    IMFMediaType, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
+    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO,
+    MF_MT_SUBTYPE, MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
+    MFSTARTUP_FULL, MFStartup, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_INFO,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoInterlace_Progressive,
+};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4};
 use windows::core::GUID;
@@ -42,14 +48,14 @@ pub(crate) fn variant_bool(v: bool) -> VARIANT {
                 wReserved1: 0,
                 wReserved2: 0,
                 wReserved3: 0,
-                Anonymous: VARIANT_0_0_0 { boolVal: if v { VARIANT_TRUE } else { Default::default() } },
+                Anonymous: VARIANT_0_0_0 { boolVal: if v { VARIANT_TRUE } else { VARIANT_BOOL::default() } },
             }),
         },
     }
 }
 
 pub(crate) fn pack(hi: u32, lo: u32) -> u64 {
-    ((hi as u64) << 32) | lo as u64
+    (u64::from(hi) << 32) | u64::from(lo)
 }
 
 pub(crate) fn unpack(v: u64) -> (u32, u32) {
@@ -73,7 +79,7 @@ pub(crate) fn sample_from_bytes(data: &[u8], time_100ns: i64, duration_100ns: i6
     unsafe {
         let buf = MFCreateMemoryBuffer(data.len() as u32)?;
         let mut ptr = std::ptr::null_mut();
-        buf.Lock(&mut ptr, None, None)?;
+        buf.Lock(&raw mut ptr, None, None)?;
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
         buf.Unlock()?;
         buf.SetCurrentLength(data.len() as u32)?;
@@ -99,7 +105,7 @@ pub(crate) fn sample_bytes(sample: &IMFSample) -> Result<Vec<u8>> {
         let buf = sample.ConvertToContiguousBuffer()?;
         let mut ptr = std::ptr::null_mut();
         let mut len = 0u32;
-        buf.Lock(&mut ptr, None, Some(&mut len))?;
+        buf.Lock(&raw mut ptr, None, Some(&raw mut len))?;
         let v = std::slice::from_raw_parts(ptr, len as usize).to_vec();
         buf.Unlock()?;
         Ok(v)
@@ -125,7 +131,7 @@ pub(crate) fn process_output(mft: &IMFTransform, stream_id: u32, alloc: Option<u
             pEvents: ManuallyDrop::new(None),
         }];
         let mut status = 0u32;
-        let r = mft.ProcessOutput(0, &mut bufs, &mut status);
+        let r = mft.ProcessOutput(0, &mut bufs, &raw mut status);
         let sample = ManuallyDrop::take(&mut bufs[0].pSample);
         drop(ManuallyDrop::take(&mut bufs[0].pEvents));
         match r {

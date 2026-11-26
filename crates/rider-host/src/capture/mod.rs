@@ -3,7 +3,7 @@ mod gdi;
 
 use anyhow::Result;
 use rider_core::proto::MonitorInfo;
-use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 
 pub struct Frame<'a> {
     pub data: &'a [u8],
@@ -87,13 +87,20 @@ fn friendly_names() -> std::collections::HashMap<String, String> {
     let text = |w: &[u16]| String::from_utf16_lossy(w).trim_end_matches('\0').trim().to_string();
     unsafe {
         let (mut np, mut nm) = (0u32, 0u32);
-        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &raw mut np, &raw mut nm).is_err() {
             return names;
         }
         let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
         let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
-        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None)
-            .is_err()
+        if QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &raw mut np,
+            paths.as_mut_ptr(),
+            &raw mut nm,
+            modes.as_mut_ptr(),
+            None,
+        )
+        .is_err()
         {
             return names;
         }
@@ -108,8 +115,8 @@ fn friendly_names() -> std::collections::HashMap<String, String> {
             target.header.size = size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
             target.header.adapterId = path.targetInfo.adapterId;
             target.header.id = path.targetInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut source.header) != 0
-                || DisplayConfigGetDeviceInfo(&mut target.header) != 0
+            if DisplayConfigGetDeviceInfo(&raw mut source.header) != 0
+                || DisplayConfigGetDeviceInfo(&raw mut target.header) != 0
             {
                 continue;
             }
@@ -143,7 +150,7 @@ pub fn open(m: &Monitor) -> Result<Box<dyn Capturer>> {
 #[cfg(test)]
 mod tests {
     #[test]
-    #[ignore]
+    #[ignore = "needs a real display"]
     fn monitors_have_names() {
         let list = super::monitors().unwrap();
         for m in &list {
@@ -155,7 +162,7 @@ mod tests {
                 m.info.height,
                 m.info.primary
             );
-            assert!(!m.info.name.is_empty());
+            assert_ne!(m.info.name, "");
         }
     }
 }

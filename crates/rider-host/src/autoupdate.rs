@@ -19,9 +19,10 @@ use windows::core::{PCWSTR, PWSTR, w};
 
 pub const SESSION_EVENT: PCWSTR = w!(r"Global\RemoteDesktopRider-Session");
 
-const FIRST_CHECK: Duration = Duration::from_secs(2 * 60);
+const FIRST_CHECK: Duration = Duration::from_mins(2);
 const EVERY: Duration = Duration::from_secs(3600);
-const RETRY: Duration = Duration::from_secs(30 * 60);
+const RETRY: Duration = Duration::from_mins(30);
+const DETACHED_PROCESS: u32 = 0x0000_0008;
 const APP_EXE: &str = "RemoteDesktopRider.exe";
 
 pub fn mark_session(active: bool) {
@@ -140,7 +141,6 @@ fn check_and_install(event: HANDLE, stop: &AtomicBool) -> Result<bool> {
         let _ = std::fs::remove_file(&marker);
     }
     tracing::info!("auto-update: installing {}", release.version);
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
     std::process::Command::new(&file)
         .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
         .arg(format!("/LOG={}", dir.join("install.log").display()))
@@ -154,7 +154,7 @@ fn app_running_in(session: u32) -> bool {
     let mut list: *mut WTS_PROCESS_INFOW = std::ptr::null_mut();
     let mut count = 0u32;
     unsafe {
-        if WTSEnumerateProcessesW(Some(WTS_CURRENT_SERVER_HANDLE), 0, 1, &mut list, &mut count).is_err() {
+        if WTSEnumerateProcessesW(Some(WTS_CURRENT_SERVER_HANDLE), 0, 1, &raw mut list, &raw mut count).is_err() {
             return false;
         }
         let found = std::slice::from_raw_parts(list, count as usize).iter().any(|p| {
@@ -196,9 +196,9 @@ pub fn reopen_app_after_update() {
 fn launch_as_user(session: u32, cmd: &str) -> Result<()> {
     unsafe {
         let mut token = HANDLE::default();
-        WTSQueryUserToken(session, &mut token).context("no user signed in")?;
+        WTSQueryUserToken(session, &raw mut token).context("no user signed in")?;
         let mut env = std::ptr::null_mut();
-        let have_env = CreateEnvironmentBlock(&mut env, Some(token), false).is_ok();
+        let have_env = CreateEnvironmentBlock(&raw mut env, Some(token), false).is_ok();
         let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
         let si = STARTUPINFOW {
             cb: size_of::<STARTUPINFOW>() as u32,
@@ -215,10 +215,10 @@ fn launch_as_user(session: u32, cmd: &str) -> Result<()> {
             None,
             false,
             CREATE_UNICODE_ENVIRONMENT,
-            have_env.then_some(env as *const _),
+            have_env.then_some(env.cast_const()),
             PCWSTR::null(),
-            &si,
-            &mut pi,
+            &raw const si,
+            &raw mut pi,
         );
         if have_env {
             let _ = DestroyEnvironmentBlock(env);

@@ -218,7 +218,7 @@ mod platform {
             && let RawWindowHandle::Win32(h) = h.as_raw()
         {
             DONE.call_once(|| {
-                rider_core::dpi::follow_windows(windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _))
+                rider_core::dpi::follow_windows(windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _));
             });
         }
     }

@@ -1,7 +1,14 @@
-use crate::mf::*;
+use crate::mf::{
+    Output, init_thread, process_output, provides_samples, sample_bytes, sample_from_bytes, stream_ids, unpack,
+    variant_bool, video_type,
+};
 use anyhow::{Context, Result};
 use rider_core::pixels::Nv12Frame;
-use windows::Win32::Media::MediaFoundation::*;
+use windows::Win32::Media::MediaFoundation::{
+    CLSID_MSH264DecoderMFT, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFTransform, MF_E_NOTACCEPTING, MF_LOW_LATENCY,
+    MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_STREAM_INFO, MFVideoFormat_H264, MFVideoFormat_NV12,
+};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::core::Interface;
 
@@ -37,7 +44,7 @@ impl H264Decoder {
                 mft,
                 in_id,
                 out_id,
-                out_info: Default::default(),
+                out_info: MFT_OUTPUT_STREAM_INFO::default(),
                 stride: width as usize,
                 alloc_height: height as usize,
                 width: width as usize,

@@ -2,8 +2,16 @@ use rider_core::proto::{MonitorInfo, MouseButton};
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
-use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+    KEYEVENTF_SCANCODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
+    SendInput, VIRTUAL_KEY,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+};
 
 const XBUTTON1: u32 = 1;
 const XBUTTON2: u32 = 2;
@@ -62,7 +70,7 @@ fn run(rx: Receiver<InputEvent>, mut inj: Injector) {
                 }
                 inj.mouse_button(button, down, Some((x, y)));
             }
-            InputEvent::Wheel { dx, dy } => inj.wheel(dx, dy),
+            InputEvent::Wheel { dx, dy } => Injector::wheel(dx, dy),
             InputEvent::Key { scancode, extended, down } => inj.key(scancode, extended, down),
             InputEvent::Monitor(m) => inj.monitor = m,
             InputEvent::ReleaseAll => inj.release_all(),
@@ -71,9 +79,9 @@ fn run(rx: Receiver<InputEvent>, mut inj: Injector) {
 }
 
 fn send(inputs: &[INPUT]) {
-    let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     if sent == 0 && crate::system::follow_input_desktop() {
-        unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };
+        unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     }
 }
 
@@ -118,14 +126,14 @@ impl Injector {
 
     fn move_to(&self, x: u16, y: u16) -> INPUT {
         let m = &self.monitor;
-        let px = m.x as i64 + (x as i64 * (m.width as i64 - 1)) / 65535;
-        let py = m.y as i64 + (y as i64 * (m.height as i64 - 1)) / 65535;
+        let px = i64::from(m.x) + (i64::from(x) * (i64::from(m.width) - 1)) / 65535;
+        let py = i64::from(m.y) + (i64::from(y) * (i64::from(m.height) - 1)) / 65535;
         let (vx, vy, vw, vh) = unsafe {
             (
-                GetSystemMetrics(SM_XVIRTUALSCREEN) as i64,
-                GetSystemMetrics(SM_YVIRTUALSCREEN) as i64,
-                (GetSystemMetrics(SM_CXVIRTUALSCREEN) as i64 - 1).max(1),
-                (GetSystemMetrics(SM_CYVIRTUALSCREEN) as i64 - 1).max(1),
+                i64::from(GetSystemMetrics(SM_XVIRTUALSCREEN)),
+                i64::from(GetSystemMetrics(SM_YVIRTUALSCREEN)),
+                (i64::from(GetSystemMetrics(SM_CXVIRTUALSCREEN)) - 1).max(1),
+                (i64::from(GetSystemMetrics(SM_CYVIRTUALSCREEN)) - 1).max(1),
             )
         };
         let nx = ((px - vx) * 65535 / vw) as i32;
@@ -148,7 +156,7 @@ impl Injector {
         }
     }
 
-    fn wheel(&mut self, dx: i32, dy: i32) {
+    fn wheel(dx: i32, dy: i32) {
         if dy != 0 {
             send(&[mouse(MOUSEEVENTF_WHEEL, 0, 0, dy as u32)]);
         }

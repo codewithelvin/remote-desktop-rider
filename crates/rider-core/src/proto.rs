@@ -108,7 +108,7 @@ impl Permissions {
     }
 
     pub fn bits(self) -> u8 {
-        self.control as u8 | (self.clipboard as u8) << 1 | (self.files as u8) << 2
+        u8::from(self.control) | u8::from(self.clipboard) << 1 | u8::from(self.files) << 2
     }
 
     pub fn from_bits(b: u8) -> Self {
@@ -136,7 +136,10 @@ pub enum CursorShape {
 
 impl CursorShape {
     pub fn from_u8(v: u8) -> Self {
-        use CursorShape::*;
+        use CursorShape::{
+            Arrow, Crosshair, Hand, Help, Move, NotAllowed, Progress, ResizeNESW, ResizeNS, ResizeNWSE, ResizeWE, Text,
+            Wait,
+        };
         [
             Arrow, Text, Wait, Progress, Crosshair, Hand, ResizeWE, ResizeNS, ResizeNWSE, ResizeNESW, Move, NotAllowed,
             Help,

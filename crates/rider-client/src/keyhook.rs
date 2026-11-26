@@ -20,6 +20,9 @@ struct State {
     enabled: bool,
 }
 
+const VK_CONTROL_L: u32 = 0xA2;
+const VK_CONTROL_R: u32 = 0xA3;
+
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
 pub struct KeyHook {
@@ -47,19 +50,19 @@ impl KeyHook {
                 };
                 let _ = tx.send(Some(GetCurrentThreadId()));
                 let mut msg = MSG::default();
-                while GetMessageW(&mut msg, None, 0, 0).0 > 0 {}
+                while GetMessageW(&raw mut msg, None, 0, 0).0 > 0 {}
                 let _ = UnhookWindowsHookEx(hook);
             })
             .ok()?;
-        match rx.recv() {
-            Ok(Some(thread_id)) => Some(Self { thread_id, thread: Some(thread) }),
-            _ => {
-                let _ = thread.join();
-                None
-            }
+        if let Ok(Some(thread_id)) = rx.recv() {
+            Some(Self { thread_id, thread: Some(thread) })
+        } else {
+            let _ = thread.join();
+            None
         }
     }
 
+    #[expect(clippy::unused_self, reason = "the hook state is process-global; only the owner of the hook changes it")]
     pub fn retarget(&self, out: UnboundedSender<ClientMsg>) {
         if let Ok(mut s) = STATE.lock()
             && let Some(st) = s.as_mut()
@@ -80,6 +83,7 @@ impl KeyHook {
         }
     }
 
+    #[expect(clippy::unused_self, reason = "the hook state is process-global; only the owner of the hook changes it")]
     pub fn release(&self) {
         if let Ok(mut s) = STATE.lock()
             && let Some(st) = s.as_mut()
@@ -107,10 +111,10 @@ impl Drop for KeyHook {
 }
 
 fn system_key(vk: u32, alt: bool, ctrl: bool) -> bool {
-    vk == VK_LWIN.0 as u32
-        || vk == VK_RWIN.0 as u32
-        || (alt && (vk == VK_TAB.0 as u32 || vk == VK_ESCAPE.0 as u32 || vk == VK_F4.0 as u32))
-        || (ctrl && vk == VK_ESCAPE.0 as u32)
+    vk == u32::from(VK_LWIN.0)
+        || vk == u32::from(VK_RWIN.0)
+        || (alt && (vk == u32::from(VK_TAB.0) || vk == u32::from(VK_ESCAPE.0) || vk == u32::from(VK_F4.0)))
+        || (ctrl && vk == u32::from(VK_ESCAPE.0))
 }
 
 unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -119,8 +123,6 @@ unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
         let taken = (|| {
             let mut s = STATE.lock().ok()?;
             let st = s.as_mut()?;
-            const VK_CONTROL_L: u32 = 0xA2;
-            const VK_CONTROL_R: u32 = 0xA3;
             let up = k.flags.0 & LLKHF_UP.0 != 0;
             if k.vkCode == VK_CONTROL_L || k.vkCode == VK_CONTROL_R {
                 st.ctrl = !up;
@@ -130,7 +132,7 @@ unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
             }
             let alt = k.flags.0 & LLKHF_ALTDOWN.0 != 0;
             let key = (k.scanCode as u16 & 0xFF, k.flags.0 & LLKHF_EXTENDED.0 != 0);
-            if !system_key(k.vkCode, alt, st.ctrl) && !(up && st.down.contains(&key)) {
+            if !system_key(k.vkCode, alt, st.ctrl) && (!up || !st.down.contains(&key)) {
                 return None;
             }
             if up {
@@ -154,13 +156,13 @@ mod tests {
 
     #[test]
     fn which_keys_are_taken() {
-        assert!(system_key(VK_LWIN.0 as u32, false, false));
-        assert!(system_key(VK_RWIN.0 as u32, false, false));
-        assert!(system_key(VK_TAB.0 as u32, true, false));
-        assert!(system_key(VK_ESCAPE.0 as u32, false, true));
-        assert!(system_key(VK_F4.0 as u32, true, false));
-        assert!(!system_key(VK_F4.0 as u32, false, false));
-        assert!(!system_key(VK_TAB.0 as u32, false, false));
+        assert!(system_key(u32::from(VK_LWIN.0), false, false));
+        assert!(system_key(u32::from(VK_RWIN.0), false, false));
+        assert!(system_key(u32::from(VK_TAB.0), true, false));
+        assert!(system_key(u32::from(VK_ESCAPE.0), false, true));
+        assert!(system_key(u32::from(VK_F4.0), true, false));
+        assert!(!system_key(u32::from(VK_F4.0), false, false));
+        assert!(!system_key(u32::from(VK_TAB.0), false, false));
         assert!(!system_key(0x50, false, false));
     }
 }

@@ -63,15 +63,15 @@ impl Panel {
         })?;
 
         let panel = Self { lines, process: Some(process) };
-        panel.emit(serde_json::json!({ "event": "session", "device": device, "files": files }));
+        panel.emit(&serde_json::json!({ "event": "session", "device": device, "files": files }));
         Ok((panel, cmds))
     }
 
     pub fn ask(&self, company: &str, seconds: u64) {
-        self.emit(serde_json::json!({ "event": "request", "company": company, "seconds": seconds }));
+        self.emit(&serde_json::json!({ "event": "request", "company": company, "seconds": seconds }));
     }
 
-    pub fn emit(&self, event: serde_json::Value) {
+    pub fn emit(&self, event: &serde_json::Value) {
         let _ = self.lines.send(event.to_string());
     }
 }
@@ -104,7 +104,7 @@ fn parse(line: &str) -> Option<ChatCmd> {
 
 fn spawn(exe: &Path) -> Result<(OwnedHandle, std::fs::File, std::fs::File)> {
     let mut token = HANDLE::default();
-    if unsafe { WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &mut token) }.is_err() {
+    if unsafe { WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &raw mut token) }.is_err() {
         if crate::system::is_system_profile() {
             bail!("nobody is signed in");
         }
@@ -131,13 +131,13 @@ fn spawn_here(exe: &Path) -> Result<(OwnedHandle, std::fs::File, std::fs::File)>
 
 fn pipe(child_reads: bool) -> Result<(OwnedHandle, OwnedHandle)> {
     let sa = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         bInheritHandle: true.into(),
         ..Default::default()
     };
     let (mut r, mut w) = (HANDLE::default(), HANDLE::default());
     let (r, w) = unsafe {
-        CreatePipe(&mut r, &mut w, Some(&sa), 0)?;
+        CreatePipe(&raw mut r, &raw mut w, Some(&raw const sa), 0)?;
         (OwnedHandle::from_raw_handle(r.0), OwnedHandle::from_raw_handle(w.0))
     };
     let ours = if child_reads { &w } else { &r };
@@ -154,10 +154,10 @@ fn spawn_as(token: HANDLE, exe: &Path) -> Result<(OwnedHandle, std::fs::File, st
 
     unsafe {
         let mut size = 0usize;
-        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &raw mut size);
         let mut buf = vec![0u64; size.div_ceil(8)];
         let list = LPPROC_THREAD_ATTRIBUTE_LIST(buf.as_mut_ptr().cast());
-        InitializeProcThreadAttributeList(Some(list), 1, None, &mut size)?;
+        InitializeProcThreadAttributeList(Some(list), 1, None, &raw mut size)?;
         let mut env: *mut core::ffi::c_void = std::ptr::null_mut();
         let result = (|| {
             UpdateProcThreadAttribute(
@@ -165,14 +165,14 @@ fn spawn_as(token: HANDLE, exe: &Path) -> Result<(OwnedHandle, std::fs::File, st
                 0,
                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
                 Some(inherit.as_ptr().cast()),
-                std::mem::size_of_val(&inherit),
+                size_of_val(&inherit),
                 None,
                 None,
             )?;
-            CreateEnvironmentBlock(&mut env, Some(token), false)?;
+            CreateEnvironmentBlock(&raw mut env, Some(token), false)?;
             let si = STARTUPINFOEXW {
                 StartupInfo: STARTUPINFOW {
-                    cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
+                    cb: size_of::<STARTUPINFOEXW>() as u32,
                     lpDesktop: PWSTR(desktop.as_mut_ptr()),
                     dwFlags: STARTF_USESTDHANDLES,
                     hStdInput: inherit[0],
@@ -192,8 +192,8 @@ fn spawn_as(token: HANDLE, exe: &Path) -> Result<(OwnedHandle, std::fs::File, st
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
                 Some(env),
                 None,
-                &si.StartupInfo,
-                &mut pi,
+                &raw const si.StartupInfo,
+                &raw mut pi,
             )?;
             let _ = CloseHandle(pi.hThread);
             anyhow::Ok(OwnedHandle::from_raw_handle(pi.hProcess.0))

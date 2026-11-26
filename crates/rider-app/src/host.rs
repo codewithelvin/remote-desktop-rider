@@ -308,7 +308,7 @@ impl HostApp {
                     tr("Pairing was declined on this computer.", "Cütləşdirmə bu kompüterdə rədd edildi.").into()
                 } else {
                     tr("Pairing was declined on the other device.", "Cütləşdirmə digər cihazda rədd edildi.").into()
-                })
+                });
             }
             PairEvent::Exited { stderr } => {
                 p.stdin = None;
@@ -355,8 +355,8 @@ impl HostApp {
                 ui.add(egui::Label::new(text).wrap());
             });
             let idle = self.idle();
-            ui.horizontal(|ui| match info.service {
-                Some(running) => {
+            ui.horizontal(|ui| {
+                if let Some(running) = info.service {
                     if !running && widgets::primary(ui, idle, tr("Start", "Başlat")).clicked() {
                         self.run(
                             tr("Starting…", "Başladılır…"),
@@ -379,8 +379,7 @@ impl HostApp {
                             ),
                         );
                     }
-                }
-                None => {
+                } else {
                     if widgets::primary(
                         ui,
                         idle && info.pin_set,
@@ -588,98 +587,96 @@ impl HostApp {
                      istənilən şəbəkədən qoşulur. Serverin adını yazın; o, HTTPS ilə yoxlanılır.",
                 ),
             );
-            let mut typed = false;
-            egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
-                widgets::hint(ui, tr("Address", "Ünvan"));
-                typed |= ui
-                    .add(
-                        TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0),
-                    )
-                    .changed();
-                ui.end_row();
-                widgets::hint(ui, tr("Invite code", "Dəvət kodu"));
-                typed |= ui
-                    .add(
-                        TextEdit::singleline(&mut self.server_invite)
-                            .hint_text(tr(
-                                "only for a new computer, e.g. K7P-2QX",
-                                "yalnız yeni kompüter üçün, məs. K7P-2QX",
-                            ))
-                            .desired_width(360.0),
-                    )
-                    .changed();
-                ui.end_row();
-            });
-            egui::CollapsingHeader::new(tr("Advanced", "Ətraflı")).id_salt("server_advanced").show(ui, |ui| {
-                widgets::hint(
-                    ui,
-                    tr(
-                        "Fingerprint: only for a server without a name (an IP address). Otherwise it is checked over HTTPS by itself.",
-                        "Barmaq izi: yalnız adı olmayan server (IP ünvanı) üçün. Əks halda o, HTTPS ilə avtomatik yoxlanılır.",
-                    ),
-                );
-                typed |= ui
-                    .add(
-                        TextEdit::singleline(&mut self.server_fp)
-                            .hint_text(tr("64 hex characters", "64 onaltılıq simvol"))
-                            .desired_width(360.0)
-                            .font(egui::TextStyle::Monospace),
-                    )
-                    .changed();
-            });
-            if typed && self.busy.is_none() {
+            if self.server_fields(ui) && self.busy.is_none() {
                 self.result = None;
             }
-            ui.horizontal(|ui| {
-                let idle = self.busy.is_none();
-                let (addr, fp, invite) =
-                    (self.server_addr.trim(), self.server_fp.trim(), self.server_invite.trim().to_owned());
-                let saved_fp = info.server.as_ref().map(|s| s.fingerprint.as_str()).unwrap_or("");
-                let typed = !fp.is_empty() && fp != saved_fp;
-                let changed = info.server.as_ref().is_none_or(|s| s.addr != addr) || typed || !invite.is_empty();
-                if widgets::primary(ui, idle && changed && !addr.is_empty(), tr("Save", "Yadda saxla")).clicked() {
-                    let mut a = vec!["set-server".to_owned(), addr.to_owned()];
-                    if typed {
-                        a.push(fp.to_owned());
-                    }
-                    if !invite.is_empty() {
-                        a.extend(["--invite".to_owned(), invite]);
-                    }
-                    self.run(
-                        tr("Checking the server…", "Server yoxlanılır…"),
-                        a,
-                        None,
-                        tr("Server saved.", "Server yadda saxlanıldı."),
-                    );
-                }
-                if info.server.is_some() {
-                    if ui
-                        .add_enabled(idle, egui::Button::new(tr("Get an invite code", "Dəvət kodu al")))
-                        .on_hover_text(tr(
-                            "A one-time code that lets a new computer use this server (valid 10 minutes).                              To let a device control this computer, use Add a device instead.",
-                            "Yeni kompüterin bu serverdən istifadə etməsi üçün birdəfəlik kod (10 dəqiqə etibarlıdır).                              Cihazın bu kompüteri idarə etməsi üçün isə «Cihaz əlavə et» düyməsindən istifadə edin.",
-                        ))
-                        .clicked()
-                    {
-                        self.invite();
-                    }
-                    if ui
-                        .add_enabled(idle, egui::Button::new(tr("Don't use a server", "Serverdən istifadə etmə")))
-                        .clicked()
-                    {
-                        let _ = sync_client_server(None);
-                        self.invite_code = None;
-                        self.run(
-                            tr("Saving…", "Yadda saxlanılır…"),
-                            args(&["set-server", "--off"]),
-                            None,
-                            tr("Server removed.", "Server ayarı silindi."),
-                        );
-                    }
-                }
-            });
+            ui.horizontal(|ui| self.server_buttons(ui, info));
             self.invite_block(ui, info);
         });
+    }
+
+    fn server_fields(&mut self, ui: &mut Ui) -> bool {
+        let mut typed = false;
+        egui::Grid::new("server").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+            widgets::hint(ui, tr("Address", "Ünvan"));
+            typed |= ui
+                .add(TextEdit::singleline(&mut self.server_addr).hint_text("rider.example.com").desired_width(360.0))
+                .changed();
+            ui.end_row();
+            widgets::hint(ui, tr("Invite code", "Dəvət kodu"));
+            typed |= ui
+                .add(
+                    TextEdit::singleline(&mut self.server_invite)
+                        .hint_text(tr(
+                            "only for a new computer, e.g. K7P-2QX",
+                            "yalnız yeni kompüter üçün, məs. K7P-2QX",
+                        ))
+                        .desired_width(360.0),
+                )
+                .changed();
+            ui.end_row();
+        });
+        egui::CollapsingHeader::new(tr("Advanced", "Ətraflı")).id_salt("server_advanced").show(ui, |ui| {
+            widgets::hint(
+                ui,
+                tr(
+                    "Fingerprint: only for a server without a name (an IP address). Otherwise it is checked over HTTPS by itself.",
+                    "Barmaq izi: yalnız adı olmayan server (IP ünvanı) üçün. Əks halda o, HTTPS ilə avtomatik yoxlanılır.",
+                ),
+            );
+            typed |= ui
+                .add(
+                    TextEdit::singleline(&mut self.server_fp)
+                        .hint_text(tr("64 hex characters", "64 onaltılıq simvol"))
+                        .desired_width(360.0)
+                        .font(egui::TextStyle::Monospace),
+                )
+                .changed();
+        });
+        typed
+    }
+
+    fn server_buttons(&mut self, ui: &mut Ui, info: &Info) {
+        let idle = self.busy.is_none();
+        let (addr, fp, invite) = (self.server_addr.trim(), self.server_fp.trim(), self.server_invite.trim().to_owned());
+        let saved_fp = info.server.as_ref().map_or("", |s| s.fingerprint.as_str());
+        let typed = !fp.is_empty() && fp != saved_fp;
+        let changed = info.server.as_ref().is_none_or(|s| s.addr != addr) || typed || !invite.is_empty();
+        if widgets::primary(ui, idle && changed && !addr.is_empty(), tr("Save", "Yadda saxla")).clicked() {
+            let mut a = vec!["set-server".to_owned(), addr.to_owned()];
+            if typed {
+                a.push(fp.to_owned());
+            }
+            if !invite.is_empty() {
+                a.extend(["--invite".to_owned(), invite]);
+            }
+            self.run(
+                tr("Checking the server…", "Server yoxlanılır…"),
+                a,
+                None,
+                tr("Server saved.", "Server yadda saxlanıldı."),
+            );
+        }
+        if info.server.is_none() {
+            return;
+        }
+        let invite = ui.add_enabled(idle, egui::Button::new(tr("Get an invite code", "Dəvət kodu al"))).on_hover_text(tr(
+            "A one-time code that lets a new computer use this server (valid 10 minutes). To let a device control this computer, use Add a device instead.",
+            "Yeni kompüterin bu serverdən istifadə etməsi üçün birdəfəlik kod (10 dəqiqə etibarlıdır). Cihazın bu kompüteri idarə etməsi üçün isə «Cihaz əlavə et» düyməsindən istifadə edin.",
+        ));
+        if invite.clicked() {
+            self.invite();
+        }
+        if ui.add_enabled(idle, egui::Button::new(tr("Don't use a server", "Serverdən istifadə etmə"))).clicked() {
+            let _ = sync_client_server(None);
+            self.invite_code = None;
+            self.run(
+                tr("Saving…", "Yadda saxlanılır…"),
+                args(&["set-server", "--off"]),
+                None,
+                tr("Server removed.", "Server ayarı silindi."),
+            );
+        }
     }
 
     fn invite_block(&mut self, ui: &mut Ui, info: &Info) {
@@ -695,7 +692,7 @@ impl HostApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(widgets::title(tr("Invite code for a new computer", "Yeni kompüter üçün dəvət kodu"), 15.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button(tr("Hide", "Gizlət")).clicked() {
                     self.invite_code = None;
                 }
@@ -722,7 +719,7 @@ impl HostApp {
             ),
         );
         if std::mem::take(&mut self.invite_scroll) {
-            ui.scroll_to_cursor(Some(egui::Align::Max));
+            ui.scroll_to_cursor(Some(Align::Max));
         }
     }
 
@@ -754,107 +751,15 @@ impl HostApp {
             ui.label(widgets::title(tr("Add a device", "Cihaz əlavə et"), 19.0));
             ui.add_space(4.0);
             match &p.stage {
-                PairStage::Waiting => {
-                    ui.label(tr(
-                        "On the other device, click Add computer and enter:",
-                        "Digər cihazda «Kompüter əlavə et» düyməsini klikləyin və bu kodu daxil edin:",
-                    ));
-                    match &p.code {
-                        Some(code) => widgets::big_code(ui, code),
-                        None if info.server.is_some() && p.server_error.is_none() => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(tr("Getting a code from the server…", "Serverdən kod alınır…"));
-                            });
-                        }
-                        None if info.server.is_none() => widgets::error(
-                            ui,
-                            tr(
-                                "No server is set for this computer, so it gets no code and only devices on the \
-                                 same network can add it. Cancel and set the Server on this page to add devices \
-                                 from anywhere.",
-                                "Bu kompüter üçün server təyin edilməyib, ona görə kod alınmır və onu yalnız eyni \
-                                 şəbəkədəki cihazlar əlavə edə bilər. İstənilən yerdən cihaz əlavə etmək üçün \
-                                 ləğv edin və bu səhifədə serveri təyin edin.",
-                            ),
-                        ),
-                        None => {}
-                    }
-                    if let Some(e) = &p.server_error {
-                        widgets::error(ui, &format!("{}: {e}", tr("Server", "Server")));
-                    }
-                    if !p.addresses.is_empty() {
-                        let on_lan = if p.code.is_some() {
-                            tr("On the same network, an address also works:", "Eyni şəbəkədə ünvan da işləyir:")
-                        } else {
-                            tr(
-                                "On the same network, enter one of these addresses:",
-                                "Eyni şəbəkədə bu ünvanlardan birini daxil edin:",
-                            )
-                        };
-                        widgets::hint(ui, on_lan);
-                        let list: Vec<String> = p
-                            .addresses
-                            .iter()
-                            .map(|a| a.trim_end_matches(&format!(":{}", info.port)).to_owned())
-                            .collect();
-                        ui.label(RichText::new(list.join("    ")).monospace());
-                    }
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        widgets::hint(
-                            ui,
-                            tr(
-                                "Waiting up to 10 minutes. Remote sessions are paused meanwhile.",
-                                "10 dəqiqəyədək gözlənilir. Bu müddətdə uzaq seanslar dayandırılır.",
-                            ),
-                        );
-                    });
-                    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
-                }
-                PairStage::Asking { device, from, code } => {
-                    ui.add(
-                        egui::Label::new(trf!(
-                            "\"{device}\" ({from}) wants to be added. It shows this verification code:",
-                            "\"{device}\" ({from}) əlavə olunmaq istəyir. Orada bu təsdiq kodu göstərilir:"
-                        ))
-                        .wrap(),
-                    );
-                    widgets::big_code(ui, code);
-                    widgets::hint(
-                        ui,
-                        tr(
-                            "Allow only if the code is exactly the same and you trust that device to control this computer.",
-                            "Yalnız kod tam eynidirsə və bu cihazın kompüterinizi idarə etməsinə etibar edirsinizsə, icazə verin.",
-                        ),
-                    );
-                    widgets::dialog_buttons(ui, |ui| {
-                        if widgets::primary(ui, true, tr("Yes, allow", "Bəli, icazə ver")).clicked() {
-                            answer = Some(true);
-                        }
-                        if ui.button(tr("No", "Xeyr")).clicked() {
-                            answer = Some(false);
-                        }
-                    });
-                }
+                PairStage::Waiting => close = pair_waiting(ui, p, info),
+                PairStage::Asking { device, from, code } => answer = pair_asking(ui, device, from, code),
                 PairStage::Confirming => {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(tr("Waiting for the other device…", "Digər cihaz gözlənilir…"));
                     });
                 }
-                PairStage::Paired(device) => {
-                    widgets::success(ui, &trf!("\"{device}\" was added.", "\"{device}\" əlavə edildi."));
-                    widgets::hint(
-                        ui,
-                        tr("It can connect to this computer with the PIN.", "O, bu kompüterə PIN kodla qoşula bilər."),
-                    );
-                    widgets::dialog_buttons(ui, |ui| {
-                        close = widgets::primary(ui, true, tr("Done", "Hazırdır")).clicked()
-                            || ui.input(|i| i.key_pressed(Key::Enter));
-                    });
-                }
+                PairStage::Paired(device) => close = pair_done(ui, device),
                 PairStage::Failed(e) => {
                     widgets::error(ui, e);
                     widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Close", "Bağla")).clicked());
@@ -870,6 +775,109 @@ impl HostApp {
             self.pairing = None;
         }
     }
+}
+
+fn pair_code_or_reason(ui: &mut Ui, p: &Pairing, info: &Info) {
+    match &p.code {
+        Some(code) => widgets::big_code(ui, code),
+        None if info.server.is_some() && p.server_error.is_none() => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr("Getting a code from the server…", "Serverdən kod alınır…"));
+            });
+        }
+        None if info.server.is_none() => widgets::error(
+            ui,
+            tr(
+                "No server is set for this computer, so it gets no code and only devices on the \
+                 same network can add it. Cancel and set the Server on this page to add devices \
+                 from anywhere.",
+                "Bu kompüter üçün server təyin edilməyib, ona görə kod alınmır və onu yalnız eyni \
+                 şəbəkədəki cihazlar əlavə edə bilər. İstənilən yerdən cihaz əlavə etmək üçün \
+                 ləğv edin və bu səhifədə serveri təyin edin.",
+            ),
+        ),
+        None => {}
+    }
+    if let Some(e) = &p.server_error {
+        widgets::error(ui, &format!("{}: {e}", tr("Server", "Server")));
+    }
+}
+
+fn pair_addresses(ui: &mut Ui, p: &Pairing, port: u16) {
+    if p.addresses.is_empty() {
+        return;
+    }
+    let on_lan = if p.code.is_some() {
+        tr("On the same network, an address also works:", "Eyni şəbəkədə ünvan da işləyir:")
+    } else {
+        tr("On the same network, enter one of these addresses:", "Eyni şəbəkədə bu ünvanlardan birini daxil edin:")
+    };
+    widgets::hint(ui, on_lan);
+    let suffix = format!(":{port}");
+    let list: Vec<&str> = p.addresses.iter().map(|a| a.trim_end_matches(&suffix)).collect();
+    ui.label(RichText::new(list.join("    ")).monospace());
+}
+
+fn pair_waiting(ui: &mut Ui, p: &Pairing, info: &Info) -> bool {
+    ui.label(tr(
+        "On the other device, click Add computer and enter:",
+        "Digər cihazda «Kompüter əlavə et» düyməsini klikləyin və bu kodu daxil edin:",
+    ));
+    pair_code_or_reason(ui, p, info);
+    pair_addresses(ui, p, info.port);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spinner();
+        widgets::hint(
+            ui,
+            tr(
+                "Waiting up to 10 minutes. Remote sessions are paused meanwhile.",
+                "10 dəqiqəyədək gözlənilir. Bu müddətdə uzaq seanslar dayandırılır.",
+            ),
+        );
+    });
+    let mut close = false;
+    widgets::dialog_buttons(ui, |ui| close = ui.button(tr("Cancel", "Ləğv et")).clicked());
+    close
+}
+
+fn pair_asking(ui: &mut Ui, device: &str, from: &str, code: &str) -> Option<bool> {
+    ui.add(
+        egui::Label::new(trf!(
+            "\"{device}\" ({from}) wants to be added. It shows this verification code:",
+            "\"{device}\" ({from}) əlavə olunmaq istəyir. Orada bu təsdiq kodu göstərilir:"
+        ))
+        .wrap(),
+    );
+    widgets::big_code(ui, code);
+    widgets::hint(
+        ui,
+        tr(
+            "Allow only if the code is exactly the same and you trust that device to control this computer.",
+            "Yalnız kod tam eynidirsə və bu cihazın kompüterinizi idarə etməsinə etibar edirsinizsə, icazə verin.",
+        ),
+    );
+    let mut answer = None;
+    widgets::dialog_buttons(ui, |ui| {
+        if widgets::primary(ui, true, tr("Yes, allow", "Bəli, icazə ver")).clicked() {
+            answer = Some(true);
+        }
+        if ui.button(tr("No", "Xeyr")).clicked() {
+            answer = Some(false);
+        }
+    });
+    answer
+}
+
+fn pair_done(ui: &mut Ui, device: &str) -> bool {
+    widgets::success(ui, &trf!("\"{device}\" was added.", "\"{device}\" əlavə edildi."));
+    widgets::hint(ui, tr("It can connect to this computer with the PIN.", "O, bu kompüterə PIN kodla qoşula bilər."));
+    let mut close = false;
+    widgets::dialog_buttons(ui, |ui| {
+        close = widgets::primary(ui, true, tr("Done", "Hazırdır")).clicked() || ui.input(|i| i.key_pressed(Key::Enter));
+    });
+    close
 }
 
 fn args(a: &[&str]) -> Vec<String> {
@@ -894,7 +902,7 @@ fn parse_event(line: &str) -> Option<PairEvent> {
 
 impl eframe::App for HostApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
-        crate::sys::smooth_monitor_moves(frame);
+        sys::smooth_monitor_moves(frame);
         let ctx = ui.ctx().clone();
         self.handle_messages();
         egui::CentralPanel::default()

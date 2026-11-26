@@ -82,7 +82,7 @@ pub fn json() -> bool {
     JSON.get().is_some()
 }
 
-pub fn emit(event: serde_json::Value) {
+pub fn emit(event: &serde_json::Value) {
     if json() {
         use std::io::Write;
         let mut out = std::io::stdout().lock();

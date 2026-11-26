@@ -132,7 +132,7 @@ async fn serve_info(tcp: &TcpStream, info: &str) -> bool {
         match tcp.try_read(&mut buf) {
             Ok(0) => return true,
             Ok(n) => seen.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(_) => return true,
         }
     }
@@ -146,7 +146,7 @@ async fn serve_info(tcp: &TcpStream, info: &str) -> bool {
         tcp.writable().await.ok();
         match tcp.try_write(&reply.as_bytes()[written..]) {
             Ok(n) => written += n,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(_) => break,
         }
     }
@@ -195,9 +195,8 @@ async fn handle(tcp: TcpStream, peer: SocketAddr, limits: &Arc<Limits>, peers: &
                         let _ = udp.send_to(datagram, (Ipv4Addr::LOCALHOST, port)).await;
                     }
                 }
-                Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => break,
+                Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) | Err(_) => break,
                 Ok(Some(Ok(_))) => {}
-                Err(_) => break,
             },
             r = udp.recv_from(&mut buf) => {
                 let Ok((n, from)) = r else { continue };

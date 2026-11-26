@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DEFAULT_PORT: u16 = 47800;
 
 pub fn now_us() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
 }
 
 pub fn data_dir(role: &str) -> anyhow::Result<std::path::PathBuf> {

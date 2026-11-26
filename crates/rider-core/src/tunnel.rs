@@ -106,7 +106,7 @@ mod client {
                     WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                     PCWSTR::null(),
                     Some((&raw mut status).cast()),
-                    &mut len,
+                    &raw mut len,
                     std::ptr::null_mut(),
                 )?;
                 if status != 101 {
@@ -139,8 +139,8 @@ mod client {
                         self.socket.0,
                         buf[filled..].as_mut_ptr().cast(),
                         (buf.len() - filled) as u32,
-                        &mut n,
-                        &mut kind,
+                        &raw mut n,
+                        &raw mut kind,
                     )
                 };
                 if e != 0 {
@@ -149,7 +149,7 @@ mod client {
                 filled += n as usize;
                 match kind {
                     WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE => return Ok(None),
-                    WINHTTP_WEB_SOCKET_BUFFER_TYPE(1 | 3) if filled < buf.len() => continue,
+                    WINHTTP_WEB_SOCKET_BUFFER_TYPE(1 | 3) if filled < buf.len() => {}
                     _ => return Ok(Some(filled)),
                 }
             }
@@ -172,7 +172,7 @@ mod client {
 
     impl fmt::Debug for TunnelSocket {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("TunnelSocket").field("server_ip", &self.server_ip).finish()
+            f.debug_struct("TunnelSocket").field("server_ip", &self.server_ip).finish_non_exhaustive()
         }
     }
 
@@ -236,7 +236,7 @@ mod client {
     struct AlwaysWritable;
 
     impl UdpPoller for AlwaysWritable {
-        fn poll_writable(self: Pin<&mut Self>, _: &mut TaskContext) -> Poll<io::Result<()>> {
+        fn poll_writable(self: Pin<&mut Self>, _: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -246,14 +246,14 @@ mod client {
             Box::pin(AlwaysWritable)
         }
 
-        fn try_send(&self, t: &Transmit) -> io::Result<()> {
+        fn try_send(&self, t: &Transmit<'_>) -> io::Result<()> {
             self.send_to(t.contents, t.destination);
             Ok(())
         }
 
         fn poll_recv(
             &self,
-            cx: &mut TaskContext,
+            cx: &mut TaskContext<'_>,
             bufs: &mut [IoSliceMut<'_>],
             meta: &mut [RecvMeta],
         ) -> Poll<io::Result<usize>> {

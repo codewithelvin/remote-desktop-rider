@@ -10,7 +10,16 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     Shell_NotifyIconW,
 };
-use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    ASFW_ANY, AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
+    DestroyWindow, EnumThreadWindows, FindWindowW, GetCursorPos, GetSystemMetrics, GetWindowRect, GetWindowTextW,
+    HICON, IDI_APPLICATION, IMAGE_ICON, IsIconic, LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, SetMenuDefaultItem, SetTimer, SetWindowPos, ShowWindow,
+    SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_OVERLAPPED,
+};
 use windows::core::{BOOL, PCWSTR, w};
 
 const CLASS: PCWSTR = w!("RemoteDesktopRider.Tray");
@@ -57,7 +66,7 @@ pub fn announce_update(version: &str) {
         ),
     );
     unsafe {
-        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const nid);
     }
 }
 
@@ -90,7 +99,7 @@ impl Tray {
                 lpszClassName: CLASS,
                 ..Default::default()
             };
-            if RegisterClassW(&wc) == 0 {
+            if RegisterClassW(&raw const wc) == 0 {
                 bail!("cannot register the tray window class");
             }
             let hwnd = CreateWindowExW(
@@ -122,7 +131,7 @@ impl Tray {
         copy(&mut nid.szInfoTitle, title);
         copy(&mut nid.szInfo, text);
         unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const nid);
         }
     }
 }
@@ -157,8 +166,13 @@ pub fn hide_main_centered() {
     unsafe {
         let mut win = RECT::default();
         let mut work = RECT::default();
-        let _ = GetWindowRect(h, &mut win);
-        let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut work as *mut RECT as *mut _), Default::default());
+        let _ = GetWindowRect(h, &raw mut win);
+        let _ = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some((&raw mut work).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+        );
         let x = work.left + ((work.right - work.left) - (win.right - win.left)).max(0) / 2;
         let y = work.top + ((work.bottom - work.top) - (win.bottom - win.top)).max(0) / 2;
         let _ = SetWindowPos(h, None, x, y, 0, 0, SWP_HIDEWINDOW | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -188,7 +202,7 @@ fn main_window() -> Option<HWND> {
     }
     let mut found: Option<HWND> = None;
     unsafe {
-        let _ = EnumThreadWindows(GetCurrentThreadId(), Some(each), LPARAM(&mut found as *mut _ as isize));
+        let _ = EnumThreadWindows(GetCurrentThreadId(), Some(each), LPARAM(&raw mut found as isize));
     }
     found
 }
@@ -241,7 +255,7 @@ fn add_icon(hwnd: HWND) {
     };
     tooltip(&mut nid);
     unsafe {
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        let _ = Shell_NotifyIconW(NIM_ADD, &raw const nid);
     }
 }
 
@@ -275,7 +289,7 @@ fn menu(hwnd: HWND) {
         let _ = AppendMenuW(m, MF_STRING, ID_QUIT, PCWSTR(quit_text.as_ptr()));
         let _ = SetMenuDefaultItem(m, ID_OPEN as u32, 0);
         let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
+        let _ = GetCursorPos(&raw mut pt);
         let _ = SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None).0 as usize;
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
@@ -317,7 +331,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let mut nid = base(hwnd);
             tooltip(&mut nid);
             unsafe {
-                let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+                let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const nid);
             }
             LRESULT(0)
         }

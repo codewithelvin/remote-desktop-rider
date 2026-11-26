@@ -65,13 +65,13 @@ mod tests {
         let mut err = 0u64;
         for y in 0..h {
             for x in 0..w {
-                err += (p.data[y * p.stride + x] as i64 - nv12[y * w + x] as i64).unsigned_abs();
+                err += (i64::from(p.data[y * p.stride + x]) - i64::from(nv12[y * w + x])).unsigned_abs();
             }
         }
         let mean = err as f64 / (w * h) as f64;
         assert!(mean < 4.0, "mean luma error {mean}");
         let uv = &p.data[p.stride * p.alloc_height..];
-        assert!(uv[..w].iter().all(|&c| (c as i32 - 128).abs() < 8), "chroma stays neutral");
+        assert!(uv[..w].iter().all(|&c| (i32::from(c) - 128).abs() < 8), "chroma stays neutral");
     }
 
     #[test]

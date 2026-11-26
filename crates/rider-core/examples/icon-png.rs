@@ -1,7 +1,7 @@
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {
-        crc ^= b as u32;
+        crc ^= u32::from(b);
         for _ in 0..8 {
             crc = if crc & 1 != 0 { 0xEDB8_8320 ^ (crc >> 1) } else { crc >> 1 };
         }
@@ -12,16 +12,16 @@ fn crc32(data: &[u8]) -> u32 {
 fn adler32(data: &[u8]) -> u32 {
     let (mut a, mut b) = (1u32, 0u32);
     for &x in data {
-        a = (a + x as u32) % 65521;
+        a = (a + u32::from(x)) % 65521;
         b = (b + a) % 65521;
     }
     (b << 16) | a
 }
 
-fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());
     let start = out.len();
-    out.extend_from_slice(kind);
+    out.extend_from_slice(&kind);
     out.extend_from_slice(data);
     let crc = crc32(&out[start..]);
     out.extend_from_slice(&crc.to_be_bytes());
@@ -50,9 +50,9 @@ fn png(rgba: &[u8], size: u32) -> Vec<u8> {
     ihdr.extend_from_slice(&size.to_be_bytes());
     ihdr.extend_from_slice(&size.to_be_bytes());
     ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
-    chunk(&mut out, b"IHDR", &ihdr);
-    chunk(&mut out, b"IDAT", &z);
-    chunk(&mut out, b"IEND", &[]);
+    chunk(&mut out, *b"IHDR", &ihdr);
+    chunk(&mut out, *b"IDAT", &z);
+    chunk(&mut out, *b"IEND", &[]);
     out
 }
 

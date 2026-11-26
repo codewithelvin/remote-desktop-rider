@@ -380,7 +380,7 @@ impl PeerSocket {
     }
 
     pub fn port(&self) -> u16 {
-        self.endpoint.local_addr().map(|a| a.port()).unwrap_or(0)
+        self.endpoint.local_addr().map_or(0, |a| a.port())
     }
 
     pub async fn punch(&self, targets: &[SocketAddr], relay: Option<&Relay>) {
@@ -504,17 +504,18 @@ fn local_ipv4() -> Vec<std::net::Ipv4Addr> {
     let mut buf: Vec<u64> = Vec::new();
     for _ in 0..3 {
         buf.resize((size as usize).div_ceil(8), 0);
-        let err =
-            unsafe { GetAdaptersAddresses(AF_INET.0 as u32, flags, None, Some(buf.as_mut_ptr().cast()), &mut size) };
+        let err = unsafe {
+            GetAdaptersAddresses(u32::from(AF_INET.0), flags, None, Some(buf.as_mut_ptr().cast()), &raw mut size)
+        };
         match err {
             0 => break,
-            111 => continue,
+            111 => {}
             _ => return Vec::new(),
         }
     }
     let mut ips = Vec::new();
     unsafe {
-        let mut adapter = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        let mut adapter = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
         while !adapter.is_null() {
             let a = &*adapter;
             if a.OperStatus == IfOperStatusUp && a.IfType != IF_TYPE_SOFTWARE_LOOPBACK {
@@ -522,7 +523,7 @@ fn local_ipv4() -> Vec<std::net::Ipv4Addr> {
                 while !unicast.is_null() {
                     let sa = (*unicast).Address.lpSockaddr;
                     if !sa.is_null() && (*sa).sa_family == AF_INET {
-                        let sin = &*(sa as *const SOCKADDR_IN);
+                        let sin = std::ptr::read_unaligned(sa.cast::<SOCKADDR_IN>());
                         let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.S_un.S_addr));
                         if !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified() {
                             ips.push(ip);

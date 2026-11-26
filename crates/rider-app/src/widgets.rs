@@ -277,7 +277,7 @@ pub fn nav_item(ui: &mut Ui, icon: &str, text: &str, selected: bool) -> bool {
 }
 
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
-    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    let l = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
     Color32::from_rgba_premultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
 }
 
@@ -452,7 +452,7 @@ pub fn flag(ui: &mut Ui, lang: Lang, selected: bool) -> Response {
 }
 
 pub fn short_fp(hex: &str) -> String {
-    rider_core::identity::fp_from_hex(hex).map(|f| rider_core::identity::fp_short(&f)).unwrap_or_default()
+    rider_core::identity::fp_from_hex(hex).map_or_default(|f| rider_core::identity::fp_short(&f))
 }
 
 #[cfg(test)]

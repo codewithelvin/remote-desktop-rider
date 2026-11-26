@@ -118,7 +118,7 @@ fn main() -> Result<()> {
                 tunnel_listen,
                 members,
                 company,
-            ))?
+            ))?;
         }
     }
     Ok(())
@@ -150,7 +150,7 @@ fn company_command(dir: &std::path::Path, action: Option<CompanyCmd>) -> Result<
 
 fn print_setup(identity: &Identity, listen: Option<SocketAddr>) {
     let fp = fp_hex(&identity.fingerprint());
-    let port = listen.map(|l| l.port()).unwrap_or(rider_core::rendezvous::DEFAULT_SERVER_PORT);
+    let port = listen.map_or(rider_core::rendezvous::DEFAULT_SERVER_PORT, |l| l.port());
     println!("Server fingerprint: {fp}");
     println!("Configure every host and client with:");
     println!("  rider-host   set-server <this-server-address>:{port} {fp}");
@@ -212,7 +212,7 @@ async fn serve(
         "rendezvous on UDP {listen}, relay ports {}-{}{}",
         relay_ports.start(),
         relay_ports.end(),
-        public_ip.map(|ip| format!(", public IP {ip}")).unwrap_or_default()
+        public_ip.map_or_default(|ip| format!(", public IP {ip}"))
     );
     print_setup(&identity, Some(listen));
     if let Some(addr) = tunnel_listen {
@@ -256,7 +256,7 @@ async fn serve(
                     }
                 });
             }
-            _ = stop_signal() => break,
+            () = stop_signal() => break,
         }
     }
     endpoint.close(0u32.into(), b"server shutting down");
@@ -664,7 +664,7 @@ async fn connect(
         "{} -> host {}{}",
         fp_short(&client),
         fp_short(&host_fp),
-        relay.map(|r| format!(" (relay :{})", r.addr.port())).unwrap_or_default()
+        relay.map_or_default(|r| format!(" (relay :{})", r.addr.port()))
     );
     ServerMsg::Ready { host: host_fp, candidates: host_candidates, relay }
 }
@@ -854,7 +854,7 @@ mod tests {
             let fresh = company::Company::new_setup_code(&dir).unwrap();
             admin_claim(&admin, &server_ref, &fresh).await.unwrap();
 
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             let d = directory(&admin, &server_ref, Some(DirEdit::AddFloor { name: "F".into() })).await.unwrap();
             eprintln!("{} computers listed in {:?}", d.computers.len(), started.elapsed());
             assert_eq!(d.computers.len(), company::MAX_COMPUTERS);
@@ -862,7 +862,7 @@ mod tests {
             let d = directory(&admin, &server_ref, Some(DirEdit::AddRoom { floor, name: "R".into() })).await.unwrap();
             let room = d.floors[0].rooms[0].id;
             let all: Vec<_> = d.computers.iter().map(|c| c.fingerprint).collect();
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             let d = directory(&admin, &server_ref, Some(DirEdit::Place { computers: all, room: Some(room) }))
                 .await
                 .unwrap();
@@ -870,7 +870,7 @@ mod tests {
             assert_eq!(d.room_counts(Some(room)), (0, company::MAX_COMPUTERS));
         });
         drop(rt);
-        let kept = company::Company::load(&dir).unwrap().directory(&Default::default()).unwrap();
+        let kept = company::Company::load(&dir).unwrap().directory(&HashSet::default()).unwrap();
         assert!(kept.computers.iter().all(|c| c.room.is_some()), "kept on disk");
         let _ = std::fs::remove_dir_all(&dir);
     }

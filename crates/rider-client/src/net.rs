@@ -1,12 +1,15 @@
 use crate::video::{self, IncomingFrame};
 use rider_core::i18n::tr;
 use rider_core::pixels::Nv12Frame;
-use rider_core::proto::*;
+use rider_core::proto::{
+    ClientMsg, CursorShape, HostMsg, MAX_CHAT, MAX_FRAME_BYTES, MonitorInfo, MouseMove, Permissions, encode,
+    read_known, split_frame, write_msg,
+};
 use rider_core::session_files::SessionFiles;
 use rider_core::transfer::{self, Cancel};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -61,6 +64,19 @@ pub struct Shared {
 impl Shared {
     pub fn silent_for(&self) -> Duration {
         Duration::from_micros(rider_core::now_us().saturating_sub(self.last_rx_us.load(Ordering::Relaxed)))
+    }
+
+    fn pong(&self, client_us: u64, host_us: u64) {
+        let rtt = rider_core::now_us().saturating_sub(client_us);
+        self.rtt_us.store(rtt, Ordering::Relaxed);
+        let best = self.best_rtt_us.load(Ordering::Relaxed);
+        if best == 0 || rtt <= best + 2_000 {
+            if best == 0 || rtt < best {
+                self.best_rtt_us.store(rtt, Ordering::Relaxed);
+            }
+            let offset = host_us as i64 - (client_us + rtt / 2) as i64;
+            self.clock_offset_us.store(offset, Ordering::Relaxed);
+        }
     }
 
     fn heard(&self) {
@@ -237,150 +253,145 @@ pub fn start(
     rt: &tokio::runtime::Handle,
     s: Session,
     proxy: EventLoopProxy<UiEvent>,
-    shared: Arc<Shared>,
+    shared: &Arc<Shared>,
 ) -> NetHandle {
     let Session { conn, send, recv, .. } = s;
     let id = conn.stable_id();
     shared.best_rtt_us.store(0, Ordering::Relaxed);
     shared.heard();
-    let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<ClientMsg>();
+    let (ctrl_tx, ctrl_rx) = mpsc::unbounded_channel::<ClientMsg>();
+    rt.spawn(write_control(send, ctrl_rx));
 
-    rt.spawn(async move {
-        let mut send = send;
-        while let Some(m) = ctrl_rx.recv().await {
-            if write_msg(&mut send, &m).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (clip_local_tx, mut clip_local_rx) = mpsc::unbounded_channel::<String>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (clip_local_tx, clip_local_rx) = mpsc::unbounded_channel::<String>();
     let (clip_remote_tx, clip_remote_rx) = std::sync::mpsc::channel::<String>();
     rider_core::clipboard::spawn(clip_local_tx, clip_remote_rx, stop.clone());
-    {
-        let ctrl = ctrl_tx.clone();
-        let shared = shared.clone();
-        rt.spawn(async move {
-            while let Some(text) = clip_local_rx.recv().await {
-                if shared.permissions().clipboard {
-                    let _ = ctrl.send(ClientMsg::Clipboard { text });
-                }
-            }
-        });
-    }
+    rt.spawn(forward_clipboard(clip_local_rx, ctrl_tx.clone(), shared.clone()));
 
-    {
-        let proxy = proxy.clone();
-        let shared = shared.clone();
-        let conn = conn.clone();
-        let stop = stop.clone();
-        rt.spawn(async move {
-            let mut recv = recv;
-            let (reason, lost) = loop {
-                let msg = read_known::<HostMsg>(&mut recv).await;
-                shared.heard();
-                match msg {
-                    Ok(Some(HostMsg::Monitors { list, active })) => {
-                        let _ = proxy.send_event(UiEvent::Monitors(list, active));
-                    }
-                    Ok(Some(HostMsg::Clipboard { text })) => {
-                        let _ = clip_remote_tx.send(text);
-                    }
-                    Ok(Some(HostMsg::Permissions(p))) => {
-                        shared.set_permissions(p);
-                        let _ = proxy.send_event(UiEvent::Permissions(p));
-                    }
-                    Ok(Some(HostMsg::Chat { text })) => {
-                        let text: String = text.chars().take(MAX_CHAT).collect();
-                        let _ = proxy.send_event(UiEvent::Chat(text));
-                    }
-                    Ok(Some(HostMsg::ChatReady(ready))) => {
-                        let _ = proxy.send_event(UiEvent::ChatReady(ready));
-                    }
-                    Ok(Some(HostMsg::Pong { client_us, host_us })) => {
-                        let now = rider_core::now_us();
-                        let rtt = now.saturating_sub(client_us);
-                        shared.rtt_us.store(rtt, Ordering::Relaxed);
-                        let best = shared.best_rtt_us.load(Ordering::Relaxed);
-                        if best == 0 || rtt <= best + 2_000 {
-                            if best == 0 || rtt < best {
-                                shared.best_rtt_us.store(rtt, Ordering::Relaxed);
-                            }
-                            let offset = host_us as i64 - (client_us + rtt / 2) as i64;
-                            shared.clock_offset_us.store(offset, Ordering::Relaxed);
-                        }
-                    }
-                    Ok(Some(HostMsg::Stats { fps, bitrate_kbps, encode_ms, encoder })) => {
-                        *shared.host_stats.lock().unwrap() = format!(
-                            "host {fps:.0} fps, {:.1} Mbps, enc {encode_ms:.1} ms ({encoder})",
-                            bitrate_kbps as f32 / 1000.0
-                        );
-                    }
-                    Ok(Some(HostMsg::Cursor { shape })) => {
-                        let _ = proxy.send_event(UiEvent::Cursor(CursorShape::from_u8(shape)));
-                    }
-                    Ok(Some(HostMsg::Bye { reason })) => break (reason, false),
-                    Ok(Some(_)) => {}
-                    Ok(None) => break ("host closed the session".into(), false),
-                    Err(e) => {
-                        use quinn::ConnectionError as E;
-                        let lost =
-                            matches!(conn.close_reason(), None | Some(E::TimedOut | E::Reset | E::TransportError(_)));
-                        break (format!("connection lost: {e}"), lost);
-                    }
-                }
-            };
-            stop.store(true, Ordering::Relaxed);
-            conn.close(0u32.into(), b"bye");
-            let _ = proxy.send_event(UiEvent::Closed { conn: id, reason, lost });
-        });
-    }
-
-    {
-        let ctrl = ctrl_tx.clone();
-        rt.spawn(async move {
-            let mut t = tokio::time::interval(Duration::from_millis(1000));
-            loop {
-                t.tick().await;
-                if ctrl.send(ClientMsg::Ping { client_us: rider_core::now_us() }).is_err() {
-                    break;
-                }
-            }
-        });
-    }
+    let reader =
+        HostReader { conn: conn.clone(), proxy: proxy.clone(), shared: shared.clone(), clipboard: clip_remote_tx };
+    rt.spawn(reader.run(recv, id, stop));
+    rt.spawn(ping(ctrl_tx.clone()));
 
     let (frame_tx, frame_rx) = std::sync::mpsc::channel::<IncomingFrame>();
     video::spawn_decoder(id, frame_rx, ctrl_tx.clone(), shared.clone(), proxy.clone());
-    {
-        let conn = conn.clone();
-        let shared = shared.clone();
-        let reading = Arc::new(tokio::sync::Semaphore::new(MAX_FRAMES_READING));
-        rt.spawn(async move {
-            while let Ok(mut s) = conn.accept_uni().await {
-                shared.heard();
-                let tx = frame_tx.clone();
-                let Ok(permit) = reading.clone().acquire_owned().await else { break };
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Ok(buf) = s.read_to_end(MAX_FRAME_BYTES).await
-                        && let Ok((header, payload)) = split_frame(&buf)
-                    {
-                        let _ = tx.send(IncomingFrame { header, data: payload.to_vec() });
-                    }
-                });
-            }
-        });
-    }
-
+    rt.spawn(read_frames(conn.clone(), shared.clone(), frame_tx));
     if rider_core::tls::speaks_v5(&conn) {
-        let (conn, proxy, shared) = (conn.clone(), proxy.clone(), shared.clone());
-        rt.spawn(async move {
-            while let Ok((s, r)) = conn.accept_bi().await {
-                tokio::spawn(receive_file(s, r, proxy.clone(), shared.clone()));
-            }
-        });
+        rt.spawn(accept_files(conn.clone(), proxy.clone(), shared.clone()));
     }
 
     NetHandle { conn, ctrl: ctrl_tx, rt: rt.clone(), proxy, mouse_seq: Arc::new(AtomicU32::new(0)) }
+}
+
+async fn write_control(mut send: quinn::SendStream, mut ctrl: mpsc::UnboundedReceiver<ClientMsg>) {
+    while let Some(m) = ctrl.recv().await {
+        if write_msg(&mut send, &m).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn forward_clipboard(
+    mut local: mpsc::UnboundedReceiver<String>,
+    ctrl: UnboundedSender<ClientMsg>,
+    shared: Arc<Shared>,
+) {
+    while let Some(text) = local.recv().await {
+        if shared.permissions().clipboard {
+            let _ = ctrl.send(ClientMsg::Clipboard { text });
+        }
+    }
+}
+
+async fn ping(ctrl: UnboundedSender<ClientMsg>) {
+    let mut t = tokio::time::interval(Duration::from_millis(1000));
+    loop {
+        t.tick().await;
+        if ctrl.send(ClientMsg::Ping { client_us: rider_core::now_us() }).is_err() {
+            break;
+        }
+    }
+}
+
+async fn read_frames(conn: quinn::Connection, shared: Arc<Shared>, frames: std::sync::mpsc::Sender<IncomingFrame>) {
+    let reading = Arc::new(tokio::sync::Semaphore::new(MAX_FRAMES_READING));
+    while let Ok(mut s) = conn.accept_uni().await {
+        shared.heard();
+        let tx = frames.clone();
+        let Ok(permit) = reading.clone().acquire_owned().await else { break };
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Ok(buf) = s.read_to_end(MAX_FRAME_BYTES).await
+                && let Ok((header, payload)) = split_frame(&buf)
+            {
+                let _ = tx.send(IncomingFrame { header, data: payload.to_vec() });
+            }
+        });
+    }
+}
+
+async fn accept_files(conn: quinn::Connection, proxy: EventLoopProxy<UiEvent>, shared: Arc<Shared>) {
+    while let Ok((s, r)) = conn.accept_bi().await {
+        tokio::spawn(receive_file(s, r, proxy.clone(), shared.clone()));
+    }
+}
+
+struct HostReader {
+    conn: quinn::Connection,
+    proxy: EventLoopProxy<UiEvent>,
+    shared: Arc<Shared>,
+    clipboard: std::sync::mpsc::Sender<String>,
+}
+
+impl HostReader {
+    async fn run(self, mut recv: quinn::RecvStream, id: usize, stop: Arc<AtomicBool>) {
+        let (reason, lost) = loop {
+            let msg = read_known::<HostMsg>(&mut recv).await;
+            self.shared.heard();
+            match msg {
+                Ok(Some(HostMsg::Bye { reason })) => break (reason, false),
+                Ok(Some(m)) => self.handle(m),
+                Ok(None) => break ("host closed the session".into(), false),
+                Err(e) => {
+                    use quinn::ConnectionError as E;
+                    let lost =
+                        matches!(self.conn.close_reason(), None | Some(E::TimedOut | E::Reset | E::TransportError(_)));
+                    break (format!("connection lost: {e}"), lost);
+                }
+            }
+        };
+        stop.store(true, Ordering::Relaxed);
+        self.conn.close(0u32.into(), b"bye");
+        let _ = self.proxy.send_event(UiEvent::Closed { conn: id, reason, lost });
+    }
+
+    fn handle(&self, msg: HostMsg) {
+        let event = match msg {
+            HostMsg::Monitors { list, active } => UiEvent::Monitors(list, active),
+            HostMsg::Clipboard { text } => {
+                let _ = self.clipboard.send(text);
+                return;
+            }
+            HostMsg::Permissions(p) => {
+                self.shared.set_permissions(p);
+                UiEvent::Permissions(p)
+            }
+            HostMsg::Chat { text } => UiEvent::Chat(text.chars().take(MAX_CHAT).collect()),
+            HostMsg::ChatReady(ready) => UiEvent::ChatReady(ready),
+            HostMsg::Pong { client_us, host_us } => {
+                self.shared.pong(client_us, host_us);
+                return;
+            }
+            HostMsg::Stats { fps, bitrate_kbps, encode_ms, encoder } => {
+                *self.shared.host_stats.lock().unwrap() = format!(
+                    "host {fps:.0} fps, {:.1} Mbps, enc {encode_ms:.1} ms ({encoder})",
+                    bitrate_kbps as f32 / 1000.0
+                );
+                return;
+            }
+            HostMsg::Cursor { shape } => UiEvent::Cursor(CursorShape::from_u8(shape)),
+            _ => return,
+        };
+        let _ = self.proxy.send_event(event);
+    }
 }

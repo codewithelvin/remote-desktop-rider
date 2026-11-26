@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use rider_core::identity::{Fingerprint, fp_from_hex, fp_hex};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -117,7 +118,10 @@ impl Members {
     }
 
     fn save_invites(&self, invites: &HashMap<String, u64>) -> Result<()> {
-        let text: String = invites.iter().map(|(c, t)| format!("{c} {t}\n")).collect();
+        let text = invites.iter().fold(String::new(), |mut s, (c, t)| {
+            let _ = writeln!(s, "{c} {t}");
+            s
+        });
         write_atomic(&self.invites_path(), &text)
     }
 

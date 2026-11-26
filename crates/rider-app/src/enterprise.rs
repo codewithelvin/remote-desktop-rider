@@ -180,10 +180,10 @@ impl Enterprise {
         let gp = |place| Whereabouts { place, via: "PANGP Virtual Ethernet Adapter".into() };
         self.places = [([1; 32], gp(Place::Remote)), ([6; 32], gp(Place::Remote)), ([2; 32], gp(Place::Office))].into();
         self.selected = Selected::Room(3);
-        self.fetched = Some(Instant::now() + Duration::from_secs(86_400));
+        self.fetched = Some(Instant::now() + Duration::from_hours(24));
     }
 
-    fn request(&mut self, env: &Env, edit: Option<DirEdit>) {
+    fn request(&mut self, env: &Env<'_>, edit: Option<DirEdit>) {
         let (Some(id), Some(server)) = (env.identity.cloned(), env.server.cloned()) else { return };
         self.busy = true;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
@@ -207,7 +207,7 @@ impl Enterprise {
         dir.computers.iter().filter(|c| self.place(c).is_some_and(|w| w.place == Place::Remote)).count()
     }
 
-    fn claim(&mut self, env: &Env) {
+    fn claim(&mut self, env: &Env<'_>) {
         let (Some(id), Some(server)) = (env.identity.cloned(), env.server.cloned()) else { return };
         self.busy = true;
         self.error = None;
@@ -219,7 +219,7 @@ impl Enterprise {
         });
     }
 
-    pub fn show(&mut self, ui: &mut Ui, env: &Env) -> Option<Outcome> {
+    pub fn show(&mut self, ui: &mut Ui, env: &Env<'_>) -> Option<Outcome> {
         let mut outcome = None;
         while let Ok(reply) = self.rx.try_recv() {
             if !matches!(reply, Reply::Session(..)) {
@@ -279,7 +279,7 @@ impl Enterprise {
         outcome
     }
 
-    fn sign_in(&mut self, ui: &mut Ui, env: &Env) -> Option<Outcome> {
+    fn sign_in(&mut self, ui: &mut Ui, env: &Env<'_>) -> Option<Outcome> {
         let mut outcome = None;
         widgets::page_header(ui, tr("Enterprise", "Müəssisə"), "", |_| {});
         widgets::card(ui, |ui| {
@@ -341,7 +341,12 @@ impl Enterprise {
         outcome
     }
 
-    fn console(&mut self, ui: &mut Ui, env: &Env, admin: &rider_client::config::EnterpriseAdmin) -> Option<Outcome> {
+    fn console(
+        &mut self,
+        ui: &mut Ui,
+        env: &Env<'_>,
+        admin: &rider_client::config::EnterpriseAdmin,
+    ) -> Option<Outcome> {
         let mut outcome = None;
         let mut edits: Vec<DirEdit> = Vec::new();
         let (online, total) =
@@ -530,7 +535,7 @@ impl Enterprise {
 
     fn tree(&mut self, ui: &mut Ui, dir: &Directory, edits: &mut Vec<DirEdit>) {
         ui.spacing_mut().item_spacing.y = 2.0;
-        let mut per_room: std::collections::HashMap<Option<u32>, (usize, usize)> = Default::default();
+        let mut per_room: std::collections::HashMap<Option<u32>, (usize, usize)> = std::collections::HashMap::default();
         for c in &dir.computers {
             let e = per_room.entry(c.room).or_default();
             e.0 += usize::from(c.online);
@@ -589,27 +594,32 @@ impl Enterprise {
         }
     }
 
-    fn tiles(&mut self, ui: &mut Ui, dir: &Directory, edits: &mut Vec<DirEdit>) {
-        let needle = self.search.trim().to_lowercase();
-        let (title, list): (String, Vec<&Computer>) = if !needle.is_empty() {
+    fn shown<'d>(&self, dir: &'d Directory, needle: &str) -> (String, Vec<&'d Computer>) {
+        if !needle.is_empty() {
             let hits = dir
                 .computers
                 .iter()
                 .filter(|c| {
-                    c.info.name.to_lowercase().contains(&needle)
-                        || c.info.user.as_deref().is_some_and(|u| u.to_lowercase().contains(&needle))
+                    c.info.name.to_lowercase().contains(needle)
+                        || c.info.user.as_deref().is_some_and(|u| u.to_lowercase().contains(needle))
                 })
                 .collect();
-            (trf!("Search: {}", "Axtarış: {}", self.search.trim()), hits)
-        } else {
-            match self.selected {
-                Selected::Unassigned => (tr("Unassigned", "Təyin edilməyib").into(), dir.in_room(None).collect()),
-                Selected::Room(id) => {
-                    let name = dir.room(id).map_or_else(String::new, |(f, r)| format!("{} › {}", f.name, r.name));
-                    (name, dir.in_room(Some(id)).collect())
-                }
+            return (trf!("Search: {}", "Axtarış: {}", self.search.trim()), hits);
+        }
+        match self.selected {
+            Selected::Unassigned => (tr("Unassigned", "Təyin edilməyib").into(), dir.in_room(None).collect()),
+            Selected::Room(id) => {
+                let name = dir.room(id).map_or_else(String::new, |(f, r)| format!("{} › {}", f.name, r.name));
+                (name, dir.in_room(Some(id)).collect())
             }
-        };
+        }
+    }
+
+    fn picked_in(&self, list: &[&Computer]) -> Vec<Fingerprint> {
+        list.iter().map(|c| c.fingerprint).filter(|fp| self.picked.contains(fp)).collect()
+    }
+
+    fn selection_keys(&mut self, ui: &Ui, list: &[&Computer]) {
         if !self.picked.is_empty() {
             let shown: std::collections::HashSet<_> = list.iter().map(|c| c.fingerprint).collect();
             self.picked.retain(|fp| shown.contains(fp));
@@ -621,67 +631,83 @@ impl Enterprise {
         if ui.input(|i| i.key_pressed(Key::Escape)) {
             self.picked.clear();
         }
+    }
+
+    fn tiles_header(
+        &mut self,
+        ui: &mut Ui,
+        title: &str,
+        list: &[&Computer],
+        dir: &Directory,
+        edits: &mut Vec<DirEdit>,
+    ) {
         ui.horizontal(|ui| {
-            ui.label(widgets::title(&title, 15.0));
+            ui.label(widgets::title(title, 15.0));
             if !list.is_empty() {
                 let on = list.iter().filter(|c| c.online).count();
-                widgets::pill(
-                    ui,
-                    &trf!("{} of {} online", "{} / {} onlayn", on, list.len()),
-                    if on > 0 { GREEN } else { GREY },
-                );
+                let text = trf!("{} of {} online", "{} / {} onlayn", on, list.len());
+                widgets::pill(ui, &text, if on > 0 { GREEN } else { GREY });
             }
-            if !self.picked.is_empty() {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button(tr("Clear", "Təmizlə")).clicked() {
+            if self.picked.is_empty() {
+                return;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button(tr("Clear", "Təmizlə")).clicked() {
+                    self.picked.clear();
+                }
+                let picked = self.picked_in(list);
+                ui.menu_button(format!("{} ▾", tr("Move to", "Köçür")), |ui| {
+                    if let Some(MoveTo(room)) = move_menu(ui, dir) {
+                        edits.push(DirEdit::Place { computers: picked.clone(), room });
                         self.picked.clear();
                     }
-                    let picked: Vec<Fingerprint> =
-                        list.iter().map(|c| c.fingerprint).filter(|fp| self.picked.contains(fp)).collect();
-                    ui.menu_button(format!("{} ▾", tr("Move to", "Köçür")), |ui| {
-                        if let Some(room) = move_menu(ui, dir) {
-                            edits.push(DirEdit::Place { computers: picked.clone(), room });
-                            self.picked.clear();
-                        }
-                    });
-                    ui.label(RichText::new(trf!("{} selected", "{} seçilib", self.picked.len())).color(ACCENT));
                 });
-            }
+                ui.label(RichText::new(trf!("{} selected", "{} seçilib", self.picked.len())).color(ACCENT));
+            });
         });
+    }
+
+    fn empty_tiles(&mut self, ui: &mut Ui, searching: bool, edits: &mut Vec<DirEdit>) {
+        let room = match self.selected {
+            Selected::Room(id) if !searching => Some(Some(id)),
+            Selected::Unassigned if !searching => Some(None),
+            _ => None,
+        };
+        let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 110.0), egui::Sense::hover());
+        let hot = room.is_some() && r.dnd_hover_payload::<Dragged>().is_some();
+        let stroke_color = if hot { ACCENT } else { ui.visuals().widgets.noninteractive.bg_stroke.color };
+        dashed_rect(ui.painter(), rect, stroke_color);
+        if let (Some(room), Some(d)) = (room, r.dnd_release_payload::<Dragged>()) {
+            edits.push(DirEdit::Place { computers: d.0.clone(), room });
+            self.picked.clear();
+        }
+        let mut text_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink(16.0))
+                .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+        );
+        let text = match (self.selected, searching) {
+            (_, true) => tr("No computer matches.", "Uyğun kompüter yoxdur."),
+            (Selected::Unassigned, false) => tr(
+                "Computers installed with the company installer show up here. Drag them onto a room.",
+                "Şirkət quraşdırıcısı ilə quraşdırılan kompüterlər burada görünür. Onları otağa sürükləyin.",
+            ),
+            (Selected::Room(_), false) => tr(
+                "No computers here yet. Drag them here from Unassigned.",
+                "Burada hələ kompüter yoxdur. Onları «Təyin edilməyib» bölməsindən bura sürükləyin.",
+            ),
+        };
+        widgets::hint(&mut text_ui, text);
+    }
+
+    fn tiles(&mut self, ui: &mut Ui, dir: &Directory, edits: &mut Vec<DirEdit>) {
+        let needle = self.search.trim().to_lowercase();
+        let (title, list) = self.shown(dir, &needle);
+        self.selection_keys(ui, &list);
+        self.tiles_header(ui, &title, &list, dir, edits);
         ui.add_space(8.0);
         if list.is_empty() {
-            let room = match self.selected {
-                Selected::Room(id) if needle.is_empty() => Some(Some(id)),
-                Selected::Unassigned if needle.is_empty() => Some(None),
-                _ => None,
-            };
-            let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 110.0), egui::Sense::hover());
-            let hot = room.is_some() && r.dnd_hover_payload::<Dragged>().is_some();
-            let stroke_color = if hot { ACCENT } else { ui.visuals().widgets.noninteractive.bg_stroke.color };
-            dashed_rect(ui.painter(), rect, stroke_color);
-            if let (Some(room), Some(d)) = (room, r.dnd_release_payload::<Dragged>()) {
-                edits.push(DirEdit::Place { computers: d.0.clone(), room });
-                self.picked.clear();
-            }
-            let mut text_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(rect.shrink(16.0))
-                    .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
-            );
-            widgets::hint(
-                &mut text_ui,
-                match (self.selected, needle.is_empty()) {
-                    (_, false) => tr("No computer matches.", "Uyğun kompüter yoxdur."),
-                    (Selected::Unassigned, true) => tr(
-                        "Computers installed with the company installer show up here. Drag them onto a room.",
-                        "Şirkət quraşdırıcısı ilə quraşdırılan kompüterlər burada görünür. Onları otağa sürükləyin.",
-                    ),
-                    (Selected::Room(_), true) => tr(
-                        "No computers here yet. Drag them here from Unassigned.",
-                        "Burada hələ kompüter yoxdur. Onları «Təyin edilməyib» bölməsindən bura sürükləyin.",
-                    ),
-                },
-            );
+            self.empty_tiles(ui, !needle.is_empty(), edits);
             return;
         }
         let avail = ui.available_width() - 14.0;
@@ -703,6 +729,19 @@ impl Enterprise {
         });
     }
 
+    fn tile_status(&self, ui: &Ui, c: &Computer) -> (String, egui::Color32) {
+        match self.sessions.get(&c.fingerprint) {
+            Some(Session::Waiting) => (tr("Waiting for an answer…", "Cavab gözlənilir…").into(), AMBER),
+            Some(Session::Connected) => (tr("In your session", "Sizin seansınızdadır").into(), GREEN),
+            Some(Session::Failed(why)) => (why.clone(), ui.visuals().error_fg_color),
+            _ => status(c),
+        }
+    }
+
+    fn is_busy(&self, c: &Computer) -> bool {
+        matches!(self.sessions.get(&c.fingerprint), Some(Session::Waiting | Session::Connected))
+    }
+
     fn tile(
         &mut self,
         ui: &mut Ui,
@@ -713,14 +752,9 @@ impl Enterprise {
         edits: &mut Vec<DirEdit>,
     ) {
         let c = list[i];
-        let (status, color) = match self.sessions.get(&c.fingerprint) {
-            Some(Session::Waiting) => (tr("Waiting for an answer…", "Cavab gözlənilir…").into(), AMBER),
-            Some(Session::Connected) => (tr("In your session", "Sizin seansınızdadır").into(), GREEN),
-            Some(Session::Failed(why)) => (why.clone(), ui.visuals().error_fg_color),
-            _ => status(c),
-        };
+        let (status, color) = self.tile_status(ui, c);
         let (rect, r) = ui.allocate_exact_size(vec2(width, TILE_H), egui::Sense::click_and_drag());
-        let busy = matches!(self.sessions.get(&c.fingerprint), Some(Session::Waiting | Session::Connected));
+        let busy = self.is_busy(c);
         let picked = self.picked.contains(&c.fingerprint);
         let dark = ui.visuals().dark_mode;
         let stroke = if picked {
@@ -734,118 +768,89 @@ impl Enterprise {
         ui.painter().rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
         let place = self.place(c);
         tile_body(ui, rect, c, &status, color, place);
-        let place_note = place.and_then(place_note);
-        let r = match place_note {
+        let r = match place.and_then(place_note) {
             Some(note) if !r.dragged() => r.on_hover_text(note),
             _ => r,
         };
-        let carried = if picked {
-            list.iter().map(|c| c.fingerprint).filter(|fp| self.picked.contains(fp)).collect()
-        } else {
-            vec![c.fingerprint]
-        };
-        let many = carried.len();
-        r.dnd_set_drag_payload(Dragged(carried));
-        if r.dragged()
-            && many > 1
-            && let Some(at) = ui.ctx().pointer_interact_pos()
-        {
-            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), ui.scope_id().with("dragging-many"), at)
-                .show(|ui| ui.label(trf!("{} computers", "{} kompüter", many)));
-        }
+        let carried = if picked { self.picked_in(list) } else { vec![c.fingerprint] };
+        drag_many(ui, &r, carried);
         if r.clicked() {
-            let m = ui.input(|i| i.modifiers);
-            if m.shift
-                && let Some(a) = self.anchor.and_then(|a| list.iter().position(|x| x.fingerprint == a))
-            {
-                if !m.command {
-                    self.picked.clear();
-                }
-                for x in &list[a.min(i)..=a.max(i)] {
-                    self.picked.insert(x.fingerprint);
-                }
-            } else if m.command {
-                if !self.picked.remove(&c.fingerprint) {
-                    self.picked.insert(c.fingerprint);
-                }
-                self.anchor = Some(c.fingerprint);
-            } else {
-                self.picked.clear();
-                self.picked.insert(c.fingerprint);
-                self.anchor = Some(c.fingerprint);
-            }
+            self.tile_clicked(ui, list, i);
         }
         if r.double_clicked() && c.online {
             self.connect(c);
         }
-        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_ui(|ui| {
-            ui.label(RichText::new(&c.info.name).strong());
-            ui.label(trf!("Version {}", "Versiya {}", c.info.version));
-            if c.unattended() {
-                ui.label(tr(
-                    "Unattended: you connect without anyone accepting.",
-                    "Nəzarətsiz: heç kim qəbul etmədən qoşulursunuz.",
-                ));
-            }
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(tr(
-                    "Double-click to connect. Drag onto a room, or right-click for more. Ctrl or Shift: pick several.",
-                    "Qoşulmaq üçün iki dəfə klikləyin. Otağa sürükləyin və ya daha çoxu üçün sağ klikləyin. Ctrl və ya Shift: bir neçəsini seçin.",
-                ))
-                .weak(),
-            );
-        });
+        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_ui(|ui| tile_tooltip(ui, c));
         let mut connect = false;
-        r.context_menu(|ui| {
-            let group: Vec<Fingerprint> = if picked && self.picked.len() > 1 {
-                list.iter().map(|c| c.fingerprint).filter(|fp| self.picked.contains(fp)).collect()
-            } else {
-                vec![c.fingerprint]
-            };
-            if matches!(self.sessions.get(&c.fingerprint), Some(Session::Waiting)) {
-                if ui.button(tr("Cancel request", "Sorğunu ləğv et")).clicked() {
-                    self.cancel(c.fingerprint);
-                    ui.close();
-                }
-            } else if ui.add_enabled(c.online && !busy, egui::Button::new(tr("Connect", "Qoşul"))).clicked() {
-                connect = true;
-                ui.close();
-            }
-            ui.separator();
-            let label = if group.len() > 1 {
-                trf!("Move {} computers to", "{} kompüteri köçür", group.len())
-            } else {
-                tr("Move to", "Köçür").to_owned()
-            };
-            ui.menu_button(label, |ui| {
-                if let Some(room) = move_menu(ui, dir) {
-                    edits.push(DirEdit::Place { computers: group.clone(), room });
-                    self.picked.clear();
-                }
-            });
-            let mut on = c.unattended_on;
-            let toggle = ui.add_enabled(
-                c.info.unattended,
-                egui::Checkbox::new(&mut on, tr("Unattended (no one asked)", "Nəzarətsiz (heç kimdən soruşulmadan)")),
-            );
-            let toggle = toggle.on_disabled_hover_text(tr(
-                "Only for computers installed as unattended (company installer option).",
-                "Yalnız nəzarətsiz kimi quraşdırılmış kompüterlər üçün (şirkət quraşdırıcısının seçimi).",
-            ));
-            if toggle.changed() {
-                edits.push(DirEdit::Unattended { computer: c.fingerprint, on });
-                ui.close();
-            }
-            ui.separator();
-            if ui.button(tr("Remove from the list", "Siyahıdan sil")).clicked() {
-                edits.push(DirEdit::Forget { computer: c.fingerprint });
-                ui.close();
-            }
-        });
+        r.context_menu(|ui| connect = self.tile_menu(ui, dir, list, c, edits));
         if connect {
             self.connect(c);
         }
+    }
+
+    fn tile_clicked(&mut self, ui: &Ui, list: &[&Computer], i: usize) {
+        let c = list[i];
+        let m = ui.input(|i| i.modifiers);
+        if m.shift
+            && let Some(a) = self.anchor.and_then(|a| list.iter().position(|x| x.fingerprint == a))
+        {
+            if !m.command {
+                self.picked.clear();
+            }
+            for x in &list[a.min(i)..=a.max(i)] {
+                self.picked.insert(x.fingerprint);
+            }
+        } else if m.command {
+            if !self.picked.remove(&c.fingerprint) {
+                self.picked.insert(c.fingerprint);
+            }
+            self.anchor = Some(c.fingerprint);
+        } else {
+            self.picked.clear();
+            self.picked.insert(c.fingerprint);
+            self.anchor = Some(c.fingerprint);
+        }
+    }
+
+    fn tile_menu(
+        &mut self,
+        ui: &mut Ui,
+        dir: &Directory,
+        list: &[&Computer],
+        c: &Computer,
+        edits: &mut Vec<DirEdit>,
+    ) -> bool {
+        let picked = self.picked.contains(&c.fingerprint);
+        let group = if picked && self.picked.len() > 1 { self.picked_in(list) } else { vec![c.fingerprint] };
+        let mut connect = false;
+        if matches!(self.sessions.get(&c.fingerprint), Some(Session::Waiting)) {
+            if ui.button(tr("Cancel request", "Sorğunu ləğv et")).clicked() {
+                self.cancel(c.fingerprint);
+                ui.close();
+            }
+        } else if ui.add_enabled(c.online && !self.is_busy(c), egui::Button::new(tr("Connect", "Qoşul"))).clicked() {
+            connect = true;
+            ui.close();
+        }
+        ui.separator();
+        let label = if group.len() > 1 {
+            trf!("Move {} computers to", "{} kompüteri köçür", group.len())
+        } else {
+            tr("Move to", "Köçür").to_owned()
+        };
+        ui.menu_button(label, |ui| {
+            if let Some(MoveTo(room)) = move_menu(ui, dir) {
+                edits.push(DirEdit::Place { computers: group.clone(), room });
+                self.picked.clear();
+            }
+        });
+        unattended_toggle(ui, c, edits);
+        ui.separator();
+        if ui.button(tr("Remove from the list", "Siyahıdan sil")).clicked() {
+            edits.push(DirEdit::Forget { computer: c.fingerprint });
+            ui.close();
+        }
+        connect
     }
 
     fn connect(&mut self, c: &Computer) {
@@ -1015,12 +1020,12 @@ const VIOLET: egui::Color32 = egui::Color32::from_rgb(150, 112, 240);
 
 fn truncate_galley(
     ui: &Ui,
-    galley: std::sync::Arc<egui::Galley>,
+    galley: Arc<egui::Galley>,
     text: &str,
     font: egui::FontId,
     color: egui::Color32,
     width: f32,
-) -> std::sync::Arc<egui::Galley> {
+) -> Arc<egui::Galley> {
     if galley.size().x <= width && galley.rows.len() <= 1 {
         return galley;
     }
@@ -1029,15 +1034,64 @@ fn truncate_galley(
     ui.painter().layout_job(job)
 }
 
-fn move_menu(ui: &mut Ui, dir: &Directory) -> Option<Option<u32>> {
+fn drag_many(ui: &Ui, r: &egui::Response, carried: Vec<Fingerprint>) {
+    let many = carried.len();
+    r.dnd_set_drag_payload(Dragged(carried));
+    if r.dragged()
+        && many > 1
+        && let Some(at) = ui.ctx().pointer_interact_pos()
+    {
+        egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), ui.scope_id().with("dragging-many"), at)
+            .show(|ui| ui.label(trf!("{} computers", "{} kompüter", many)));
+    }
+}
+
+fn tile_tooltip(ui: &mut Ui, c: &Computer) {
+    ui.label(RichText::new(&c.info.name).strong());
+    ui.label(trf!("Version {}", "Versiya {}", c.info.version));
+    if c.unattended() {
+        ui.label(tr(
+            "Unattended: you connect without anyone accepting.",
+            "Nəzarətsiz: heç kim qəbul etmədən qoşulursunuz.",
+        ));
+    }
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(tr(
+            "Double-click to connect. Drag onto a room, or right-click for more. Ctrl or Shift: pick several.",
+            "Qoşulmaq üçün iki dəfə klikləyin. Otağa sürükləyin və ya daha çoxu üçün sağ klikləyin. Ctrl və ya Shift: bir neçəsini seçin.",
+        ))
+        .weak(),
+    );
+}
+
+fn unattended_toggle(ui: &mut Ui, c: &Computer, edits: &mut Vec<DirEdit>) {
+    let mut on = c.unattended_on;
+    let toggle = ui.add_enabled(
+        c.info.unattended,
+        egui::Checkbox::new(&mut on, tr("Unattended (no one asked)", "Nəzarətsiz (heç kimdən soruşulmadan)")),
+    );
+    let toggle = toggle.on_disabled_hover_text(tr(
+        "Only for computers installed as unattended (company installer option).",
+        "Yalnız nəzarətsiz kimi quraşdırılmış kompüterlər üçün (şirkət quraşdırıcısının seçimi).",
+    ));
+    if toggle.changed() {
+        edits.push(DirEdit::Unattended { computer: c.fingerprint, on });
+        ui.close();
+    }
+}
+
+struct MoveTo(Option<u32>);
+
+fn move_menu(ui: &mut Ui, dir: &Directory) -> Option<MoveTo> {
     let mut chosen = None;
     if ui.button(tr("Unassigned", "Təyin edilməyib")).clicked() {
-        chosen = Some(None);
+        chosen = Some(MoveTo(None));
     }
     for f in &dir.floors {
         for room in &f.rooms {
             if ui.button(format!("{} › {}", f.name, room.name)).clicked() {
-                chosen = Some(Some(room.id));
+                chosen = Some(MoveTo(Some(room.id)));
             }
         }
     }
@@ -1076,7 +1130,7 @@ fn status(c: &Computer) -> (String, egui::Color32) {
     }
 }
 
-fn join_token(env: &Env, admin: &rider_client::config::EnterpriseAdmin) -> Result<String, String> {
+fn join_token(env: &Env<'_>, admin: &rider_client::config::EnterpriseAdmin) -> Result<String, String> {
     let server = env.server.ok_or_else(|| tr("No server is set.", "Server təyin edilməyib.").to_owned())?;
     let identity = env.identity.ok_or_else(|| tr("This device has no key.", "Bu cihazın açarı yoxdur.").to_owned())?;
     let server_fingerprint = fp_from_hex(&server.fingerprint).map_err(|e| format!("{e:#}"))?;
@@ -1095,6 +1149,7 @@ mod tests {
 
     #[test]
     fn console_frames_stay_fast_with_5000_computers() {
+        const N: u32 = 30;
         let ctx = egui::Context::default();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let handle = rt.handle().clone();
@@ -1119,7 +1174,6 @@ mod tests {
             frame(&mut page);
         }
         let start = Instant::now();
-        const N: u32 = 30;
         for _ in 0..N {
             frame(&mut page);
         }

@@ -235,28 +235,24 @@ impl Company {
         }
         let hex = fp_hex(fp);
         let info = bounded(info);
-        match s.computers.iter_mut().find(|c| c.fingerprint == hex) {
-            Some(c) => {
-                if c.info != info {
-                    c.info = info;
-                    self.save_later();
-                }
-                return Ok(s.name.clone());
+        if let Some(c) = s.computers.iter_mut().find(|c| c.fingerprint == hex) {
+            if c.info != info {
+                c.info = info;
+                self.save_later();
             }
-            None => {
-                if s.computers.len() >= MAX_COMPUTERS {
-                    bail!("the company has the most computers it can have ({MAX_COMPUTERS})");
-                }
-                s.computers.push(StoredComputer {
-                    fingerprint: hex,
-                    info,
-                    room: None,
-                    unattended_on: false,
-                    last_seen: now(),
-                    joined: now(),
-                });
-            }
+            return Ok(s.name.clone());
         }
+        if s.computers.len() >= MAX_COMPUTERS {
+            bail!("the company has the most computers it can have ({MAX_COMPUTERS})");
+        }
+        s.computers.push(StoredComputer {
+            fingerprint: hex,
+            info,
+            room: None,
+            unattended_on: false,
+            last_seen: now(),
+            joined: now(),
+        });
         self.save(s)?;
         Ok(s.name.clone())
     }
@@ -547,7 +543,7 @@ mod tests {
         let online: HashSet<Fingerprint> = [[6; 32], [7; 32], [8; 32]].into();
         assert_eq!(c.places(&online), vec![([6; 32], remote)]);
         c.seen(&[6; 32]);
-        assert!(c.places(&online).is_empty());
+        assert_eq!(c.places(&online), [] as [([u8; 32], Whereabouts); 0]);
     }
 
     #[test]

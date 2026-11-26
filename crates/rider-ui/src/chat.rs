@@ -228,10 +228,10 @@ impl Chat {
     }
 
     fn composer(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        const BUTTON: f32 = 28.0;
         let focused = ui.memory(|m| m.has_focus(input_id()));
         let enter = focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
         let ready = !self.draft.trim().is_empty();
-        const BUTTON: f32 = 28.0;
         ui.spacing_mut().button_padding = vec2(4.0, 4.0);
         let row = vec2(ui.available_width(), BUTTON);
         ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Max), |ui| {
