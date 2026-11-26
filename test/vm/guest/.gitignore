@@ -15,3 +15,6 @@ ent-probe/
 ent-srv/
 pattern.png
 clip-*.png
+block-udp
+support.err
+rider-test-cert.pem
