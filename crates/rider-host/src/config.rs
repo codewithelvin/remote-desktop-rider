@@ -29,16 +29,16 @@ pub struct HostConfig {
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company: Option<CompanyLink>,
-    #[serde(default)]
+    #[serde(default, rename = "tcp_tunnels")]
     pub tunnels: TunnelPolicy,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelPolicy {
-    #[default]
     Ask,
     Allow,
+    #[default]
     Off,
 }
 
@@ -68,7 +68,7 @@ impl Default for HostConfig {
             auto_update: true,
             language: None,
             company: None,
-            tunnels: TunnelPolicy::Ask,
+            tunnels: TunnelPolicy::Off,
         }
     }
 }

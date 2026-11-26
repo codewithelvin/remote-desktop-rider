@@ -81,9 +81,8 @@ pub(super) async fn stream(
 
     let (out_tx, out_rx) = mpsc::unbounded_channel::<HostMsg>();
     let writer = spawn_writer(send, out_rx);
-    let _ = out_tx.send(HostMsg::Monitors { list: list.clone(), active: start as u32 });
-    if v4 {
-        let _ = out_tx.send(HostMsg::Permissions(access.permissions()));
+    for msg in opening(conn, &list, start, access, cfg.tunnels) {
+        let _ = out_tx.send(msg);
     }
     let link = match panel {
         Some(p) if v5 => crate::chat::Link::panel(p),
@@ -206,6 +205,23 @@ fn spawn_writer(mut send: quinn::SendStream, mut out: mpsc::UnboundedReceiver<Ho
             }
         }
     })
+}
+
+fn opening(
+    conn: &quinn::Connection,
+    list: &[MonitorInfo],
+    start: usize,
+    access: Access,
+    tunnels: crate::config::TunnelPolicy,
+) -> Vec<HostMsg> {
+    let mut msgs = vec![HostMsg::Monitors { list: list.to_vec(), active: start as u32 }];
+    if rider_core::tls::speaks_v4(conn) {
+        msgs.push(HostMsg::Permissions(access.permissions()));
+    }
+    if rider_core::tls::speaks_v8(conn) {
+        msgs.push(HostMsg::Tunnels(tunnels != crate::config::TunnelPolicy::Off));
+    }
+    msgs
 }
 
 fn start_video(
