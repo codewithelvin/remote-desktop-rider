@@ -160,8 +160,8 @@ pub fn auto_update(cfg: &mut HostConfig, state: &str) -> Result<()> {
 pub fn tunnels(cfg: &mut HostConfig, policy: &str) -> Result<()> {
     cfg.tunnels = match policy {
         "allow" => crate::config::TunnelPolicy::Allow,
-        "off" => crate::config::TunnelPolicy::Off,
-        _ => crate::config::TunnelPolicy::Ask,
+        "ask" => crate::config::TunnelPolicy::Ask,
+        _ => crate::config::TunnelPolicy::Off,
     };
     cfg.save()?;
     let how = match cfg.tunnels {
@@ -190,6 +190,7 @@ pub fn info(cfg: &HostConfig, dir: &Path) -> Result<()> {
             "paired": cfg.trusted_clients.len(),
             "server": cfg.server,
             "auto_update": cfg.auto_update,
+            "tunnels": cfg.tunnels,
             "language": cfg.language,
             "service": service::status(),
         });

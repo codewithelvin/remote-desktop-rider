@@ -35,6 +35,7 @@ pub enum UiEvent {
     Permissions(Permissions),
     Chat(String),
     ChatReady(bool),
+    Tunnels(bool),
     File { id: u64, mine: bool, name: String, size: u64 },
     FileProgress { id: u64, done: u64 },
     FileDone { id: u64, path: Option<PathBuf> },
@@ -490,6 +491,7 @@ impl HostReader {
             }
             HostMsg::Chat { text } => UiEvent::Chat(text.chars().take(MAX_CHAT).collect()),
             HostMsg::ChatReady(ready) => UiEvent::ChatReady(ready),
+            HostMsg::Tunnels(on) => UiEvent::Tunnels(on),
             HostMsg::Pong { client_us, host_us } => {
                 self.shared.pong(client_us, host_us);
                 return;

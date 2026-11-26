@@ -23,6 +23,8 @@ struct Info {
     service: Option<bool>,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    tunnels: Option<String>,
 }
 
 fn yes() -> bool {
@@ -138,6 +140,7 @@ impl HostApp {
             auto_update: true,
             service: Some(true),
             language: Some(rider_core::i18n::lang().code().into()),
+            tunnels: Some("off".into()),
         });
         let now = rider_core::now_us() / 1_000_000;
         self.devices = vec![
@@ -430,6 +433,45 @@ impl HostApp {
                 );
             }
         });
+    }
+
+    fn tunnels_choice(&mut self, ui: &mut Ui, info: &Info, idle: bool) {
+        let Some(current) = info.tunnels.as_deref() else { return };
+        let options = [
+            ("off", tr("Off", "Söndürülüb")),
+            ("ask", tr("Ask the person here for each address", "Hər ünvan üçün buradakı şəxsdən soruş")),
+            ("allow", tr("Allow without asking", "Soruşmadan icazə ver")),
+        ];
+        let shown = options.iter().find(|(code, _)| *code == current).map_or(options[0].1, |(_, label)| *label);
+        let mut chosen = None;
+        ui.add_space(6.0);
+        ui.add_enabled_ui(idle, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(tr("TCP tunnels into this network", "Bu şəbəkəyə TCP tunelləri"));
+                egui::ComboBox::from_id_salt("tcp-tunnels").selected_text(shown).show_ui(ui, |ui| {
+                    for (code, label) in options {
+                        if ui.selectable_label(code == current, label).clicked() && code != current {
+                            chosen = Some(code);
+                        }
+                    }
+                });
+            });
+        });
+        widgets::hint(
+            ui,
+            tr(
+                "Lets a connected device with Full access reach this computer or its local network (a NAS, a router page). Only private addresses, never the internet.",
+                "Tam girişi olan qoşulmuş cihaza bu kompüterə və ya onun yerli şəbəkəsinə (NAS, router səhifəsi) çıxış verir. Yalnız daxili ünvanlar, internet heç vaxt.",
+            ),
+        );
+        if let Some(code) = chosen {
+            let done = match code {
+                "ask" => tr("TCP tunnels: asking for each address.", "TCP tunelləri: hər ünvan üçün soruşulur."),
+                "allow" => tr("TCP tunnels: allowed without asking.", "TCP tunelləri: soruşmadan icazə verilir."),
+                _ => tr("TCP tunnels are off.", "TCP tunelləri söndürülüb."),
+            };
+            self.run(tr("Saving…", "Yadda saxlanılır…"), args(&["tunnels", code]), None, done);
+        }
     }
 
     fn pin_section(&mut self, ui: &mut Ui, info: &Info) {
@@ -939,6 +981,10 @@ impl eframe::App for HostApp {
                 let Some(info) = self.info.clone() else { return };
                 egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
                     self.remote_access(ui, &info);
+                    if info.service.is_some() {
+                        let idle = self.busy.is_none();
+                        self.tunnels_choice(ui, &info, idle);
+                    }
                     ui.add_space(10.0);
                     self.pin_section(ui, &info);
                     ui.add_space(10.0);

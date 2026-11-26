@@ -15,7 +15,8 @@ pub const ALPN_V4: &[u8] = b"rider/4";
 pub const ALPN_V5: &[u8] = b"rider/5";
 pub const ALPN_V6: &[u8] = b"rider/6";
 pub const ALPN_V7: &[u8] = b"rider/7";
-const SESSION_ALPNS: &[&[u8]] = &[ALPN_V7, ALPN_V6, ALPN_V5, ALPN_V4, ALPN_V3, ALPN_V2, ALPN];
+pub const ALPN_V8: &[u8] = b"rider/8";
+const SESSION_ALPNS: &[&[u8]] = &[ALPN_V8, ALPN_V7, ALPN_V6, ALPN_V5, ALPN_V4, ALPN_V3, ALPN_V2, ALPN];
 pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
 pub const SUPPORT_ALPN: &[u8] = b"rider-support/1";
 pub const SUPPORT_ALPN_V2: &[u8] = b"rider-support/2";
@@ -23,8 +24,16 @@ pub const SUPPORT_ALPN_V3: &[u8] = b"rider-support/3";
 pub const SUPPORT_ALPN_V4: &[u8] = b"rider-support/4";
 pub const SUPPORT_ALPN_V5: &[u8] = b"rider-support/5";
 pub const SUPPORT_ALPN_V6: &[u8] = b"rider-support/6";
-const SUPPORT_ALPNS: &[&[u8]] =
-    &[SUPPORT_ALPN_V6, SUPPORT_ALPN_V5, SUPPORT_ALPN_V4, SUPPORT_ALPN_V3, SUPPORT_ALPN_V2, SUPPORT_ALPN];
+pub const SUPPORT_ALPN_V7: &[u8] = b"rider-support/7";
+const SUPPORT_ALPNS: &[&[u8]] = &[
+    SUPPORT_ALPN_V7,
+    SUPPORT_ALPN_V6,
+    SUPPORT_ALPN_V5,
+    SUPPORT_ALPN_V4,
+    SUPPORT_ALPN_V3,
+    SUPPORT_ALPN_V2,
+    SUPPORT_ALPN,
+];
 pub const SERVER_NAME: &str = "rider";
 
 fn provider() -> Arc<CryptoProvider> {
@@ -191,12 +200,14 @@ pub fn client_config_alpn(
 pub fn speaks_v2(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
         [
+            ALPN_V8,
             ALPN_V7,
             ALPN_V6,
             ALPN_V5,
             ALPN_V4,
             ALPN_V3,
             ALPN_V2,
+            SUPPORT_ALPN_V7,
             SUPPORT_ALPN_V6,
             SUPPORT_ALPN_V5,
             SUPPORT_ALPN_V4,
@@ -211,11 +222,13 @@ pub fn speaks_v2(conn: &quinn::Connection) -> bool {
 pub fn speaks_v3(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
         [
+            ALPN_V8,
             ALPN_V7,
             ALPN_V6,
             ALPN_V5,
             ALPN_V4,
             ALPN_V3,
+            SUPPORT_ALPN_V7,
             SUPPORT_ALPN_V6,
             SUPPORT_ALPN_V5,
             SUPPORT_ALPN_V4,
@@ -228,23 +241,41 @@ pub fn speaks_v3(conn: &quinn::Connection) -> bool {
 
 pub fn speaks_v4(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
-        [ALPN_V7, ALPN_V6, ALPN_V5, ALPN_V4, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5, SUPPORT_ALPN_V4, SUPPORT_ALPN_V3]
-            .contains(&p.as_slice())
+        [
+            ALPN_V8,
+            ALPN_V7,
+            ALPN_V6,
+            ALPN_V5,
+            ALPN_V4,
+            SUPPORT_ALPN_V7,
+            SUPPORT_ALPN_V6,
+            SUPPORT_ALPN_V5,
+            SUPPORT_ALPN_V4,
+            SUPPORT_ALPN_V3,
+        ]
+        .contains(&p.as_slice())
     })
 }
 
 pub fn speaks_v5(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
-        [ALPN_V7, ALPN_V6, ALPN_V5, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5, SUPPORT_ALPN_V4].contains(&p.as_slice())
+        [ALPN_V8, ALPN_V7, ALPN_V6, ALPN_V5, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5, SUPPORT_ALPN_V4]
+            .contains(&p.as_slice())
     })
 }
 
 pub fn speaks_v6(conn: &quinn::Connection) -> bool {
-    protocol(conn).is_some_and(|p| [ALPN_V7, ALPN_V6, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5].contains(&p.as_slice()))
+    protocol(conn).is_some_and(|p| {
+        [ALPN_V8, ALPN_V7, ALPN_V6, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5].contains(&p.as_slice())
+    })
 }
 
 pub fn speaks_v7(conn: &quinn::Connection) -> bool {
-    protocol(conn).is_some_and(|p| p == ALPN_V7 || p == SUPPORT_ALPN_V6)
+    protocol(conn).is_some_and(|p| [ALPN_V8, ALPN_V7, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6].contains(&p.as_slice()))
+}
+
+pub fn speaks_v8(conn: &quinn::Connection) -> bool {
+    protocol(conn).is_some_and(|p| p == ALPN_V8 || p == SUPPORT_ALPN_V7)
 }
 
 fn protocol(conn: &quinn::Connection) -> Option<Vec<u8>> {

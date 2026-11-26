@@ -96,6 +96,7 @@ pub fn run(
         badge: Badge::default(),
         chat: None,
         chat_ready: false,
+        host_tunnels: false,
         scratch: Vec::new(),
         sharp_buf: Vec::new(),
         pointer_px: (-1.0, -1.0),
@@ -168,6 +169,7 @@ struct App {
     badge: Badge,
     chat: Option<ChatPanel>,
     chat_ready: bool,
+    host_tunnels: bool,
     scratch: Vec<u32>,
     sharp_buf: Vec<u32>,
     pointer_px: (f64, f64),
@@ -389,8 +391,17 @@ impl App {
         })
     }
 
+    fn host_tunnels_changed(&mut self, on: bool) {
+        self.host_tunnels = on;
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
     fn tunnels_available(&self) -> bool {
-        rider_core::tls::speaks_v7(&self.net.conn) && self.shared.permissions().is_full()
+        let conn = &self.net.conn;
+        let host_allows =
+            if rider_core::tls::speaks_v8(conn) { self.host_tunnels } else { rider_core::tls::speaks_v7(conn) };
+        host_allows && self.shared.permissions().is_full()
     }
 
     fn toggle_page(&mut self, page: Page) {
@@ -967,6 +978,7 @@ impl ApplicationHandler<UiEvent> for App {
                 let notice = format!("{}: {preview}", self.host_name);
                 self.chat_event(Some(notice));
             }
+            UiEvent::Tunnels(on) => self.host_tunnels_changed(on),
             UiEvent::ChatReady(ready) => {
                 self.chat_ready = ready;
                 if let Some(c) = &mut self.chat {

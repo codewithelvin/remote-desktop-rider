@@ -87,6 +87,20 @@ case "${1:-}" in
     ;;
   install) install_build ;;
   tunnel) https_tunnel ;;
+  delay)
+    ms="${2:?usage: server.sh delay <one-way ms> | off}"
+    docker exec "$NAME" sh -c 'pkill -f "[d]elay-proxy.py"; true'
+    if [ "$ms" = off ]; then
+      docker exec "$NAME" sh -c 'sed -i "s#127.0.0.1:47950#127.0.0.1:47900#" /etc/nginx/sites-enabled/rider-tunnel && nginx -s reload'
+      echo "HTTPS tunnel without added delay"
+    else
+      docker exec "$NAME" sh -c 'command -v python3 >/dev/null || (apt-get update -qq && apt-get install -y -qq python3-minimal) >/dev/null 2>&1'
+      docker cp "$(winpath "$ROOT/test/server/delay-proxy.py")" "$NAME:/opt/delay-proxy.py"
+      docker exec "$NAME" sh -c "nohup setsid python3 /opt/delay-proxy.py 47950 47900 $ms >/tmp/delay.log 2>&1 </dev/null &"
+      docker exec "$NAME" sh -c 'sed -i "s#127.0.0.1:47900#127.0.0.1:47950#" /etc/nginx/sites-enabled/rider-tunnel && nginx -s reload'
+      echo "HTTPS tunnel with $ms ms added each way"
+    fi
+    ;;
   fp)
     docker exec "$NAME" journalctl -u rider-server --no-pager -o cat \
       | sed -n 's/^Server fingerprint: //p' | tail -1
@@ -105,6 +119,7 @@ certificate) on TCP 443 as rider-test.local.
   test/server/server.sh up        (re)create the container and install the build
   test/server/server.sh install   install the build again (upgrade in place)
   test/server/server.sh tunnel    set up the HTTPS tunnel again (nginx on 443)
+  test/server/server.sh delay MS  add MS each way on the HTTPS tunnel (a distant server); "off" removes it
   test/server/server.sh fp        the server's fingerprint
   test/server/server.sh sh CMD    run CMD in the container (e.g. journalctl ...)
   test/server/server.sh down      remove the container (and its state)

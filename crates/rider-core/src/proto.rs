@@ -63,6 +63,7 @@ pub enum HostMsg {
     Permissions(Permissions),
     Chat { text: String },
     ChatReady(bool),
+    Tunnels(bool),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
