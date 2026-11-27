@@ -63,7 +63,7 @@ encoder) acted as PC A; this repo's client connected from the host machine.
       waits/retries and renames aside as a fallback)
 - [x] `service uninstall` leaves no service, process, binary, firewall rule or
       policy; pairings kept; state dir ACL = SYSTEM + Administrators only
-- [ ] `set-pin` / `revoke` hot reload on the running service
+- [x] `set-pin` / `revoke` take effect on the running service at once (`test/vm/pin-revoke.ps1`)
 - [ ] One unexplained failed login right after reboot (fast typing); did not
       reproduce. Watch for dropped keystrokes.
 - [ ] Turn the manual steps into a scripted `test/vm/e2e.ps1`
