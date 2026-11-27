@@ -337,8 +337,8 @@ company list on the server and a console for it.
 **What the admin sees**
 
 - Left: a tree **Floor → Room** (e.g. Floor 3 → Room 310), each with
-  online/total counts; plus search (computer, user, IP) and **Problems**
-  (outdated, service stopped, not seen for days).
+  online/total counts; plus search (computer, user, IP) and **Needs
+  attention** (not seen for 14 days, a whole version behind).
 - Right: the room's computers as tiles: name, signed-in user, status
   (online, offline + last seen, locked, nobody signed in, in a session,
   waiting for an answer, declined). **No screen thumbnails**: the admin
@@ -366,8 +366,9 @@ compromised server cannot swap in another admin.
 2. **Built.** Joining: join token (`rdr1.…`), `rider-host enroll <token>
    [--unattended]` / `leave-company`; computers appear in Unassigned with
    name, signed-in user, locked, version, online / last seen.
-3. **Built** (Problems list still to do). Console: floors and rooms with
-   counts, tiles, search, drag a tile onto a room, right-click menu.
+3. **Built.** Console: floors and rooms with counts, tiles, search, drag a
+   tile onto a room, right-click menu, and **Needs attention** (computers
+   not seen for 14 days or a whole version behind; 0.10).
 4. **Built.** Connect: double-click a tile (`rider-client company-connect`).
    The host skips the PIN for the pinned admin and asks the signed-in user
    in the chat window (Accept / Decline, 60 s, closing = Decline); after
