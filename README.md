@@ -167,7 +167,7 @@ Click the small tab at the top centre of the session window to open the toolbar:
 | **Full screen** | Toggle full screen |
 | **Ctrl+Alt+Del** | Send Ctrl+Alt+Del to the remote computer |
 | **1 DELL U2720Q, 2 …** | Switch between remote monitors, by their own names (shown when there are several; the one on screen is also named in the top-left corner) |
-| **Tunnels** | Reach a port on the remote computer or its local network (Full access only; see below) |
+| **Tunnels** | Reach a port on the remote computer or its local network (shown only when that computer allows tunnels; Full access only; see below) |
 | **Quality ▾** | Auto / 1080p / 720p / 480p |
 | Pin | Keep the toolbar open instead of hiding it |
 | **Disconnect** | End the session (click it twice: the first click asks "Click again to disconnect") |
@@ -197,13 +197,16 @@ its local network, as if it were on your own computer. In the toolbar, open
 the local address it gives you (for example `127.0.0.1:51234`). From the
 command line: `rider-client connect office --forward 8443:192.168.1.20:443`.
 
+- **Off until that computer's administrator turns them on**, in the app
+  (This computer > TCP tunnels into this network) or with
+  `rider-host tunnels ask|allow|off`. While off, the Tunnels button is hidden.
+  One-time support sessions never offer tunnels.
 - Only in **Full access** sessions.
-- The person at that computer approves each new address once per session
-  (the request is declined by itself after 60 seconds).
+- With **ask**, the person at that computer approves each new address once per
+  session (the request is declined by itself after 60 seconds); **allow** skips
+  the question, for unattended computers.
 - Only that computer and private addresses on its network can be reached,
   never the internet. Your end listens on `127.0.0.1` only.
-- An administrator can change this per computer with `rider-host tunnels ask|allow|off`
-  (`allow` skips the question for unattended computers; `off` turns tunnels off).
 
 ## Enterprise mode
 
@@ -391,7 +394,7 @@ from services.
 | `info` | Show this host's identity and settings |
 | `set-server <addr> <fingerprint>` | Use a rendezvous server |
 | `auto-update on\|off` | Unattended updates (on by default) |
-| `tunnels ask\|allow\|off` | TCP tunnels into this computer's network: ask the person here for each address (default), allow without asking (Full access only), or off |
+| `tunnels ask\|allow\|off` | TCP tunnels into this computer's network: ask the person here for each address, allow without asking (Full access only), or off (default) |
 | `run [--pair]` | Serve from the terminal until Ctrl+C, without the service |
 | `language en\|az` | Language of the red session banner the service shows (Manage keeps it in step with the app) |
 | `support <server> <fingerprint>` | One-time support session (quick connect): shows a code and asks before letting anyone in. **No administrator rights needed**; uses a throwaway key and none of the settings above |

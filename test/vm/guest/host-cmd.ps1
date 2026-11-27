@@ -9,5 +9,10 @@ switch ($Action) {
         $out = foreach ($c in @($list)) { & $exe revoke $c.fingerprint 2>&1 }
     }
     "clients" { $out = & $exe --json clients 2>&1 }
+    "tunnels" { $out = & $exe tunnels $Value 2>&1 }
+    "tcp-target" {
+        Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\rider-test\tcp-target.ps1 -Port 18080 -Token $Value"
+        $out = "started"
+    }
 }
 "$Action exit=$LASTEXITCODE $($out -join ' ')" | Add-Content $log
