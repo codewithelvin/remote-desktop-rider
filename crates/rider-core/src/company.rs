@@ -73,6 +73,44 @@ impl Directory {
     fn counts(&self, f: impl Fn(&Computer) -> bool) -> (usize, usize) {
         self.computers.iter().filter(|c| f(c)).fold((0, 0), |(on, all), c| (on + usize::from(c.online), all + 1))
     }
+
+    pub fn newest_release(&self, admin_version: &str) -> Option<Release> {
+        self.computers.iter().map(|c| c.info.version.as_str()).chain([admin_version]).filter_map(Release::parse).max()
+    }
+}
+
+pub const NOT_SEEN_SECS: u64 = 14 * 24 * 3600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Release {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl Release {
+    pub fn parse(version: &str) -> Option<Self> {
+        let mut parts = version.trim().split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        Some(Self { major, minor })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attention {
+    NotSeen { days: u64 },
+    Outdated { newest: Release },
+}
+
+impl Computer {
+    pub fn attention(&self, now: u64, newest: Option<Release>) -> Option<Attention> {
+        let away = now.saturating_sub(self.last_seen);
+        if !self.online && away >= NOT_SEEN_SECS {
+            return Some(Attention::NotSeen { days: away / 86_400 });
+        }
+        let newest = newest?;
+        Release::parse(&self.info.version).is_some_and(|have| have < newest).then_some(Attention::Outdated { newest })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -224,6 +262,40 @@ mod tests {
         assert_eq!(JoinToken::decode(&format!("  {text}\n")).unwrap(), t);
         assert!(JoinToken::decode("rdr1.zz").is_err());
         assert!(JoinToken::decode("hello").is_err());
+    }
+
+    #[test]
+    fn computers_needing_attention() {
+        let day = 86_400;
+        let now = 100 * day;
+        let pc = |version: &str, online, seen_days_ago: u64| Computer {
+            fingerprint: [0; 32],
+            info: HostInfo { version: version.into(), ..HostInfo::default() },
+            room: None,
+            unattended_on: false,
+            online,
+            last_seen: now - seen_days_ago * day,
+            joined: 0,
+        };
+        let d = Directory {
+            computers: vec![pc("0.9.0", true, 0), pc("0.8.4", true, 0), pc("0.9.1", false, 3)],
+            ..Directory::default()
+        };
+        let newest = d.newest_release("0.9.0");
+        assert_eq!(newest, Some(Release { major: 0, minor: 9 }));
+        assert_eq!(d.newest_release("1.0.0"), Some(Release { major: 1, minor: 0 }));
+        let check = |c: &Computer| c.attention(now, newest);
+        assert_eq!(check(&d.computers[0]), None);
+        assert_eq!(check(&d.computers[1]), Some(Attention::Outdated { newest: Release { major: 0, minor: 9 } }));
+        assert_eq!(check(&d.computers[2]), None);
+        assert_eq!(check(&pc("0.9.0", false, 13)), None);
+        assert_eq!(check(&pc("0.9.0", false, 14)), Some(Attention::NotSeen { days: 14 }));
+        assert_eq!(check(&pc("0.6.0", false, 30)), Some(Attention::NotSeen { days: 30 }));
+        assert_eq!(check(&pc("0.9.0", true, 30)), None);
+        assert_eq!(check(&pc("0.10.0", true, 0)), None);
+        assert_eq!(check(&pc("", true, 0)), None);
+        assert_eq!(check(&pc("garbage", true, 0)), None);
+        assert_eq!(pc("0.8.0", true, 0).attention(now, None), None);
     }
 
     #[test]
