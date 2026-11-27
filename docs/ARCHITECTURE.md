@@ -43,6 +43,7 @@ Negotiated by ALPN. Each version keeps everything from the ones before.
 | `rider/5` | `rider-support/4` | Chat and files on extra streams |
 | `rider/6` | `rider-support/5` | `BulkHeader` streams: clipboard images, sharp text when still |
 | `rider/7` | `rider-support/6` | TCP tunnels |
+| `rider/8` | `rider-support/7` | `HostMsg::Tunnels(bool)`: whether the host allows tunnels (the viewer shows the Tunnels button only then) |
 
 Policy: a release must keep working with peers from the last two minor
 versions. Every version above is still accepted today.
@@ -53,13 +54,16 @@ The viewer listens on `127.0.0.1` only (`--forward [LOCAL_PORT:]HOST:PORT`
 or the toolbar's Tunnels panel). For each local connection it opens a stream
 with `BulkHeader::Forward { target }`. The host:
 
-1. accepts only Full access sessions;
+1. accepts only Full access sessions, and only when its `tcp_tunnels` setting
+   is `ask` or `allow` (default `off`; support sessions are always off). It
+   tells `rider/8` viewers with `HostMsg::Tunnels`; `rider/7` viewers still
+   see the button but get a refusal;
 2. resolves the target and connects only to itself or private addresses
    (loopback, 10/8, 172.16/12, 192.168/16, link-local, IPv6 ULA and
    link-local), never the internet;
 3. asks the person at the host once per address per session
    (`tunnel_request` event, `tunnel-allow` / `tunnel-deny` answer, denied
-   after 60 s), unless `rider-host tunnels allow|off` says otherwise;
+   after 60 s) when the setting is `ask`;
 4. replies `ForwardReply::Open` or a `Refusal`, then copies bytes both ways.
 
 ## Paths to the server
