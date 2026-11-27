@@ -1,6 +1,6 @@
 use crate::widgets::{self, ACCENT, AMBER, GREEN, GREY, icon};
 use eframe::egui::{self, Align, Key, Layout, RichText, ScrollArea, TextEdit, Ui, vec2};
-use rider_core::company::{Computer, DirEdit, Directory, JoinToken, Place, Whereabouts};
+use rider_core::company::{Attention, Computer, DirEdit, Directory, JoinToken, Place, Whereabouts};
 use rider_core::i18n::tr;
 use rider_core::identity::{Fingerprint, Identity, fp_from_hex};
 use rider_core::rendezvous::ServerRef;
@@ -47,9 +47,16 @@ struct Dragged(Vec<Fingerprint>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Selected {
+    Attention,
     #[default]
     Unassigned,
     Room(u32),
+}
+
+#[derive(Clone, Copy)]
+enum Count {
+    Online(usize, usize),
+    Flagged(usize),
 }
 
 #[derive(Clone)]
@@ -65,6 +72,7 @@ pub struct Enterprise {
     ctx: egui::Context,
     dir: Option<Directory>,
     places: std::collections::HashMap<Fingerprint, Whereabouts>,
+    flagged: std::collections::HashMap<Fingerprint, Attention>,
     error: Option<String>,
     busy: bool,
     fetched: Option<Instant>,
@@ -88,6 +96,7 @@ impl Enterprise {
             ctx: ctx.clone(),
             dir: None,
             places: std::collections::HashMap::new(),
+            flagged: std::collections::HashMap::new(),
             error: None,
             busy: false,
             fetched: None,
@@ -120,6 +129,7 @@ impl Enterprise {
                 self.sessions.insert(fp(3), Session::Waiting);
             }
             "empty" => self.selected = Selected::Room(5),
+            "attention" => self.selected = Selected::Attention,
             "prompt" => self.prompt = Some((Prompt::NewRoom(1), String::new())),
             _ => {}
         }
@@ -140,6 +150,7 @@ impl Enterprise {
                 c
             })
             .collect();
+        self.flag_computers();
     }
 
     pub fn preview(&mut self) {
@@ -151,13 +162,13 @@ impl Enterprise {
                 name: name.into(),
                 user: user.map(Into::into),
                 locked,
-                version: "0.6.0".into(),
+                version: if n == 4 { "0.8.2" } else { env!("CARGO_PKG_VERSION") }.into(),
                 unattended: n == 9,
             },
             room,
             unattended_on: n == 9,
             online,
-            last_seen: now - 7200,
+            last_seen: now - if n == 3 { 19 * 86_400 } else { 7200 },
             joined: now - 86_400,
         };
         let room = |id, name: &str| Room { id, name: name.into() };
@@ -181,6 +192,15 @@ impl Enterprise {
         self.places = [([1; 32], gp(Place::Remote)), ([6; 32], gp(Place::Remote)), ([2; 32], gp(Place::Office))].into();
         self.selected = Selected::Room(3);
         self.fetched = Some(Instant::now() + Duration::from_hours(24));
+        self.flag_computers();
+    }
+
+    fn flag_computers(&mut self) {
+        self.flagged.clear();
+        let Some(dir) = &self.dir else { return };
+        let now = rider_core::now_us() / 1_000_000;
+        let newest = dir.newest_release(env!("CARGO_PKG_VERSION"));
+        self.flagged.extend(dir.computers.iter().filter_map(|c| Some((c.fingerprint, c.attention(now, newest)?))));
     }
 
     fn request(&mut self, env: &Env<'_>, edit: Option<DirEdit>) {
@@ -243,6 +263,7 @@ impl Enterprise {
                         self.selected = Selected::Unassigned;
                     }
                     self.dir = Some(d);
+                    self.flag_computers();
                     self.error = None;
                     self.fetched = Some(Instant::now());
                 }
@@ -435,7 +456,7 @@ impl Enterprise {
         ui: &mut Ui,
         indent: f32,
         text: &str,
-        counts: (usize, usize),
+        count: Count,
         selected: bool,
         strong: bool,
         drop: bool,
@@ -463,8 +484,16 @@ impl Enterprise {
         let count_w = 46.0;
         let galley = ui.painter().layout(text.to_owned(), font, text_color, rect.right() - count_w - x);
         p.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
-        let (on, all) = counts;
         let weak = ui.visuals().weak_text_color();
+        let (on, all) = match count {
+            Count::Online(on, all) => (on, all),
+            Count::Flagged(n) => {
+                let color = if n > 0 { AMBER } else { weak };
+                let f = egui::FontId::proportional(12.5);
+                p.text(rect.right_center() - vec2(10.0, 0.0), egui::Align2::RIGHT_CENTER, n.to_string(), f, color);
+                return r.on_hover_cursor(egui::CursorIcon::PointingHand);
+            }
+        };
         if all == 0 {
             p.text(
                 rect.right_center() - vec2(10.0, 0.0),
@@ -495,10 +524,12 @@ impl Enterprise {
         target: Selected,
         indent: f32,
         text: &str,
-        counts: (usize, usize),
+        count: Count,
         edits: &mut Vec<DirEdit>,
     ) -> egui::Response {
-        let r = Self::row(ui, indent, text, counts, self.selected == target && self.search.is_empty(), false, true);
+        let droppable = target != Selected::Attention;
+        let selected = self.selected == target && self.search.is_empty();
+        let r = Self::row(ui, indent, text, count, selected, false, droppable);
         if r.clicked() {
             if self.selected != target {
                 self.picked.clear();
@@ -506,9 +537,9 @@ impl Enterprise {
             self.selected = target;
             self.search.clear();
         }
-        if let Some(d) = r.dnd_release_payload::<Dragged>() {
+        if let Some(d) = r.dnd_release_payload::<Dragged>().filter(|_| droppable) {
             let room = match target {
-                Selected::Unassigned => None,
+                Selected::Attention | Selected::Unassigned => None,
                 Selected::Room(id) => Some(id),
             };
             edits.push(DirEdit::Place { computers: d.0.clone(), room });
@@ -541,15 +572,23 @@ impl Enterprise {
             e.0 += usize::from(c.online);
             e.1 += 1;
         }
-        let count = |room: Option<u32>| per_room.get(&room).copied().unwrap_or_default();
+        let count = |room: Option<u32>| {
+            let (on, all) = per_room.get(&room).copied().unwrap_or_default();
+            Count::Online(on, all)
+        };
+        let flagged = Count::Flagged(self.flagged.len());
+        self.target_row(ui, Selected::Attention, 0.0, tr("Needs attention", "Diqqət tələb edir"), flagged, edits);
         self.target_row(ui, Selected::Unassigned, 0.0, tr("Unassigned", "Təyin edilməyib"), count(None), edits);
         ui.add_space(8.0);
         for floor in &dir.floors {
             let id = ui.make_persistent_id(("floor", floor.id));
             let open = ui.data_mut(|d| *d.get_persisted_mut_or(id, true));
-            let floor_counts =
-                floor.rooms.iter().map(|r| count(Some(r.id))).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-            let r = Self::row(ui, 16.0, &floor.name, floor_counts, false, true, false);
+            let (on, all) = floor
+                .rooms
+                .iter()
+                .map(|r| per_room.get(&Some(r.id)).copied().unwrap_or_default())
+                .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+            let r = Self::row(ui, 16.0, &floor.name, Count::Online(on, all), false, true, false);
             chevron(ui.painter(), r.rect.left_center() + vec2(16.0, 0.0), open, ui.visuals().weak_text_color());
             if r.clicked() {
                 ui.data_mut(|d| d.insert_persisted(id, !open));
@@ -607,6 +646,10 @@ impl Enterprise {
             return (trf!("Search: {}", "Axtarış: {}", self.search.trim()), hits);
         }
         match self.selected {
+            Selected::Attention => (
+                tr("Needs attention", "Diqqət tələb edir").into(),
+                dir.computers.iter().filter(|c| self.flagged.contains_key(&c.fingerprint)).collect(),
+            ),
             Selected::Unassigned => (tr("Unassigned", "Təyin edilməyib").into(), dir.in_room(None).collect()),
             Selected::Room(id) => {
                 let name = dir.room(id).map_or_else(String::new, |(f, r)| format!("{} › {}", f.name, r.name));
@@ -688,6 +731,10 @@ impl Enterprise {
         );
         let text = match (self.selected, searching) {
             (_, true) => tr("No computer matches.", "Uyğun kompüter yoxdur."),
+            (Selected::Attention, false) => tr(
+                "Nothing needs attention: every computer was seen in the last 14 days and runs a current version.",
+                "Diqqət tələb edən heç nə yoxdur: bütün kompüterlər son 14 gündə görünüb və aktual versiyadadır.",
+            ),
             (Selected::Unassigned, false) => tr(
                 "Computers installed with the company installer show up here. Drag them onto a room.",
                 "Şirkət quraşdırıcısı ilə quraşdırılan kompüterlər burada görünür. Onları otağa sürükləyin.",
@@ -734,7 +781,10 @@ impl Enterprise {
             Some(Session::Waiting) => (tr("Waiting for an answer…", "Cavab gözlənilir…").into(), AMBER),
             Some(Session::Connected) => (tr("In your session", "Sizin seansınızdadır").into(), GREEN),
             Some(Session::Failed(why)) => (why.clone(), ui.visuals().error_fg_color),
-            _ => status(c),
+            _ => match self.flagged.get(&c.fingerprint).filter(|_| self.selected == Selected::Attention) {
+                Some(a) => (attention_text(c, *a), AMBER),
+                None => status(c),
+            },
         }
     }
 
@@ -1116,6 +1166,19 @@ fn dashed_rect(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
     let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
     for w in corners.windows(2) {
         p.extend(egui::Shape::dashed_line(&[w[0], w[1]], egui::Stroke::new(1.2, color), 6.0, 4.0));
+    }
+}
+
+fn attention_text(c: &Computer, a: Attention) -> String {
+    match a {
+        Attention::NotSeen { days } => trf!("Not seen for {} days", "{} gündür görünməyib", days),
+        Attention::Outdated { newest } => trf!(
+            "Outdated: {}, newest {}.{}",
+            "Köhnə versiya: {}, ən yenisi {}.{}",
+            c.info.version,
+            newest.major,
+            newest.minor
+        ),
     }
 }
 

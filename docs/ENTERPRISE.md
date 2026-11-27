@@ -115,6 +115,20 @@ and rooms (**+ Floor**, then **+ Room** on a floor), and drag computers onto
 rooms. Right-click a computer for more: move it, switch unattended access,
 or remove it from the list.
 
+### Needs attention
+
+**Needs attention** at the top of the tree lists the computers to look at,
+each with the reason:
+
+- **Not seen for N days**: the computer has not checked in for 14 days or
+  more (switched off, moved, or the app removed).
+- **Outdated**: it runs an older version (0.8 while the newest is 0.9) than the
+  newest one among your computers and your own app. Computers update
+  themselves, so this usually means its updates are failing. Smaller gaps
+  (0.9.0 against 0.9.1) do not count.
+
+A computer leaves the list by itself once it is back or updated.
+
 ### In the office or remote
 
 A laptop taken home still reaches the company's server over the company VPN
