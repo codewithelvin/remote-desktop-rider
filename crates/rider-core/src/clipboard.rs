@@ -80,61 +80,139 @@ fn digest(width: usize, height: usize, bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-struct Watcher {
-    cb: arboard::Clipboard,
+trait Board {
+    fn sequence(&self) -> Option<u32>;
+    fn text(&mut self) -> Result<String, arboard::Error>;
+    fn set_text(&mut self, text: &str) -> Result<(), arboard::Error>;
+    fn image(&mut self) -> Result<arboard::ImageData<'static>, arboard::Error>;
+    fn set_image(&mut self, image: arboard::ImageData<'static>) -> Result<(), arboard::Error>;
+}
+
+impl Board for arboard::Clipboard {
+    fn sequence(&self) -> Option<u32> {
+        sequence()
+    }
+
+    fn text(&mut self) -> Result<String, arboard::Error> {
+        self.get_text()
+    }
+
+    fn set_text(&mut self, text: &str) -> Result<(), arboard::Error> {
+        arboard::Clipboard::set_text(self, text)
+    }
+
+    fn image(&mut self) -> Result<arboard::ImageData<'static>, arboard::Error> {
+        self.get_image()
+    }
+
+    fn set_image(&mut self, image: arboard::ImageData<'static>) -> Result<(), arboard::Error> {
+        arboard::Clipboard::set_image(self, image)
+    }
+}
+
+enum Incoming {
+    Text(String),
+    Image { digest: u64, data: arboard::ImageData<'static> },
+}
+
+impl Incoming {
+    fn decode(clip: Clip) -> Option<Self> {
+        match clip {
+            Clip::Text(text) => Some(Self::Text(text)),
+            Clip::Image(image) => match decode_png(&image) {
+                Ok(rgba) => Some(Self::Image {
+                    digest: digest(image.width as usize, image.height as usize, &rgba),
+                    data: arboard::ImageData {
+                        width: image.width as usize,
+                        height: image.height as usize,
+                        bytes: Cow::Owned(rgba),
+                    },
+                }),
+                Err(e) => {
+                    tracing::warn!("clipboard image from the other side refused: {e:#}");
+                    None
+                }
+            },
+        }
+    }
+}
+
+struct Watcher<B: Board> {
+    cb: B,
     text: String,
     image: Option<u64>,
     seq: Option<u32>,
     image_checked: Instant,
+    incoming: Option<Incoming>,
+    busy_reported: bool,
 }
 
-impl Watcher {
-    fn new(cb: arboard::Clipboard) -> Self {
-        let mut w = Self { cb, text: String::new(), image: None, seq: None, image_checked: Instant::now() };
-        w.text = w.cb.get_text().unwrap_or_default();
+impl<B: Board> Watcher<B> {
+    fn new(cb: B) -> Self {
+        let mut w = Self {
+            cb,
+            text: String::new(),
+            image: None,
+            seq: None,
+            image_checked: Instant::now(),
+            incoming: None,
+            busy_reported: false,
+        };
+        w.text = w.cb.text().unwrap_or_default();
         w.image = w.current_image().map(|(d, _)| d);
-        w.seq = sequence();
+        w.seq = w.cb.sequence();
         w
     }
 
     fn current_image(&mut self) -> Option<(u64, arboard::ImageData<'static>)> {
-        let img = self.cb.get_image().ok()?;
+        let img = self.cb.image().ok()?;
         Some((digest(img.width, img.height, &img.bytes), img))
     }
 
-    fn apply(&mut self, clip: Clip) {
-        match clip {
-            Clip::Text(text) => {
-                if text != self.text && self.cb.set_text(text.clone()).is_ok() {
-                    self.text = text;
-                }
-            }
-            Clip::Image(image) => match decode_png(&image) {
-                Ok(rgba) => {
-                    let d = digest(image.width as usize, image.height as usize, &rgba);
-                    let data = arboard::ImageData {
-                        width: image.width as usize,
-                        height: image.height as usize,
-                        bytes: Cow::Owned(rgba),
-                    };
-                    if self.cb.set_image(data).is_ok() {
-                        self.image = self.current_image().map(|(d, _)| d).or(Some(d));
-                        self.text.clear();
-                    }
-                }
-                Err(e) => tracing::warn!("clipboard image from the other side refused: {e:#}"),
-            },
+    fn receive(&mut self, clip: Clip) {
+        if let Some(incoming) = Incoming::decode(clip) {
+            self.incoming = Some(incoming);
         }
-        self.seq = sequence();
+    }
+
+    fn deliver(&mut self) {
+        let Some(incoming) = self.incoming.take() else { return };
+        let written = match &incoming {
+            Incoming::Text(text) if *text == self.text => Ok(()),
+            Incoming::Text(text) => self.cb.set_text(text).map(|()| self.text.clone_from(text)),
+            Incoming::Image { digest, data } => self.cb.set_image(data.clone()).map(|()| {
+                self.image = self.current_image().map(|(d, _)| d).or(Some(*digest));
+                self.text.clear();
+            }),
+        };
+        match written {
+            Ok(()) => {
+                self.busy_reported = false;
+                self.seq = self.cb.sequence();
+            }
+            Err(e) => {
+                if !self.busy_reported {
+                    tracing::info!("clipboard busy, will retry the copy from the other side: {e}");
+                    self.busy_reported = true;
+                }
+                self.incoming = Some(incoming);
+            }
+        }
     }
 
     fn poll(&mut self) -> Option<Clip> {
-        let seq = sequence();
+        let clip = self.local_change()?;
+        self.incoming = None;
+        Some(clip)
+    }
+
+    fn local_change(&mut self) -> Option<Clip> {
+        let seq = self.cb.sequence();
         if seq.is_some() && seq == self.seq {
             return None;
         }
         self.seq = seq;
-        if let Ok(text) = self.cb.get_text() {
+        if let Ok(text) = self.cb.text() {
             if text == self.text {
                 return None;
             }
@@ -184,8 +262,9 @@ pub fn spawn(local_changes: UnboundedSender<Clip>, remote_updates: Receiver<Clip
         };
         while !stop.load(Ordering::Relaxed) {
             while let Ok(clip) = remote_updates.try_recv() {
-                watcher.apply(clip);
+                watcher.receive(clip);
             }
+            watcher.deliver();
             if let Some(clip) = watcher.poll()
                 && local_changes.send(clip).is_err()
             {
@@ -199,6 +278,90 @@ pub fn spawn(local_changes: UnboundedSender<Clip>, remote_updates: Receiver<Clip
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FakeBoard {
+        text: Option<String>,
+        image: Option<arboard::ImageData<'static>>,
+        busy_writes: u32,
+        seq: u32,
+    }
+
+    impl FakeBoard {
+        fn write(&mut self) -> Result<(), arboard::Error> {
+            if self.busy_writes > 0 {
+                self.busy_writes -= 1;
+                return Err(arboard::Error::ClipboardOccupied);
+            }
+            self.seq += 1;
+            Ok(())
+        }
+    }
+
+    impl Board for FakeBoard {
+        fn sequence(&self) -> Option<u32> {
+            Some(self.seq)
+        }
+
+        fn text(&mut self) -> Result<String, arboard::Error> {
+            self.text.clone().ok_or(arboard::Error::ContentNotAvailable)
+        }
+
+        fn set_text(&mut self, text: &str) -> Result<(), arboard::Error> {
+            self.write()?;
+            self.text = Some(text.to_owned());
+            self.image = None;
+            Ok(())
+        }
+
+        fn image(&mut self) -> Result<arboard::ImageData<'static>, arboard::Error> {
+            self.image.clone().ok_or(arboard::Error::ContentNotAvailable)
+        }
+
+        fn set_image(&mut self, image: arboard::ImageData<'static>) -> Result<(), arboard::Error> {
+            self.write()?;
+            self.image = Some(image);
+            self.text = None;
+            Ok(())
+        }
+    }
+
+    fn remote_image() -> Clip {
+        Clip::Image(encode_png(5, 4, &pixels(5, 4)).unwrap())
+    }
+
+    #[test]
+    fn a_copy_from_the_other_side_waits_out_a_busy_clipboard() {
+        let mut w = Watcher::new(FakeBoard { busy_writes: 3, ..FakeBoard::default() });
+        w.receive(remote_image());
+        for _ in 0..4 {
+            w.deliver();
+            assert_eq!(w.poll(), None);
+        }
+        assert_eq!(w.cb.image.as_ref().map(|i| i.bytes.to_vec()), Some(pixels(5, 4)));
+        assert!(w.incoming.is_none());
+    }
+
+    #[test]
+    fn a_newer_local_copy_wins_over_a_pending_one() {
+        let mut w = Watcher::new(FakeBoard { busy_writes: u32::MAX, ..FakeBoard::default() });
+        w.receive(remote_image());
+        w.deliver();
+        w.cb.text = Some("typed here".into());
+        w.cb.seq += 1;
+        assert_eq!(w.poll(), Some(Clip::Text("typed here".into())));
+        assert!(w.incoming.is_none());
+    }
+
+    #[test]
+    fn only_the_latest_copy_from_the_other_side_is_written() {
+        let mut w = Watcher::new(FakeBoard::default());
+        w.receive(remote_image());
+        w.receive(Clip::Text("later".into()));
+        w.deliver();
+        assert_eq!(w.cb.text.as_deref(), Some("later"));
+        assert_eq!(w.poll(), None);
+    }
 
     fn pixels(w: u32, h: u32) -> Vec<u8> {
         (0..w * h).flat_map(|i| [(i % 251) as u8, (i % 13) as u8, (i % 7) as u8, 255 - (i % 3) as u8]).collect()
