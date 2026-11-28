@@ -2,6 +2,7 @@ Vagrant.configure("2") do |config|
   config.vm.box = "bento/ubuntu-24.04"
   config.vm.hostname = "rider-server"
   config.vm.network "private_network", ip: "192.168.56.10"
+  config.vm.network "private_network", ip: "10.77.0.1", virtualbox__intnet: "rdr-nat"
   config.vm.synced_folder ".", "/vagrant", disabled: true
   config.vm.synced_folder "../..", "/src", mount_options: ["ro"]
 
