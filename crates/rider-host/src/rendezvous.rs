@@ -261,8 +261,15 @@ impl Registrar<'_> {
                     self.report_place(true).await?;
                 }
             }
+            ServerMsg::Wake { macs } => {
+                tokio::task::spawn_blocking(move || match crate::wake::wake(&macs) {
+                    Ok(sent) => tracing::info!("sent {sent} wake packet(s) for a paired device's computer"),
+                    Err(e) => tracing::warn!("cannot send wake packets: {e:#}"),
+                });
+            }
             ServerMsg::Error { message } => bail!("{message}"),
-            ServerMsg::Ready { .. }
+            ServerMsg::WakeSent { .. }
+            | ServerMsg::Ready { .. }
             | ServerMsg::Online { .. }
             | ServerMsg::Joined
             | ServerMsg::InviteCode { .. }

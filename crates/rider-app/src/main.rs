@@ -8,6 +8,8 @@ mod host;
 mod panel;
 #[cfg_attr(not(windows), path = "portable/pins.rs")]
 mod pins;
+#[cfg(windows)]
+mod restart_ask;
 mod sys;
 #[cfg_attr(not(windows), path = "portable/tray.rs")]
 mod tray;

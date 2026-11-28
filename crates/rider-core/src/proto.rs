@@ -43,6 +43,7 @@ pub enum ClientMsg {
     MouseButtonAt { button: MouseButton, down: bool, x: u16, y: u16, seq: u32 },
     Chat { text: String },
     SharpLost,
+    Restart,
 }
 
 pub const MAX_CHAT: usize = 4000;
@@ -64,6 +65,9 @@ pub enum HostMsg {
     Chat { text: String },
     ChatReady(bool),
     Tunnels(bool),
+    Restarting { seconds: u32 },
+    RestartCancelled,
+    WakeAddresses { macs: Vec<crate::wake::Mac> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +330,8 @@ mod tests {
         assert_eq!(encode(&ClientMsg::Chat { text: "hi".into() }).unwrap(), [14, 2, b'h', b'i']);
         assert_eq!(encode(&HostMsg::Chat { text: "hi".into() }).unwrap(), [10, 2, b'h', b'i']);
         assert_eq!(encode(&HostMsg::ChatReady(true)).unwrap(), [11, 1]);
+        assert_eq!(encode(&ClientMsg::SharpLost).unwrap(), [15]);
+        assert_eq!(encode(&HostMsg::Tunnels(true)).unwrap(), [12, 1]);
     }
 
     #[test]

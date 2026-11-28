@@ -156,7 +156,7 @@ pub async fn pair(
         _ => bail!("connection lost during pairing"),
     }
     let name = alias.unwrap_or(host_name);
-    let host = KnownHost { name, addr, fingerprint: fp_hex(&host_fp), last_connected: None };
+    let host = KnownHost { name, addr, fingerprint: fp_hex(&host_fp), last_connected: None, wake: Vec::new() };
     cfg.upsert(host.clone());
     cfg.save()?;
     conn.close(0u32.into(), b"paired");
@@ -362,6 +362,48 @@ pub async fn online(identity: &Identity, server: &ServerRef, hosts: &[Fingerprin
     conn.close(0u32.into(), b"done");
     match reply {
         Some(ServerMsg::Online { online }) if online.len() == hosts.len() => Ok(online),
+        Some(ServerMsg::Error { message }) => bail!("{}", rendezvous::explain(&message)),
+        _ => bail!("unexpected reply from the rendezvous server"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeOutcome {
+    Helpers(u32),
+    ServerTooOld,
+    NoServer,
+}
+
+pub async fn wake(
+    identity: &Identity,
+    server: Option<&ServerRef>,
+    host: Fingerprint,
+    macs: &[rider_core::wake::Mac],
+) -> Result<WakeOutcome> {
+    let macs = rider_core::wake::usable(macs);
+    if macs.is_empty() {
+        bail!("this computer has not shared a wired network address yet");
+    }
+    let nearby = {
+        let macs = macs.clone();
+        tokio::task::spawn_blocking(move || rider_core::wake::send(&macs, &[])).await?
+    };
+    if let Err(e) = nearby {
+        tracing::info!("cannot send wake packets on this network: {e:#}");
+    }
+    let Some(server) = server else { return Ok(WakeOutcome::NoServer) };
+    let (_socket, conn, mut send, mut recv) = rendezvous::reach_server(identity, server).await?;
+    if !rider_core::tls::speaks_rv2(&conn) {
+        conn.close(0u32.into(), b"done");
+        return Ok(WakeOutcome::ServerTooOld);
+    }
+    write_msg(&mut send, &PeerMsg::Wake { version: rendezvous::VERSION, host, macs }).await?;
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), read_msg::<ServerMsg>(&mut recv))
+        .await
+        .context("rendezvous server did not answer")??;
+    conn.close(0u32.into(), b"done");
+    match reply {
+        Some(ServerMsg::WakeSent { helpers }) => Ok(WakeOutcome::Helpers(helpers)),
         Some(ServerMsg::Error { message }) => bail!("{}", rendezvous::explain(&message)),
         _ => bail!("unexpected reply from the rendezvous server"),
     }

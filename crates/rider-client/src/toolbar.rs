@@ -13,11 +13,16 @@ pub enum Action {
     Access,
     Chat,
     Tunnels,
+    Restart,
 }
 
 impl Action {
     fn passive(self) -> bool {
         matches!(self, Action::Elapsed | Action::Access)
+    }
+
+    fn asks_first(self) -> bool {
+        matches!(self, Action::Disconnect | Action::Restart)
     }
 }
 
@@ -32,6 +37,7 @@ pub struct Extras {
     pub chat_open: bool,
     pub tunnels: Option<usize>,
     pub tunnels_open: bool,
+    pub restart: bool,
     pub monitor_names: Vec<String>,
 }
 
@@ -69,7 +75,7 @@ pub struct Toolbar {
     tab_hover: bool,
     tab_pressed: bool,
     last: (f64, f64),
-    confirm_until: Option<Instant>,
+    confirm: Option<(Action, Instant)>,
 }
 
 impl Toolbar {
@@ -89,7 +95,7 @@ impl Toolbar {
             tab_hover: false,
             tab_pressed: false,
             last: (-1.0, -1.0),
-            confirm_until: None,
+            confirm: None,
         }
     }
 
@@ -126,16 +132,19 @@ impl Toolbar {
     }
 
     pub fn visible(&self) -> bool {
-        self.extras.pinned || self.on_bar || self.confirming() || self.visible_until.is_some_and(|t| Instant::now() < t)
+        self.extras.pinned
+            || self.on_bar
+            || self.confirming().is_some()
+            || self.visible_until.is_some_and(|t| Instant::now() < t)
     }
 
-    fn confirming(&self) -> bool {
-        self.confirm_until.is_some_and(|t| Instant::now() < t)
+    fn confirming(&self) -> Option<Action> {
+        self.confirm.filter(|(_, t)| Instant::now() < *t).map(|(a, _)| a)
     }
 
     pub fn expire_confirm(&mut self) -> bool {
-        if self.confirm_until.is_some() && !self.confirming() {
-            self.confirm_until = None;
+        if self.confirm.is_some() && self.confirming().is_none() {
+            self.confirm = None;
             self.sprite = None;
             return true;
         }
@@ -152,7 +161,7 @@ impl Toolbar {
     pub fn deadline(&self) -> Option<Instant> {
         let hide =
             if self.on_bar || self.extras.pinned { None } else { self.visible_until.filter(|t| Instant::now() < *t) };
-        match (hide, self.confirm_until) {
+        match (hide, self.confirm.map(|(_, t)| t)) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         }
@@ -216,12 +225,12 @@ impl Toolbar {
             return (true, None);
         }
         match self.pressed.take() {
-            Some(Action::Disconnect) if self.hover == Some(Action::Disconnect) => {
-                if self.confirming() {
-                    self.confirm_until = None;
-                    return (true, Some(Action::Disconnect));
+            Some(a) if a.asks_first() && self.hover == Some(a) => {
+                if self.confirming() == Some(a) {
+                    self.confirm = None;
+                    return (true, Some(a));
                 }
-                self.confirm_until = Some(Instant::now() + CONFIRM);
+                self.confirm = Some((a, Instant::now() + CONFIRM));
                 self.sprite = None;
                 (true, None)
             }
@@ -337,7 +346,7 @@ fn labels(
     fullscreen: bool,
     (count, _): (u32, u32),
     extras: &Extras,
-    confirming: bool,
+    confirming: Option<Action>,
 ) -> Vec<(Action, Option<char>, String)> {
     let icon = |c: char| cfg!(windows).then_some(c);
     let mut v = Vec::new();
@@ -376,7 +385,15 @@ fn labels(
     }
     let pin = if cfg!(windows) { String::new() } else { tr("Pin", "Sabitlə").into() };
     v.push((Action::Pin, icon(if extras.pinned { '\u{E77A}' } else { '\u{E718}' }), pin));
-    let disconnect = if confirming {
+    if extras.restart {
+        let restart = if confirming == Some(Action::Restart) {
+            tr("Click again to restart", "Yenidən başlatmaq üçün yenə klikləyin")
+        } else {
+            tr("Restart", "Yenidən başlat")
+        };
+        v.push((Action::Restart, icon('\u{E777}'), restart.into()));
+    }
+    let disconnect = if confirming == Some(Action::Disconnect) {
         tr("Click again to disconnect", "Kəsmək üçün yenə klikləyin")
     } else {
         tr("Disconnect", "Bağlantını kəs")
@@ -656,7 +673,7 @@ fn render(
     monitors: (u32, u32),
     extras: &Extras,
     hover: Option<Action>,
-    confirming: bool,
+    confirming: Option<Action>,
 ) -> Option<Sprite> {
     let fonts = text::Fonts::new(scale)?;
     let s = |v: f64| (v * scale).round() as i32;
@@ -695,9 +712,9 @@ fn render(
     let chat_lit = extras.chat_open || extras.chat.is_some_and(|n| n > 0);
     let chat = chat_lit.then(|| pill(Action::Chat)).flatten().map(|(a, b)| (a, b, ACCENT));
     let tunnels = extras.tunnels_open.then(|| pill(Action::Tunnels)).flatten().map(|(a, b)| (a, b, ACCENT));
-    let confirm = confirming.then(|| pill(Action::Disconnect)).flatten().map(|(a, b)| (a, b, DANGER));
+    let confirm = confirming.and_then(pill).map(|(a, b)| (a, b, DANGER));
     let hovered = hover
-        .and_then(|h| pill(h).map(|(a, b)| (a, b, if h == Action::Disconnect { DANGER } else { HOVER })))
+        .and_then(|h| pill(h).map(|(a, b)| (a, b, if h.asks_first() { DANGER } else { HOVER })))
         .filter(|_| hover != Some(Action::Monitor(monitors.1)) || monitors.0 < 2);
     let mut px = vec![0u32; w * hu];
     for y in 0..hu {
@@ -860,17 +877,17 @@ mod tests {
         t.pointer(x, 10.0);
         assert!(t.press());
         assert_eq!(t.release(), (true, None), "first click only asks");
-        assert!(t.confirming());
+        assert_eq!(t.confirming(), Some(Action::Disconnect));
         t.draw(&mut buf, 1600, 900);
         let x = at(&t);
         t.pointer(x, 10.0);
         assert!(t.press());
         assert_eq!(t.release(), (true, Some(Action::Disconnect)));
-        assert!(!t.confirming());
+        assert_eq!(t.confirming(), None);
         t.pointer(x, 10.0);
         t.press();
         t.release();
-        t.confirm_until = Some(Instant::now().checked_sub(Duration::from_millis(1)).unwrap());
+        t.confirm = Some((Action::Disconnect, Instant::now().checked_sub(Duration::from_millis(1)).unwrap()));
         assert!(t.expire_confirm());
         assert!(!t.expire_confirm());
         t.draw(&mut buf, 1600, 900);

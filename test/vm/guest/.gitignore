@@ -23,3 +23,6 @@ tunnel-panel.args
 tunnel-click
 tunnel-panel.trace
 monitor-left.orig
+wake-args.txt
+wake-helper.log
+restart-*.png

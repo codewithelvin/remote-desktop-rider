@@ -339,11 +339,8 @@ impl Enterprise {
                 );
                 go = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let ready = !self.busy && self.code.trim().len() >= 12;
-                go |= widgets::primary(ui, ready, tr("Sign in", "Daxil ol")).clicked();
+                go |= widgets::primary_busy(ui, ready, self.busy, tr("Sign in", "Daxil ol")).clicked();
                 go &= ready;
-                if self.busy {
-                    ui.spinner();
-                }
             });
             widgets::hint(
                 ui,
@@ -404,11 +401,10 @@ impl Enterprise {
                     Err(e) => self.notice = Some(e),
                 }
             }
-            if widgets::icon_button(ui, icon::REFRESH, tr("Refresh", "Yenilə")).clicked() && !self.busy {
-                self.request(env, None);
-            }
             if self.busy {
-                ui.spinner();
+                widgets::icon_spinner(ui);
+            } else if widgets::icon_button(ui, icon::REFRESH, tr("Refresh", "Yenilə")).clicked() {
+                self.request(env, None);
             }
         });
         if let Some(e) = &self.error {
@@ -1117,9 +1113,11 @@ fn tile_tooltip(ui: &mut Ui, c: &Computer) {
 
 fn unattended_toggle(ui: &mut Ui, c: &Computer, edits: &mut Vec<DirEdit>) {
     let mut on = c.unattended_on;
-    let toggle = ui.add_enabled(
+    let toggle = widgets::checkbox(
+        ui,
         c.info.unattended,
-        egui::Checkbox::new(&mut on, tr("Unattended (no one asked)", "Nəzarətsiz (heç kimdən soruşulmadan)")),
+        &mut on,
+        tr("Unattended (no one asked)", "Nəzarətsiz (heç kimdən soruşulmadan)"),
     );
     let toggle = toggle.on_disabled_hover_text(tr(
         "Only for computers installed as unattended (company installer option).",

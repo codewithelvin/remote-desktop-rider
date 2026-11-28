@@ -1,4 +1,5 @@
-param([Parameter(Mandatory)][string]$Script, [string]$Arguments = "")
+param([Parameter(Mandatory)][string]$Script, [Parameter(ValueFromRemainingArguments)][string[]]$Rest)
+$Arguments = $Rest -join " "
 $name = "rider-" + [IO.Path]::GetFileNameWithoutExtension($Script)
 $a = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\rider-test\$Script $Arguments"

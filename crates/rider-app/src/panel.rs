@@ -26,6 +26,7 @@ enum Event {
     FileFailed { id: u64, reason: String },
     Notice(String),
     Tunnel(crate::tunnel_ask::TunnelEvent),
+    Restart(crate::restart_ask::RestartEvent),
 }
 
 pub struct Panel {
@@ -36,6 +37,7 @@ pub struct Panel {
     files: HashMap<u64, PathBuf>,
     request: Option<(String, std::time::Instant, f32)>,
     tunnel: Option<crate::tunnel_ask::TunnelAsk>,
+    restart: Option<crate::restart_ask::RestartWarning>,
     tunnels_seen: std::collections::HashSet<String>,
 }
 
@@ -64,7 +66,9 @@ impl Panel {
                             }
                             if matches!(
                                 ev,
-                                Event::Request { .. } | Event::Tunnel(crate::tunnel_ask::TunnelEvent::Request { .. })
+                                Event::Request { .. }
+                                    | Event::Tunnel(crate::tunnel_ask::TunnelEvent::Request { .. })
+                                    | Event::Restart(crate::restart_ask::RestartEvent::Warning(_))
                             ) {
                                 show(if quiet() { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL });
                             }
@@ -87,6 +91,7 @@ impl Panel {
             files: HashMap::new(),
             request: None,
             tunnel: None,
+            restart: None,
             tunnels_seen: std::collections::HashSet::new(),
         }
     }
@@ -133,6 +138,17 @@ impl Panel {
                 Event::FileFailed { id, reason } => self.chat.file_failed(id, reason),
                 Event::Notice(text) => self.chat.notice(text),
                 Event::Tunnel(t) => self.tunnel_event(t, ctx),
+                Event::Restart(crate::restart_ask::RestartEvent::Warning(seconds)) => {
+                    self.restart = Some(crate::restart_ask::RestartWarning::new(seconds));
+                    if !quiet() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    attention(ctx);
+                }
+                Event::Restart(crate::restart_ask::RestartEvent::Cancelled) => {
+                    self.restart = None;
+                    self.chat.notice(tr("The restart was cancelled.", "Yenidən başlatma ləğv edildi."));
+                }
                 Event::Request { company, seconds } => {
                     let seconds = seconds.clamp(5, 300);
                     let until = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
@@ -256,6 +272,14 @@ impl Panel {
         }
     }
 
+    fn restart_banner(&mut self, ui: &mut Ui) {
+        let Some(warning) = &self.restart else { return };
+        let device = self.device.clone().unwrap_or_default();
+        if crate::restart_ask::banner(ui, warning, &device) {
+            Self::send(crate::restart_ask::CANCEL);
+        }
+    }
+
     fn answer(&mut self, yes: bool) {
         self.request = None;
         Self::send(if yes { "accept" } else { "decline" });
@@ -370,6 +394,7 @@ impl eframe::App for Panel {
             show(SW_MINIMIZE);
         }
         self.header(ui);
+        self.restart_banner(ui);
         self.tunnel_banner(ui);
         let mut actions = Vec::new();
         egui::CentralPanel::default()
@@ -385,6 +410,9 @@ fn parse(line: &str) -> Option<Event> {
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or_default();
     if let Some(t) = crate::tunnel_ask::parse(&v) {
         return Some(Event::Tunnel(t));
+    }
+    if let Some(r) = crate::restart_ask::parse(&v) {
+        return Some(Event::Restart(r));
     }
     Some(match v.get("event")?.as_str()? {
         "session" => Event::Session {

@@ -32,6 +32,7 @@ pub mod icon {
     pub const COMPANY: &str = "\u{E716}";
     pub const SEARCH: &str = "\u{E721}";
     pub const REFRESH: &str = "\u{E72C}";
+    pub const POWER: &str = "\u{E7E8}";
 }
 
 #[cfg(not(windows))]
@@ -61,6 +62,7 @@ pub mod icon {
     pub const COMPANY: &str = "👥";
     pub const SEARCH: &str = "🔍";
     pub const REFRESH: &str = "🔄";
+    pub const POWER: &str = "⚡";
 }
 
 pub fn semibold() -> FontFamily {
@@ -172,6 +174,7 @@ pub fn setup(ctx: &egui::Context) {
         v.selection.bg_fill = ACCENT.linear_multiply(if dark { 0.55 } else { 0.35 });
         v.selection.stroke = Stroke::new(1.0, ACCENT);
         v.hyperlink_color = ACCENT;
+        v.interact_cursor = Some(egui::CursorIcon::PointingHand);
         v.window_corner_radius = CornerRadius::same(12);
         v.window_stroke = Stroke::new(1.0, border(dark));
         v.window_shadow.blur = 24;

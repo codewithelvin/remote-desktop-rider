@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$Fingerprint,
     [string]$Client = "",
     [string]$Pin = "rider-test-pin",
+    [int]$VideoWithin = 60,
     [string]$Work = (Join-Path $env:TEMP "rdr-vm-paired")
 )
 . "$PSScriptRoot\..\local-session\lib.ps1"
@@ -60,7 +61,7 @@ try {
     do { Start-Sleep -Milliseconds 300; $win = [Rdr]::WindowOf($viewer.P.Id) } while ($win -eq [IntPtr]::Zero -and (Get-Date) -lt $end -and -not $viewer.P.HasExited)
     if ($win -eq [IntPtr]::Zero) { throw "no viewer window: $($viewer.All())" }
     [Rdr]::Place($win, 100, 100, 1000, 900)
-    Wait-Until { [Rdr]::Title($win) -match ' [1-9]\d* fps' } 20 | Out-Null
+    Check "video starts within $VideoWithin s" ([bool](Wait-Until { [Rdr]::Title($win) -match ' [1-9]\d* fps' } $VideoWithin))
     Start-Sleep 3
     $title = [Rdr]::Title($win)
     Write-Host "  viewer title: $title"

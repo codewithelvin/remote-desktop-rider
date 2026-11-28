@@ -40,7 +40,7 @@
     "f5.h": "Uzaq kompüterdə hər yerdə işləyir",
     "f5.p": "Giriş ekranında, kilid ekranında, UAC sorğularında və hətta yenidən başladıldıqdan sonra.",
     "f6.h": "Gündəlik alətlər",
-    "f6.p": "Mübadilə buferindəki mətnin hər iki istiqamətdə sinxronlaşdırılması, faylları sürüşdürüb uzaq kompüterə atmaq, monitorlar arasında keçid, Ctrl+Alt+Del, uzaq kompüteri kilidləmək.",
+    "f6.p": "Mübadilə buferindəki mətnin hər iki istiqamətdə sinxronlaşdırılması, faylları sürüşdürüb uzaq kompüterə atmaq, monitorlar arasında keçid, Ctrl+Alt+Del, uzaq kompüteri kilidləmək, yenidən başlatmaq və o qayıdanda avtomatik qoşulmaq, yuxu rejimindəki kompüteri kabel şəbəkəsi üzərindən oyatmaq.",
     "f7.h": "Öz serverinizdə",
     "f7.p": "İstəyə bağlı <code>rider-server</code> istənilən kiçik Linux maşınında işləyir. O, cihazları bir-biri ilə tanış edir və şifrələnmiş trafiki ötürür, lakin seanslara baxa və ya onları ələ keçirə bilməz.",
     "f8.h": "Özünü yeniləyir",

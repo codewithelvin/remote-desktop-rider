@@ -95,7 +95,43 @@ pub fn title_fit(ui: &Ui, text: &str, size: f32, width: f32) -> RichText {
 }
 
 pub fn primary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
-    ui.add_enabled(enabled, Button::new(RichText::new(text).family(semibold()).color(Color32::WHITE)).fill(ACCENT))
+    primary_busy(ui, enabled, false, text)
+}
+
+pub fn primary_busy(ui: &mut Ui, enabled: bool, busy: bool, text: &str) -> Response {
+    let text = RichText::new(text).family(semibold()).color(Color32::WHITE);
+    busy_button(ui, enabled, busy, text, Color32::WHITE, Some(ACCENT))
+}
+
+pub fn secondary_busy(ui: &mut Ui, enabled: bool, busy: bool, text: &str) -> Response {
+    let color = ui.visuals().text_color();
+    busy_button(ui, enabled, busy, RichText::new(text), color, None)
+}
+
+fn busy_button(
+    ui: &mut Ui,
+    enabled: bool,
+    busy: bool,
+    text: RichText,
+    color: Color32,
+    fill: Option<Color32>,
+) -> Response {
+    let spinner_id = egui::IdSalt::new("busy-spinner");
+    let side = ui.text_style_height(&egui::TextStyle::Button);
+    let button =
+        if busy { Button::new((egui::Atom::custom(spinner_id, vec2(side, side)), text)) } else { Button::new(text) };
+    let button = match fill {
+        Some(fill) => button.fill(fill),
+        None => button,
+    };
+    let shown = ui.add_enabled_ui(enabled && !busy, |ui| button.atom_ui(ui)).inner;
+    if let Some(rect) = shown.rect(spinner_id) {
+        egui::Spinner::new().size(side).color(color).paint_at(ui, rect);
+    }
+    if busy && shown.response.contains_pointer() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Progress);
+    }
+    shown.response
 }
 
 pub fn danger(ui: &mut Ui, text: &str) -> Response {
@@ -103,8 +139,21 @@ pub fn danger(ui: &mut Ui, text: &str) -> Response {
     ui.add(Button::new(RichText::new(text).family(semibold()).color(Color32::WHITE)).fill(red))
 }
 
+const ICON_BUTTON: egui::Vec2 = vec2(30.0, 30.0);
+
 pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
-    ui.add(Button::new(RichText::new(icon).size(15.0)).frame(false).min_size(vec2(30.0, 30.0))).on_hover_text(tip)
+    ui.add(Button::new(RichText::new(icon).size(15.0)).frame(false).min_size(ICON_BUTTON)).on_hover_text(tip)
+}
+
+pub fn checkbox(ui: &mut Ui, enabled: bool, value: &mut bool, text: &str) -> Response {
+    ui.add_enabled(enabled, egui::Checkbox::new(value, text)).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+pub fn icon_spinner(ui: &mut Ui) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(ICON_BUTTON, Sense::hover());
+    let side = ui.text_style_height(&egui::TextStyle::Button);
+    egui::Spinner::new().size(side).paint_at(ui, egui::Rect::from_center_size(rect.center(), vec2(side, side)));
+    resp.on_hover_cursor(egui::CursorIcon::Progress)
 }
 
 pub fn copyable(ui: &mut Ui, text: &str, shown: RichText) {

@@ -15,6 +15,7 @@ pub enum ChatCmd {
     End,
     Answer(bool),
     Tunnel { id: u64, allow: bool },
+    CancelRestart,
 }
 
 pub fn parse_chat(word: &str, arg: &str) -> Option<ChatCmd> {
@@ -24,6 +25,7 @@ pub fn parse_chat(word: &str, arg: &str) -> Option<ChatCmd> {
         "cancel-file" => arg.parse().ok().map(ChatCmd::Cancel),
         "tunnel-allow" => arg.parse().ok().map(|id| ChatCmd::Tunnel { id, allow: true }),
         "tunnel-deny" => arg.parse().ok().map(|id| ChatCmd::Tunnel { id, allow: false }),
+        "restart-cancel" => Some(ChatCmd::CancelRestart),
         _ => None,
     }
 }

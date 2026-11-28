@@ -36,6 +36,9 @@ pub enum UiEvent {
     Chat(String),
     ChatReady(bool),
     Tunnels(bool),
+    Restarting(u32),
+    RestartCancelled,
+    WakeAddresses(Vec<rider_core::wake::Mac>),
     File { id: u64, mine: bool, name: String, size: u64 },
     FileProgress { id: u64, done: u64 },
     FileDone { id: u64, path: Option<PathBuf> },
@@ -492,6 +495,9 @@ impl HostReader {
             HostMsg::Chat { text } => UiEvent::Chat(text.chars().take(MAX_CHAT).collect()),
             HostMsg::ChatReady(ready) => UiEvent::ChatReady(ready),
             HostMsg::Tunnels(on) => UiEvent::Tunnels(on),
+            HostMsg::Restarting { seconds } => UiEvent::Restarting(seconds),
+            HostMsg::RestartCancelled => UiEvent::RestartCancelled,
+            HostMsg::WakeAddresses { macs } => UiEvent::WakeAddresses(rider_core::wake::usable(&macs)),
             HostMsg::Pong { client_us, host_us } => {
                 self.shared.pong(client_us, host_us);
                 return;

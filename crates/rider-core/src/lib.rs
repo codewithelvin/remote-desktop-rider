@@ -19,6 +19,7 @@ pub mod transfer;
 pub mod tunnel;
 #[cfg(windows)]
 pub mod update;
+pub mod wake;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

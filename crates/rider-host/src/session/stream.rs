@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 
 const FRAME_DEADLINE: Duration = Duration::from_millis(500);
 const GOODBYE_GRACE: Duration = Duration::from_millis(200);
+const RESTART_WARNING: Duration = Duration::from_secs(15);
 
 pub(super) struct Viewer {
     pub name: String,
@@ -55,7 +56,8 @@ struct Control<'a> {
     clipboard: &'a std::sync::mpsc::Sender<Clip>,
     quality: &'a AtomicU32,
     monitors: &'a [MonitorInfo],
-    chat: &'a Chat,
+    chat: &'a Arc<Chat>,
+    support: bool,
 }
 
 pub(super) async fn stream(
@@ -81,7 +83,7 @@ pub(super) async fn stream(
 
     let (out_tx, out_rx) = mpsc::unbounded_channel::<HostMsg>();
     let writer = spawn_writer(send, out_rx);
-    for msg in opening(conn, &list, start, access, cfg.tunnels) {
+    for msg in opening(conn, &list, start, access, cfg.tunnels, state.support) {
         let _ = out_tx.send(msg);
     }
     let link = match panel {
@@ -137,6 +139,7 @@ pub(super) async fn stream(
         quality: &quality,
         monitors: &list,
         chat: &chat,
+        support: state.support,
     };
     let mut ended = String::new();
     let result = tokio::select! {
@@ -213,6 +216,7 @@ fn opening(
     start: usize,
     access: Access,
     tunnels: crate::config::TunnelPolicy,
+    support: bool,
 ) -> Vec<HostMsg> {
     let mut msgs = vec![HostMsg::Monitors { list: list.to_vec(), active: start as u32 }];
     if rider_core::tls::speaks_v4(conn) {
@@ -220,6 +224,12 @@ fn opening(
     }
     if rider_core::tls::speaks_v8(conn) {
         msgs.push(HostMsg::Tunnels(tunnels != crate::config::TunnelPolicy::Off));
+    }
+    if rider_core::tls::speaks_v9(conn) && !support {
+        let macs = crate::wake::network().wired;
+        if !macs.is_empty() {
+            msgs.push(HostMsg::WakeAddresses { macs });
+        }
     }
     msgs
 }
@@ -449,18 +459,39 @@ impl Control<'_> {
     }
 
     fn permitted(&self, msg: &ClientMsg) -> bool {
-        let p = allows(self.perms);
-        let needs_control = matches!(
-            msg,
-            ClientMsg::Key { .. }
-                | ClientMsg::MouseButton { .. }
-                | ClientMsg::MouseButtonAt { .. }
-                | ClientMsg::MouseWheel { .. }
-                | ClientMsg::SendSas
-                | ClientMsg::LockScreen
-        );
-        let clipboard = matches!(msg, ClientMsg::Clipboard { .. });
-        (!needs_control || p.control) && (!clipboard || p.clipboard)
+        permitted(msg, allows(self.perms), self.support)
+    }
+
+    fn restart(&self) {
+        tracing::info!("restart requested by {}", self.name);
+        let chat = self.chat.clone();
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            let signed_in =
+                tokio::task::spawn_blocking(|| crate::company::console_user().0.is_some()).await.unwrap_or(true);
+            let warning = if signed_in { RESTART_WARNING } else { Duration::ZERO };
+            let seconds = u32::try_from(warning.as_secs()).unwrap_or(u32::MAX);
+            let _ = out.send(HostMsg::Restarting { seconds });
+            if signed_in {
+                match chat.warn_restart(warning).await {
+                    None => return,
+                    Some(false) => {
+                        let _ = out.send(HostMsg::RestartCancelled);
+                        return;
+                    }
+                    Some(true) => {}
+                }
+            }
+            tracing::info!("restarting the computer");
+            match tokio::task::spawn_blocking(crate::system::restart).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("cannot restart: {e:#}");
+                    let _ = out.send(HostMsg::RestartCancelled);
+                }
+                Err(e) => tracing::warn!("cannot restart: {e}"),
+            }
+        });
     }
 
     async fn handle(&self, msg: ClientMsg) -> Result<()> {
@@ -491,6 +522,7 @@ impl Control<'_> {
             }
             ClientMsg::SetQuality { max_height } => self.set_quality(max_height),
             ClientMsg::LockScreen => lock_screen(),
+            ClientMsg::Restart => self.restart(),
             ClientMsg::Chat { text } => self.chat.text_from_viewer(&text),
             ClientMsg::SharpLost => {
                 let _ = self.video.send(VideoCmd::SharpLost);
@@ -513,6 +545,21 @@ impl Control<'_> {
         self.quality.store(max_height, Ordering::Relaxed);
         let _ = self.video.send(VideoCmd::MaxHeight(max_height));
     }
+}
+
+fn permitted(msg: &ClientMsg, p: Permissions, support: bool) -> bool {
+    let needs_control = matches!(
+        msg,
+        ClientMsg::Key { .. }
+            | ClientMsg::MouseButton { .. }
+            | ClientMsg::MouseButtonAt { .. }
+            | ClientMsg::MouseWheel { .. }
+            | ClientMsg::SendSas
+            | ClientMsg::LockScreen
+    );
+    let clipboard = matches!(msg, ClientMsg::Clipboard { .. });
+    let restart = matches!(msg, ClientMsg::Restart);
+    (!needs_control || p.control) && (!clipboard || p.clipboard) && (!restart || (p.is_full() && !support))
 }
 
 fn lock_screen() {
@@ -600,4 +647,27 @@ async fn receive_file(header: FileHeader, send: quinn::SendStream, recv: quinn::
     let got = transfer::receive(header, send, recv, |_, _| {}, create, &Arc::default(), |_| {}).await?;
     tracing::info!("file saved: {} ({} bytes)", got.path.display(), got.size);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::permitted;
+    use rider_core::proto::{Access, ClientMsg};
+
+    #[test]
+    fn only_a_full_access_viewer_outside_support_may_restart() {
+        assert!(permitted(&ClientMsg::Restart, Access::Full.permissions(), false));
+        assert!(!permitted(&ClientMsg::Restart, Access::Standard.permissions(), false));
+        assert!(!permitted(&ClientMsg::Restart, Access::ViewOnly.permissions(), false));
+        assert!(!permitted(&ClientMsg::Restart, Access::Full.permissions(), true));
+    }
+
+    #[test]
+    fn view_only_viewers_cannot_send_input_or_lock() {
+        let view = Access::ViewOnly.permissions();
+        assert!(!permitted(&ClientMsg::Key { scancode: 30, extended: false, down: true }, view, false));
+        assert!(!permitted(&ClientMsg::LockScreen, view, false));
+        assert!(!permitted(&ClientMsg::SendSas, view, false));
+        assert!(permitted(&ClientMsg::Ping { client_us: 0 }, view, false));
+    }
 }

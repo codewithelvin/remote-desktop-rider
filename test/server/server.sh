@@ -36,7 +36,7 @@ install_build() {
 https_tunnel() {
   docker exec "$NAME" bash -c "
     set -e
-    command -v nginx >/dev/null || { apt-get update -qq && apt-get install -y -qq nginx openssl >/dev/null; }
+    command -v nginx >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx openssl; } >/tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
     mkdir -p /etc/nginx/rider
     [ -f /etc/nginx/rider/cert.pem ] || openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
       -keyout /etc/nginx/rider/key.pem -out /etc/nginx/rider/cert.pem \

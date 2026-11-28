@@ -34,6 +34,7 @@ use winit::window::{CursorIcon, Fullscreen, Icon, Window, WindowId};
 
 const SILENT: Duration = Duration::from_secs(3);
 const RECONNECT_FOR: Duration = Duration::from_secs(120);
+const RESTART_RECONNECT_FOR: Duration = Duration::from_secs(600);
 const ATTEMPT: Duration = Duration::from_secs(30);
 
 pub type Reconnect = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<Session>> + Send>> + Send + Sync>;
@@ -52,6 +53,7 @@ pub fn run(
     let diag = report_to.map(|t| Diag::new(t, &session.conn, session.relayed, rt.handle().clone()));
     let v2 = rider_core::tls::speaks_v2(&session.conn);
     let v3 = rider_core::tls::speaks_v3(&session.conn);
+    let v9 = rider_core::tls::speaks_v9(&session.conn);
     let prefs = crate::config::ClientConfig::load().map_or_default(|c| c.viewer);
     let net = net::start(rt.handle(), session, proxy.clone(), &shared);
     let forwards = start_forwards(&rt, forwards, &shared, &proxy, &net.conn)?;
@@ -83,6 +85,7 @@ pub fn run(
         started: Instant::now(),
         v2,
         v3,
+        v9,
         quality,
         pointer: None,
         remote_cursor: CursorShape::Arrow,
@@ -92,6 +95,7 @@ pub fn run(
         proxy,
         reconnect: reconnect.map(Arc::new),
         reconnecting: None,
+        restarting: false,
         overlay: Overlay::default(),
         badge: Badge::default(),
         chat: None,
@@ -156,6 +160,8 @@ struct App {
     started: Instant,
     v2: bool,
     v3: bool,
+    v9: bool,
+    restarting: bool,
     pointer: Option<(u16, u16)>,
     remote_cursor: CursorShape,
     shown_cursor: CursorShape,
@@ -361,6 +367,7 @@ impl App {
             Action::Chat => self.toggle_page(Page::Chat),
             Action::Tunnels => self.toggle_page(Page::Tunnels),
             Action::Elapsed | Action::Access => {}
+            Action::Restart => self.restart_remote(),
             Action::Disconnect => {
                 self.release_keys();
                 self.closed = Some("disconnected by you".into());
@@ -387,6 +394,7 @@ impl App {
             chat_open: chat.is_some_and(|c| c.is_open() && c.page() == Page::Chat),
             tunnels: self.tunnels_available().then_some(self.forwards.len()),
             tunnels_open: self.chat.as_ref().is_some_and(|c| c.is_open() && c.page() == Page::Tunnels),
+            restart: self.restart_available(),
             monitor_names: self.monitors.iter().map(|m| m.name.clone()).collect(),
         })
     }
@@ -647,6 +655,46 @@ impl App {
         self.redraw_soon();
     }
 
+    fn restart_available(&self) -> bool {
+        self.v9 && self.shared.permissions().is_full() && !self.restarting
+    }
+
+    fn chat_received(&mut self, text: &str) {
+        let preview: String = text.chars().take(60).collect();
+        if let Some(c) = &mut self.chat {
+            c.chat.text(false, text);
+        }
+        let notice = format!("{}: {preview}", self.host_name);
+        self.chat_event(Some(notice));
+    }
+
+    fn restart_remote(&mut self) {
+        if !self.restart_available() {
+            return;
+        }
+        self.release_keys();
+        self.net.send(ClientMsg::Restart);
+    }
+
+    fn restart_event(&mut self, announced: Option<u32>) {
+        self.restarting = announced.is_some();
+        let text = match announced {
+            Some(0) => tr("The remote computer is restarting", "Uzaq kompüter yenidən başlayır").to_owned(),
+            Some(secs) => rider_core::trf!(
+                "The remote computer restarts in {secs} s unless someone there cancels",
+                "Orada kimsə ləğv etməsə, uzaq kompüter {secs} san. sonra yenidən başlayacaq"
+            ),
+            None => {
+                tr("The restart was cancelled on the remote computer", "Yenidən başlatma uzaq kompüterdə ləğv edildi")
+                    .to_owned()
+            }
+        };
+        self.notice = Some((text, Instant::now()));
+        self.update_title();
+        self.refresh_extras();
+        self.redraw_soon();
+    }
+
     fn lock_remote(&mut self) {
         if !self.shared.permissions().control {
             return;
@@ -670,10 +718,12 @@ impl App {
     fn update_overlay(&mut self) {
         let silent = self.shared.silent_for();
         let lines = (self.reconnecting.is_some() || silent >= SILENT).then(|| {
-            (
-                tr("Connection lost", "Bağlantı kəsildi").to_owned(),
-                format!("{} {}", tr("Reconnecting…", "Yenidən qoşulur…"), elapsed(silent)),
-            )
+            let title = if self.restarting {
+                tr("The remote computer is restarting", "Uzaq kompüter yenidən başlayır")
+            } else {
+                tr("Connection lost", "Bağlantı kəsildi")
+            };
+            (title.to_owned(), format!("{} {}", tr("Reconnecting…", "Yenidən qoşulur…"), elapsed(silent)))
         });
         if self.overlay.set(lines) {
             self.redraw_soon();
@@ -686,8 +736,9 @@ impl App {
         self.reconnecting = Some(reason.clone());
         self.held_keys.clear();
         let proxy = self.proxy.clone();
+        let patience = if self.restarting { RESTART_RECONNECT_FOR } else { RECONNECT_FOR };
         self.rt.spawn(async move {
-            let deadline = tokio::time::Instant::now() + RECONNECT_FOR;
+            let deadline = tokio::time::Instant::now() + patience;
             let mut wait = Duration::from_secs(1);
             let last = loop {
                 let error = match tokio::time::timeout(ATTEMPT, reconnect()).await {
@@ -713,11 +764,14 @@ impl App {
 
     fn resume(&mut self, session: Session) {
         let lost = self.reconnecting.take().unwrap_or_default();
+        tracing::info!("reconnected after: {lost}");
         if let Some(d) = &mut self.diag {
             d.restart(&session.conn, session.relayed, &format!("{lost}; reconnected"));
         }
         self.v2 = rider_core::tls::speaks_v2(&session.conn);
         self.v3 = rider_core::tls::speaks_v3(&session.conn);
+        self.v9 = rider_core::tls::speaks_v9(&session.conn);
+        self.restarting = false;
         self.remote_cursor = CursorShape::Arrow;
         self.update_cursor();
         self.net = net::start(&self.rt, session, self.proxy.clone(), &self.shared);
@@ -970,15 +1024,11 @@ impl ApplicationHandler<UiEvent> for App {
                 self.update_cursor();
             }
             UiEvent::Permissions(p) => self.permissions_changed(p),
-            UiEvent::Chat(text) => {
-                let preview: String = text.chars().take(60).collect();
-                if let Some(c) = &mut self.chat {
-                    c.chat.text(false, &text);
-                }
-                let notice = format!("{}: {preview}", self.host_name);
-                self.chat_event(Some(notice));
-            }
+            UiEvent::Chat(text) => self.chat_received(&text),
             UiEvent::Tunnels(on) => self.host_tunnels_changed(on),
+            UiEvent::Restarting(seconds) => self.restart_event(Some(seconds)),
+            UiEvent::RestartCancelled => self.restart_event(None),
+            UiEvent::WakeAddresses(macs) => remember_wake(self.host_name.clone(), macs),
             UiEvent::ChatReady(ready) => {
                 self.chat_ready = ready;
                 if let Some(c) = &mut self.chat {
@@ -1039,6 +1089,7 @@ impl ApplicationHandler<UiEvent> for App {
             }
             UiEvent::Closed { conn, .. } if conn != self.net.conn.stable_id() => {}
             UiEvent::Closed { reason, lost, .. } => {
+                let lost = lost || self.restarting;
                 if !(lost && self.closed.is_none() && self.start_reconnect(reason.clone())) {
                     self.closed.get_or_insert(reason);
                     el.exit();
@@ -1203,4 +1254,18 @@ fn digit(key: PhysicalKey) -> Option<usize> {
         KeyCode::Digit9,
     ];
     keys.iter().position(|&k| key == PhysicalKey::Code(k)).map(|i| i + 1)
+}
+
+fn remember_wake(host: String, macs: Vec<rider_core::wake::Mac>) {
+    std::thread::spawn(move || {
+        let saved = crate::config::ClientConfig::load().and_then(|mut cfg| {
+            if cfg.remember_wake(&host, &macs) {
+                cfg.save()?;
+            }
+            Ok(())
+        });
+        if let Err(e) = saved {
+            tracing::warn!("cannot save the wake addresses of {host}: {e:#}");
+        }
+    });
 }

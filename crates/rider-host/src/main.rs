@@ -14,6 +14,7 @@ mod session;
 mod system;
 mod ui;
 mod video;
+mod wake;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -278,6 +279,10 @@ fn serve(cfg: HostConfig, identity: Identity, mode: Mode) -> Result<()> {
         }
         let wan = sockets.get(1).map(|s| s.endpoint.clone());
         tokio::spawn(rendezvous::run(state.clone(), sockets, server_cfg, mode != Mode::Agent));
+        #[cfg(windows)]
+        if mode == Mode::Agent {
+            tokio::task::spawn_blocking(wake::allow_wake);
+        }
         let quit = if ui::json() { ui::start_input() } else { Arc::new(tokio::sync::Notify::new()) };
 
         announce(&name, port, &fp, server.as_ref(), pairing, mode);
