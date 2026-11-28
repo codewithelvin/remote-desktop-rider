@@ -4,6 +4,8 @@ param(
     [string]$RestoreServer = "rdm.codex.az",
     [string]$RestoreFingerprint = "ca3dbb3efab7faacb4f4bb18f7db38c3d8eb0744eee4d7b992d41ed6083f1961",
     [string]$Client = "",
+    [string]$VmAddress = "192.168.56.50",
+    [int]$OfflineAfter = 20,
     [string]$Pin = "rider-test-pin",
     [string]$Work = (Join-Path $env:TEMP "rdr-vm-wake")
 )
@@ -37,9 +39,20 @@ function Magic-Hex([string]$mac) {
     $m = ($mac -replace '[-:]', '').ToUpper()
     ("FF" * 6) + ($m * 16)
 }
-function Trace-Has([string]$file, [string]$mac) {
-    $bytes = [IO.File]::ReadAllBytes($file)
-    [BitConverter]::ToString($bytes).Replace("-", "").Contains((Magic-Hex $mac))
+function Trace-From([string]$file, [string]$mac, [string]$from) {
+    $hex = [BitConverter]::ToString([IO.File]::ReadAllBytes($file)).Replace("-", "")
+    $source = -join ($from.Split('.') | ForEach-Object { '{0:X2}' -f [int]$_ })
+    $magic = Magic-Hex $mac
+    $at = $hex.IndexOf($magic)
+    while ($at -ge 0) {
+        $ipSource = ($at / 2) - 8 - 20 + 12
+        if ($at % 2 -eq 0 -and $ipSource -ge 0 -and $hex.Substring($ipSource * 2, 8) -eq $source) { return $true }
+        $at = $hex.IndexOf($magic, $at + 1)
+    }
+    $false
+}
+function Skip([string]$what, [string]$why) {
+    Write-Host "  SKIP  $what ($why)"
 }
 function Viewer([string]$arguments) {
     $p = New-Object Rdr+Proc $Client, $arguments, $env1
@@ -84,33 +97,34 @@ try {
     Write-Host "  wake addresses: $($macs -join ', ')"
 
     $armed = Wake-Guest "armed"
-    Check "remote access armed the wired adapters to wake the computer" ($armed -match 'PRO/1000')
+    if ((Wake-Guest "programmable") -match 'NONE') {
+        Skip "remote access armed the wired adapters to wake the computer" "this VM has no wake-capable devices"
+    } else {
+        Check "remote access armed the wired adapters to wake the computer" ($armed -match 'PRO/1000')
+    }
     Write-Host "  $armed"
-
-    Write-Host "  $(Wake-Guest "helper $Server $Fingerprint")"
-    Start-Sleep 8
-    Write-Host "  $(Wake-Guest "stop")"
-    Start-Sleep 5
 
     & $vbox controlvm rider-test-host nictracefile2 $trace
     & $vbox controlvm rider-test-host nictrace2 on
-    Start-Sleep 1
+    Write-Host "  $(Wake-Guest "helper $Server $Fingerprint")"
+    Start-Sleep 8
+    Write-Host "  $(Wake-Guest "stop")"
+    Start-Sleep $OfflineAfter
+
     $wake = Viewer "wake vm"
     $said = $wake.All()
     Start-Sleep 3
     & $vbox controlvm rider-test-host nictrace2 off
     Write-Host "  viewer: $($said.Trim())"
     Check "the server passed the wake-up to one helper on the computer's network" ($said -match 'through 1 computer')
-    Check "the helper broadcast a magic packet for the sleeping computer on its network" ((Test-Path $trace) -and (Trace-Has $trace $hostOnly))
+    Check "the helper on the VM broadcast a magic packet for the sleeping computer" ((Test-Path $trace) -and (Trace-From $trace $hostOnly $VmAddress))
 
     $stranger = Join-Path $Work "stranger"
     $env2 = New-Object 'System.Collections.Generic.Dictionary[string,string]'
     $env2["APPDATA"] = $stranger; $env2["RIDER_LANG"] = "en"
-    (New-Object Rdr+Proc $Client, "set-server $Server $Fingerprint", $env2).P.WaitForExit(15000) | Out-Null
-    $strangerCfg = Join-Path $stranger "RemoteDesktopRider\client\client.toml"
-    $strangerToml = Get-Content $strangerCfg -Raw
-    $hostBlock = ($toml -split '(?=\[\[hosts\]\])' | Where-Object { $_ -match '^\[\[hosts\]\]' }) -join ''
-    Set-Content $strangerCfg ($strangerToml.TrimEnd() + "`n`n" + $hostBlock) -NoNewline
+    $strangerDir = Join-Path $stranger "RemoteDesktopRider\client"
+    New-Item -ItemType Directory -Force $strangerDir | Out-Null
+    Copy-Item $config (Join-Path $strangerDir "client.toml")
     $denied = New-Object Rdr+Proc $Client, "wake vm", $env2
     $denied.P.WaitForExit(30000) | Out-Null
     Write-Host "  stranger: $($denied.All().Trim())"

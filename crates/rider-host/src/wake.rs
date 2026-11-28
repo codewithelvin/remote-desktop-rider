@@ -11,6 +11,7 @@ pub struct Network {
 
 pub fn wake(macs: &[Mac]) -> anyhow::Result<usize> {
     let broadcasts = network().broadcasts;
+    tracing::info!("sending wake packets to {broadcasts:?} and the local broadcast");
     wake::send(macs, &broadcasts)
 }
 

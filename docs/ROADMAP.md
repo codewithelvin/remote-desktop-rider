@@ -201,7 +201,9 @@ each is designed with the user before it is built:
 - [x] Restart the remote computer from the session and reconnect by itself
       when it is back (full access, 15 s warning with Cancel on the host)
 - [ ] Restart into Safe Mode with networking
-- [ ] Wake-on-LAN: turn on a sleeping computer.
+- [x] Wake-on-LAN: turn on a sleeping computer (wired; through another online
+      computer on its network or from the same network)
+- [ ] Wake up button in the company console
 - [ ] Draw on the remote screen to point at things.
 
 ## Milestone 6: What other remote desktop apps have (from Remoteer, 2026-11-24)

@@ -28,5 +28,6 @@ switch ($action) {
         $r = (Get-NetAdapter -Physical | ForEach-Object { $_.MacAddress }) -join ' '
     }
     "armed" { $r = (powercfg /devicequery wake_armed) -join '|' }
+    "programmable" { $r = (powercfg /devicequery wake_programmable) -join '|' }
 }
 "$action $r" | Set-Content $out

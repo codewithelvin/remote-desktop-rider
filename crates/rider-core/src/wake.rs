@@ -75,7 +75,10 @@ pub fn send(macs: &[Mac], broadcasts: &[Ipv4Addr]) -> Result<usize> {
         for &ip in broadcasts.iter().chain(std::iter::once(&Ipv4Addr::BROADCAST)) {
             match socket.send_to(&packet, SocketAddrV4::new(ip, DISCARD_PORT)) {
                 Ok(_) => sent += 1,
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    tracing::info!("wake packet to {ip} failed: {e}");
+                    last_err = Some(e);
+                }
             }
         }
     }
