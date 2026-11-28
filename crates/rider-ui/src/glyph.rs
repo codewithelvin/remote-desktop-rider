@@ -63,6 +63,7 @@ pub fn show(ui: &mut Ui, g: Glyph, size: f32, color: Color32) -> Response {
 pub fn button(ui: &mut Ui, g: Glyph, size: f32, enabled: bool, fill: Option<Color32>, color: Color32) -> Response {
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), sense);
+    let resp = if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
     let p = ui.painter();
     if let Some(fill) = fill {
         p.circle_filled(rect.center(), size / 2.0, fill);

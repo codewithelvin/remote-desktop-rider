@@ -367,7 +367,7 @@ impl ClientApp {
                 widgets::error(ui, e);
             }
             ui.add_space(2.0);
-            ui.checkbox(&mut d.remember, tr("Remember PIN on this device", "PIN kodu bu cihazda yadda saxla"));
+            widgets::checkbox(ui, true, &mut d.remember, tr("Remember PIN on this device", "PIN kodu bu cihazda yadda saxla"));
             widgets::hint(
                 ui,
                 tr(

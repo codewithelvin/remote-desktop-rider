@@ -397,12 +397,13 @@ impl ClientApp {
             ui.add_space(10.0);
             widgets::card(ui, |ui| {
                 widgets::section(ui, icon::PLAY, tr("Startup", "Avtomatik başlatma"));
-                if ui
-                    .checkbox(
-                        &mut self.autostart,
-                        tr("Start Remote Desktop Rider when I sign in", "Sistemə daxil olduqda Remote Desktop Rider-i başlat"),
-                    )
-                    .changed()
+                if widgets::checkbox(
+                    ui,
+                    true,
+                    &mut self.autostart,
+                    tr("Start Remote Desktop Rider when I sign in", "Sistemə daxil olduqda Remote Desktop Rider-i başlat"),
+                )
+                .changed()
                     && let Err(e) = sys::set_autostart(self.autostart)
                 {
                     self.autostart = sys::autostart();
@@ -561,20 +562,24 @@ impl ClientApp {
                 return;
             }
             let mut auto = self.updater.auto;
-            if ui.checkbox(&mut auto, tr("Check for updates automatically", "Yeniləmələri avtomatik yoxla")).changed()
+            if widgets::checkbox(
+                ui,
+                true,
+                &mut auto,
+                tr("Check for updates automatically", "Yeniləmələri avtomatik yoxla"),
+            )
+            .changed()
             {
                 self.updater.set_auto(auto);
             }
             ui.horizontal(|ui| {
                 let state = self.updater.state();
                 let checking = matches!(state, State::Checking { .. });
-                if ui.add_enabled(!checking, egui::Button::new(tr("Check now", "İndi yoxla"))).clicked() {
+                let manual = matches!(state, State::Checking { manual: true });
+                if widgets::secondary_busy(ui, !checking, manual, tr("Check now", "İndi yoxla")).clicked() {
                     self.updater.check();
                 }
                 match state {
-                    State::Checking { manual: true } => {
-                        ui.spinner();
-                    }
                     State::UpToDate => {
                         widgets::success(ui, tr("You have the latest version.", "Ən son versiya quraşdırılıb."));
                     }
@@ -690,12 +695,11 @@ impl ClientApp {
             ui.horizontal(|ui| {
                 let changed = (edit.0.trim(), edit.1.trim()) != (saved.0.as_str(), saved.1.as_str());
                 let ok = changed && !edit.0.trim().is_empty() && !checking;
-                save = widgets::primary(ui, ok, tr("Save", "Yadda saxla")).clicked();
+                save = widgets::primary_busy(ui, ok, checking, tr("Save", "Yadda saxla")).clicked();
                 if self.cfg.server.is_some() {
                     clear = ui.add_enabled(!checking, egui::Button::new(tr("Remove", "Sil"))).clicked();
                 }
                 if checking {
-                    ui.spinner();
                     widgets::hint(ui, tr("Checking the server…", "Server yoxlanılır…"));
                 }
             });

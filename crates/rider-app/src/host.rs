@@ -173,6 +173,10 @@ impl HostApp {
         });
     }
 
+    fn running(&self, label: &str) -> bool {
+        self.busy == Some(label)
+    }
+
     fn run(&mut self, label: &'static str, args: Vec<String>, stdin: Option<String>, ok: &'static str) {
         self.busy = Some(label);
         self.result = None;
@@ -332,6 +336,53 @@ impl HostApp {
         self.busy.is_none() && self.pairing.is_none()
     }
 
+    fn service_buttons(&mut self, ui: &mut Ui, info: &Info, idle: bool) {
+        if let Some(running) = info.service {
+            let starting = tr("Starting…", "Başladılır…");
+            if !running && widgets::primary_busy(ui, idle, self.running(starting), tr("Start", "Başlat")).clicked() {
+                self.run(
+                    starting,
+                    args(&["service", "start"]),
+                    None,
+                    tr("Remote access started.", "Uzaqdan giriş başladıldı."),
+                );
+            }
+            let turning_off = tr("Turning off…", "Söndürülür…");
+            let off_label = tr("Turn off remote access", "Uzaqdan girişi söndür");
+            if widgets::secondary_busy(ui, idle, self.running(turning_off), off_label).clicked() {
+                self.run(
+                    turning_off,
+                    args(&["service", "uninstall"]),
+                    None,
+                    tr(
+                        "Remote access is off. Your devices are kept.",
+                        "Uzaqdan giriş söndürüldü. Cihazlarınız saxlanılıb.",
+                    ),
+                );
+            }
+        } else {
+            let turning_on = tr("Turning on…", "Aktivləşdirilir…");
+            if widgets::primary_busy(
+                ui,
+                idle && info.pin_set,
+                self.running(turning_on),
+                tr("Turn on remote access", "Uzaqdan girişi aktivləşdir"),
+            )
+            .clicked()
+            {
+                self.run(
+                    turning_on,
+                    args(&["service", "install"]),
+                    None,
+                    tr("Remote access is on.", "Uzaqdan giriş aktivdir."),
+                );
+            }
+            if !info.pin_set {
+                widgets::hint(ui, tr("Set a PIN first.", "Əvvəlcə PIN kod təyin edin."));
+            }
+        }
+    }
+
     fn remote_access(&mut self, ui: &mut Ui, info: &Info) {
         widgets::card(ui, |ui| {
             widgets::section(ui, icon::SHIELD, tr("Remote access", "Uzaqdan giriş"));
@@ -358,64 +409,19 @@ impl HostApp {
                 ui.add(egui::Label::new(text).wrap());
             });
             let idle = self.idle();
-            ui.horizontal(|ui| {
-                if let Some(running) = info.service {
-                    if !running && widgets::primary(ui, idle, tr("Start", "Başlat")).clicked() {
-                        self.run(
-                            tr("Starting…", "Başladılır…"),
-                            args(&["service", "start"]),
-                            None,
-                            tr("Remote access started.", "Uzaqdan giriş başladıldı."),
-                        );
-                    }
-                    if ui
-                        .add_enabled(idle, egui::Button::new(tr("Turn off remote access", "Uzaqdan girişi söndür")))
-                        .clicked()
-                    {
-                        self.run(
-                            tr("Turning off…", "Söndürülür…"),
-                            args(&["service", "uninstall"]),
-                            None,
-                            tr(
-                                "Remote access is off. Your devices are kept.",
-                                "Uzaqdan giriş söndürüldü. Cihazlarınız saxlanılıb.",
-                            ),
-                        );
-                    }
-                } else {
-                    if widgets::primary(
-                        ui,
-                        idle && info.pin_set,
-                        tr("Turn on remote access", "Uzaqdan girişi aktivləşdir"),
-                    )
-                    .clicked()
-                    {
-                        self.run(
-                            tr("Turning on…", "Aktivləşdirilir…"),
-                            args(&["service", "install"]),
-                            None,
-                            tr("Remote access is on.", "Uzaqdan giriş aktivdir."),
-                        );
-                    }
-                    if !info.pin_set {
-                        widgets::hint(ui, tr("Set a PIN first.", "Əvvəlcə PIN kod təyin edin."));
-                    }
-                }
-            });
+            ui.horizontal(|ui| self.service_buttons(ui, info, idle));
             if info.service.is_some() {
                 let mut auto = info.auto_update;
-                if ui
-                    .add_enabled(
-                        idle,
-                        egui::Checkbox::new(
-                            &mut auto,
-                            tr(
-                                "Install updates automatically when nobody is connected",
-                                "Heç kim qoşulu olmadıqda yeniləmələri avtomatik quraşdır",
-                            ),
-                        ),
-                    )
-                    .changed()
+                if widgets::checkbox(
+                    ui,
+                    idle,
+                    &mut auto,
+                    tr(
+                        "Install updates automatically when nobody is connected",
+                        "Heç kim qoşulu olmadıqda yeniləmələri avtomatik quraşdır",
+                    ),
+                )
+                .changed()
                 {
                     let (state, done) = if auto {
                         ("on", tr("Automatic updates are on.", "Avtomatik yeniləmələr aktivdir."))
@@ -522,12 +528,13 @@ impl HostApp {
             };
             ui.horizontal(|ui| {
                 let ok = problem.is_none() && self.busy.is_none();
-                if widgets::primary(ui, ok, tr("Save PIN", "PIN kodu yadda saxla")).clicked()
+                let saving = tr("Saving PIN…", "PIN kod yadda saxlanılır…");
+                if widgets::primary_busy(ui, ok, self.running(saving), tr("Save PIN", "PIN kodu yadda saxla")).clicked()
                     || (ok && ui.input(|i| i.key_pressed(Key::Enter)))
                 {
                     let pin = self.pin[0].clone();
                     self.run(
-                        tr("Saving PIN…", "PIN kod yadda saxlanılır…"),
+                        saving,
                         args(&["set-pin", "--pin-stdin"]),
                         Some(pin),
                         tr("PIN saved.", "PIN kod yadda saxlanıldı."),
@@ -684,7 +691,9 @@ impl HostApp {
         let saved_fp = info.server.as_ref().map_or("", |s| s.fingerprint.as_str());
         let typed = !fp.is_empty() && fp != saved_fp;
         let changed = info.server.as_ref().is_none_or(|s| s.addr != addr) || typed || !invite.is_empty();
-        if widgets::primary(ui, idle && changed && !addr.is_empty(), tr("Save", "Yadda saxla")).clicked() {
+        let checking = tr("Checking the server…", "Server yoxlanılır…");
+        let can_save = idle && changed && !addr.is_empty();
+        if widgets::primary_busy(ui, can_save, self.running(checking), tr("Save", "Yadda saxla")).clicked() {
             let mut a = vec!["set-server".to_owned(), addr.to_owned()];
             if typed {
                 a.push(fp.to_owned());
@@ -692,32 +701,25 @@ impl HostApp {
             if !invite.is_empty() {
                 a.extend(["--invite".to_owned(), invite]);
             }
-            self.run(
-                tr("Checking the server…", "Server yoxlanılır…"),
-                a,
-                None,
-                tr("Server saved.", "Server yadda saxlanıldı."),
-            );
+            self.run(checking, a, None, tr("Server saved.", "Server yadda saxlanıldı."));
         }
         if info.server.is_none() {
             return;
         }
-        let invite = ui.add_enabled(idle, egui::Button::new(tr("Get an invite code", "Dəvət kodu al"))).on_hover_text(tr(
+        let asking = self.running(asking_server());
+        let invite = widgets::secondary_busy(ui, idle, asking, tr("Get an invite code", "Dəvət kodu al")).on_hover_text(tr(
             "A one-time code that lets a new computer use this server (valid 10 minutes). To let a device control this computer, use Add a device instead.",
             "Yeni kompüterin bu serverdən istifadə etməsi üçün birdəfəlik kod (10 dəqiqə etibarlıdır). Cihazın bu kompüteri idarə etməsi üçün isə «Cihaz əlavə et» düyməsindən istifadə edin.",
         ));
         if invite.clicked() {
             self.invite();
         }
-        if ui.add_enabled(idle, egui::Button::new(tr("Don't use a server", "Serverdən istifadə etmə"))).clicked() {
+        let removing = tr("Saving…", "Yadda saxlanılır…");
+        let no_server = tr("Don't use a server", "Serverdən istifadə etmə");
+        if widgets::secondary_busy(ui, idle, self.running(removing), no_server).clicked() {
             let _ = sync_client_server(None);
             self.invite_code = None;
-            self.run(
-                tr("Saving…", "Yadda saxlanılır…"),
-                args(&["set-server", "--off"]),
-                None,
-                tr("Server removed.", "Server ayarı silindi."),
-            );
+            self.run(removing, args(&["set-server", "--off"]), None, tr("Server removed.", "Server ayarı silindi."));
         }
     }
 
@@ -766,7 +768,7 @@ impl HostApp {
     }
 
     fn invite(&mut self) {
-        self.busy = Some(tr("Asking the server…", "Serverdən soruşulur…"));
+        self.busy = Some(asking_server());
         self.result = None;
         self.invite_code = None;
         let tx = self.bus.tx();
@@ -1010,6 +1012,10 @@ fn sync_client_server(server: Option<&ServerRef>) -> anyhow::Result<()> {
         cfg.save()?;
     }
     Ok(())
+}
+
+fn asking_server() -> &'static str {
+    tr("Asking the server…", "Serverdən soruşulur…")
 }
 
 #[cfg(test)]
