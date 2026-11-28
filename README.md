@@ -578,11 +578,13 @@ test/           Vagrant VMs: Windows 11 host (vm/), Ubuntu rider-server (server-
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: all monitors in one window,
-code signing, then performance on poor links (GPU conversion and decoding, FEC,
-intra-refresh) and host→client files, audio and an audit log. Macs and Linux PCs
-can control others today; letting them be controlled is next
-([docs/MACOS.md](docs/MACOS.md)).
+See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: reliability on slow and
+distant links.
+
+**Vote for features:** ideas not yet planned are in
+[Discussions → Ideas](https://github.com/codewithelvin/remote-desktop-rider/discussions/categories/ideas).
+Vote with ▲ on the ones you want, or post your own; the most wanted ones move
+onto the roadmap.
 
 ## Code signing
 
