@@ -87,6 +87,7 @@ pub struct HostApp {
     devices: Vec<Device>,
     load_error: Option<String>,
     busy: Option<&'static str>,
+    busy_in_button: bool,
     result: Option<Result<String, String>>,
     pin: [String; 2],
     pin_open: bool,
@@ -109,6 +110,7 @@ impl HostApp {
             devices: Vec::new(),
             load_error: None,
             busy: Some(tr("Loading…", "Yüklənir…")),
+            busy_in_button: false,
             result: None,
             pin: Default::default(),
             pin_open: false,
@@ -152,6 +154,7 @@ impl HostApp {
         self.pin_open = std::env::var("RIDER_PREVIEW").as_deref() == Ok("pin");
         if std::env::var("RIDER_PREVIEW").as_deref() == Ok("busy") {
             self.busy = Some(turning_off());
+            self.busy_in_button = true;
         }
         if std::env::var("RIDER_PREVIEW").as_deref() == Ok("invite") {
             self.invite_code = Some(("K7P-2QX".into(), std::time::Instant::now() + INVITE_PREVIEW));
@@ -180,8 +183,14 @@ impl HostApp {
         self.busy == Some(label)
     }
 
+    fn run_from_button(&mut self, label: &'static str, args: Vec<String>, stdin: Option<String>, ok: &'static str) {
+        self.run(label, args, stdin, ok);
+        self.busy_in_button = true;
+    }
+
     fn run(&mut self, label: &'static str, args: Vec<String>, stdin: Option<String>, ok: &'static str) {
         self.busy = Some(label);
+        self.busy_in_button = false;
         self.result = None;
         let tx = self.bus.tx();
         std::thread::spawn(move || {
@@ -283,6 +292,7 @@ impl HostApp {
                     }
                     self.result = Some(r);
                     self.busy = Some(tr("Loading…", "Yüklənir…"));
+                    self.busy_in_button = false;
                     self.load();
                 }
                 Msg::Invite(r) => {
@@ -343,7 +353,7 @@ impl HostApp {
         if let Some(running) = info.service {
             let starting = tr("Starting…", "Başladılır…");
             if !running && widgets::primary_busy(ui, idle, self.running(starting), tr("Start", "Başlat")).clicked() {
-                self.run(
+                self.run_from_button(
                     starting,
                     args(&["service", "start"]),
                     None,
@@ -353,7 +363,7 @@ impl HostApp {
             let turning_off = turning_off();
             let off_label = tr("Turn off remote access", "Uzaqdan girişi söndür");
             if widgets::secondary_busy(ui, idle, self.running(turning_off), off_label).clicked() {
-                self.run(
+                self.run_from_button(
                     turning_off,
                     args(&["service", "uninstall"]),
                     None,
@@ -373,7 +383,7 @@ impl HostApp {
             )
             .clicked()
             {
-                self.run(
+                self.run_from_button(
                     turning_on,
                     args(&["service", "install"]),
                     None,
@@ -536,7 +546,7 @@ impl HostApp {
                     || (ok && ui.input(|i| i.key_pressed(Key::Enter)))
                 {
                     let pin = self.pin[0].clone();
-                    self.run(
+                    self.run_from_button(
                         saving,
                         args(&["set-pin", "--pin-stdin"]),
                         Some(pin),
@@ -704,7 +714,7 @@ impl HostApp {
             if !invite.is_empty() {
                 a.extend(["--invite".to_owned(), invite]);
             }
-            self.run(checking, a, None, tr("Server saved.", "Server yadda saxlanıldı."));
+            self.run_from_button(checking, a, None, tr("Server saved.", "Server yadda saxlanıldı."));
         }
         if info.server.is_none() {
             return;
@@ -722,7 +732,12 @@ impl HostApp {
         if widgets::secondary_busy(ui, idle, self.running(removing), no_server).clicked() {
             let _ = sync_client_server(None);
             self.invite_code = None;
-            self.run(removing, args(&["set-server", "--off"]), None, tr("Server removed.", "Server ayarı silindi."));
+            self.run_from_button(
+                removing,
+                args(&["set-server", "--off"]),
+                None,
+                tr("Server removed.", "Server ayarı silindi."),
+            );
         }
     }
 
@@ -772,6 +787,7 @@ impl HostApp {
 
     fn invite(&mut self) {
         self.busy = Some(asking_server());
+        self.busy_in_button = true;
         self.result = None;
         self.invite_code = None;
         let tx = self.bus.tx();
@@ -968,10 +984,12 @@ impl eframe::App for HostApp {
                     self.sync_banner_language();
                 }
                 if let Some(label) = self.busy {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(label);
-                    });
+                    if !self.busy_in_button {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(label);
+                        });
+                    }
                 } else {
                     match &self.result {
                         Some(Ok(m)) => widgets::success(ui, m),
