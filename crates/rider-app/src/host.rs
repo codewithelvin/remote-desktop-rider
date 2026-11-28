@@ -150,6 +150,9 @@ impl HostApp {
         self.server_addr = "rider.example.com".into();
         self.server_fp = fp.into();
         self.pin_open = std::env::var("RIDER_PREVIEW").as_deref() == Ok("pin");
+        if std::env::var("RIDER_PREVIEW").as_deref() == Ok("busy") {
+            self.busy = Some(turning_off());
+        }
         if std::env::var("RIDER_PREVIEW").as_deref() == Ok("invite") {
             self.invite_code = Some(("K7P-2QX".into(), std::time::Instant::now() + INVITE_PREVIEW));
             self.invite_scroll = true;
@@ -347,7 +350,7 @@ impl HostApp {
                     tr("Remote access started.", "Uzaqdan giriş başladıldı."),
                 );
             }
-            let turning_off = tr("Turning off…", "Söndürülür…");
+            let turning_off = turning_off();
             let off_label = tr("Turn off remote access", "Uzaqdan girişi söndür");
             if widgets::secondary_busy(ui, idle, self.running(turning_off), off_label).clicked() {
                 self.run(
@@ -1012,6 +1015,10 @@ fn sync_client_server(server: Option<&ServerRef>) -> anyhow::Result<()> {
         cfg.save()?;
     }
     Ok(())
+}
+
+fn turning_off() -> &'static str {
+    tr("Turning off…", "Söndürülür…")
 }
 
 fn asking_server() -> &'static str {
