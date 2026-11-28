@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$Action, [string]$Value = "")
+param([Parameter(Mandatory)][string]$Action, [string]$Value = "", [string]$Extra = "")
 $exe = "C:\Program Files\RemoteDesktopRider\rider-host.exe"
 if (-not (Test-Path $exe)) { $exe = "C:\rider\rider-host.exe" }
 $log = "C:\rider-test\host-cmd.out"
@@ -10,6 +10,12 @@ switch ($Action) {
     }
     "clients" { $out = & $exe --json clients 2>&1 }
     "tunnels" { $out = & $exe tunnels $Value 2>&1 }
+    "info" { $out = (& $exe --json info 2>&1) -join '' }
+    "set-server" { $out = & $exe set-server $Value $Extra 2>&1 }
+    "restart" {
+        Restart-Service RemoteDesktopRider
+        $out = (Get-Service RemoteDesktopRider).Status
+    }
     "tcp-target" {
         Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File C:\rider-test\tcp-target.ps1 -Port 18080 -Token $Value"
         $out = "started"
