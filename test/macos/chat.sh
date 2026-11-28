@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 export MSYS_NO_PATHCONV=1
-server=$1 fp=$2 pass=$3 viewer=${4:-/Users/rider/rdr/target/quick/rider-client}
+server=$1 fp=$2 viewer=${3:-/Users/rider/rdr/target/quick/rider-client}
 root=$(pwd -W 2>/dev/null || pwd)
 vncdo=${VNCDO:-$(command -v vncdo || echo "$APPDATA/Python/Python313/Scripts/vncdo.exe")}
 work=$(mktemp -d)
@@ -27,8 +27,8 @@ code=$(grep -oE '"code":"[A-Z0-9]{3}-[A-Z0-9]{3}"' "$out" | head -1 | cut -d'"' 
 echo "code $code"
 
 mac "pkill -x rider-client; $viewer set-server $server $fp >/dev/null
-  echo '$pass' | sudo -S -p '' launchctl asuser \$(id -u) sudo -u rider env RIDER_LANG=en \
-    nohup $viewer quick $code >/tmp/rider-viewer.log 2>&1 &" >/dev/null
+  printf '#!/bin/bash\nRIDER_LANG=en exec $viewer quick $code >/tmp/rider-viewer.log 2>&1\n' >/tmp/rider-viewer.command
+  chmod +x /tmp/rider-viewer.command && open /tmp/rider-viewer.command" >/dev/null
 wait_for '"support_request"' 90 || { echo "no request from the Mac"; mac 'cat /tmp/rider-viewer.log'; exit 1; }
 send "y view"
 wait_for '"support_started"' 30

@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)][string]$Server,
     [Parameter(Mandatory)][string]$Fingerprint,
     [string]$Client = "",
-    [string]$OldClient = "C:\Program Files\RemoteDesktopRider\rider-client.exe",
+    [string]$OldClient = "",
     [switch]$SkipUpdate
 )
 . "$PSScriptRoot\..\local-session\lib.ps1"
@@ -30,9 +30,11 @@ public static class PixelDiff {
         for (int i = top * a.Width; i < pa.Length; i++) { all++; if ((pa[i] & 0xFFFFFF) == (pb[i] & 0xFFFFFF)) same++; }
         return all == 0 ? -1 : (double)same / all;
     }
-    public static Bitmap Grab(int x, int y, int w, int h) {
+    [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+    const uint ClientOnlyFullContent = 3;
+    public static Bitmap GrabWindow(IntPtr win, int w, int h) {
         var b = new Bitmap(w, h, PixelFormat.Format32bppRgb);
-        using (var g = Graphics.FromImage(b)) g.CopyFromScreen(x, y, 0, 0, new Size(w, h));
+        using (var g = Graphics.FromImage(b)) { var dc = g.GetHdc(); PrintWindow(win, dc, ClientOnlyFullContent); g.ReleaseHdc(dc); }
         return b;
     }
 }
@@ -73,7 +75,7 @@ function Measure-Viewer([string]$exe) {
         $ref = [System.Drawing.Bitmap]::FromFile((Join-Path $guest "pattern.png"))
         $c = [Rdr]::PlaceClient($win, 40, 40, $ref.Width, $ref.Height)
         Start-Sleep 6
-        $shot = [PixelDiff]::Grab($c[0], $c[1], $c[2], $c[3])
+        $shot = [PixelDiff]::GrabWindow($win, $c[2], $c[3])
         $same = [PixelDiff]::Same($ref, $shot, 60)
         $shot.Save((Join-Path $env:TEMP "rdr-sharp-$([IO.Path]::GetFileNameWithoutExtension((Split-Path $exe -Parent)))-viewer.png"))
         $ref.Dispose(); $shot.Dispose()
@@ -88,10 +90,10 @@ if (-not $SkipUpdate) { Guest "update-host.ps1" 300 | Out-Null }
 $new = Measure-Viewer $Client
 Write-Host ("  this viewer: {0:P2} of the pixels exactly as on the VM (client {1})" -f $new.Same, $new.Client)
 Check "this viewer: text is pixel-exact once the screen is still" ($new.Same -ge 0.995)
-if (Test-Path $OldClient) {
+if ($OldClient -and (Test-Path $OldClient)) {
     $old = Measure-Viewer $OldClient
-    Write-Host ("  installed viewer: {0:P2} exact (video only)" -f $old.Same)
-    Check "the installed viewer, video only, is not exact (the check can tell them apart)" ($old.Same -ge 0 -and $old.Same -lt 0.99)
+    Write-Host ("  viewer older than 0.7: {0:P2} exact (video only)" -f $old.Same)
+    Check "a viewer older than 0.7, video only, is not exact (the check can tell them apart)" ($old.Same -ge 0 -and $old.Same -lt 0.99)
 }
 $failed = @($results | Where-Object Result -eq "FAIL").Count
 if ($failed) { Write-Host "FAIL: $failed of $($results.Count) checks"; exit 1 }
