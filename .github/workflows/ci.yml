@@ -2,7 +2,7 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "site/**", ".github/workflows/pages.yml"]
+    paths-ignore: ["**.md", "docs/**", "site/**", "test/**", ".github/workflows/pages.yml"]
   pull_request:
 
 concurrency: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'release' || github.run_id }}
@@ -11,6 +11,25 @@ env:
   RELEASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - id: c
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          echo "$changed"
+          code=$(echo "$changed" | grep -Evq '\.md$|^docs/|^site/|^test/|^\.github/workflows/pages\.yml$' && echo true || echo false)
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   version:
     runs-on: ubuntu-latest
     outputs:
@@ -30,7 +49,8 @@ jobs:
           Write-Host "Version $version"
 
   server:
-    needs: version
+    needs: [version, changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -206,9 +226,9 @@ jobs:
           gh release create "v$env:VERSION" $setup $server dist/SHA256SUMS --verify-tag --title "Remote Desktop Rider $env:VERSION" --notes "$notes" --generate-notes --latest
 
   ci:
-    needs: [version, server, build, macos, linux]
+    needs: [changes, version, server, build, macos, linux]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || (needs.changes.outputs.code != 'false' && contains(needs.*.result, 'skipped'))
         run: exit 1

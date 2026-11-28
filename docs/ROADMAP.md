@@ -181,9 +181,11 @@ ends remote sessions while it waits).
 
 ## Milestone 4: Performance on poor links
 
+Smoother video on links that lose packets (spare data to rebuild lost packets,
+gradual picture repair) moved to a vote: Discussions #38.
+
 - GPU path: D3D11 BGRA→NV12 on the host, DXVA decode + D3D presentation on the
   client (removes ~5–10 ms of CPU conversion per frame).
-- FEC for keyframes on lossy links; intra-refresh instead of full keyframes.
 - Network emulation tests (latency 50–300 ms, 1–10 % loss, 1–5 Mbps) with
   latency/fps measurements kept in CI history.
 
@@ -192,6 +194,14 @@ ends remote sessions while it waits).
 - [x] Cursor shape sync.
 - Host→client file transfer: now part of chat (Milestone 6).
 - Session log / audit on the host (who connected, when, from where).
+
+From comparing AnyDesk, TeamViewer and Chrome Remote Desktop (2026-11-28);
+each is designed with the user before it is built:
+
+- [ ] Restart the remote computer from the session and reconnect by itself
+      when it is back, also into Safe Mode with networking.
+- [ ] Wake-on-LAN: turn on a sleeping computer.
+- [ ] Draw on the remote screen to point at things.
 
 ## Milestone 6: What other remote desktop apps have (from Remoteer, 2026-11-24)
 
