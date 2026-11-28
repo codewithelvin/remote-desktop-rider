@@ -181,9 +181,11 @@ ends remote sessions while it waits).
 
 ## Milestone 4: Performance on poor links
 
+Smoother video on links that lose packets (spare data to rebuild lost packets,
+gradual picture repair) moved to a vote: Discussions #38.
+
 - GPU path: D3D11 BGRA→NV12 on the host, DXVA decode + D3D presentation on the
   client (removes ~5–10 ms of CPU conversion per frame).
-- FEC for keyframes on lossy links; intra-refresh instead of full keyframes.
 - Network emulation tests (latency 50–300 ms, 1–10 % loss, 1–5 Mbps) with
   latency/fps measurements kept in CI history.
 
