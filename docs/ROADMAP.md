@@ -195,6 +195,14 @@ gradual picture repair) moved to a vote: Discussions #38.
 - Host→client file transfer: now part of chat (Milestone 6).
 - Session log / audit on the host (who connected, when, from where).
 
+From comparing AnyDesk, TeamViewer and Chrome Remote Desktop (2026-11-28);
+each is designed with the user before it is built:
+
+- [ ] Restart the remote computer from the session and reconnect by itself
+      when it is back, also into Safe Mode with networking.
+- [ ] Wake-on-LAN: turn on a sleeping computer.
+- [ ] Draw on the remote screen to point at things.
+
 ## Milestone 6: What other remote desktop apps have (from Remoteer, 2026-11-24)
 
 Compared with Remoteer (Windows, macOS and browser; WebRTC). Small items
