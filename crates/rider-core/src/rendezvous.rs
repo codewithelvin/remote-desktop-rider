@@ -102,6 +102,7 @@ pub enum PeerMsg {
     HostInfo { version: u32, info: crate::company::HostInfo },
     Place { version: u32, place: crate::company::Whereabouts },
     Directory2 { version: u32 },
+    Wake { version: u32, host: Fingerprint, macs: Vec<crate::wake::Mac> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -119,6 +120,8 @@ pub enum ServerMsg {
     CompanyPolicy { unattended: bool },
     CompanyPolicy2 { unattended: bool },
     Directory2 { directory: crate::company::Directory, places: Vec<(Fingerprint, crate::company::Whereabouts)> },
+    Wake { macs: Vec<crate::wake::Mac> },
+    WakeSent { helpers: u32 },
 }
 
 pub mod refusal {
@@ -126,6 +129,7 @@ pub mod refusal {
     pub const BUSY: &str = "too many requests; try again in a minute";
     pub const INVITE_NOT_PAIRING: &str = "this is a server invite code, not a pairing code";
     pub const BAD_INVITE: &str = "this invite code is not valid: it may have expired (10 minutes) or been used";
+    pub const CANNOT_WAKE: &str = "the server does not know where this computer was last online";
 }
 
 pub fn explain(message: &str) -> String {
@@ -145,6 +149,10 @@ pub fn explain(message: &str) -> String {
         refusal::BAD_INVITE => tr(
             "This invite code is not valid: it has expired (10 minutes) or was already used.",
             "Bu dəvət kodu etibarsızdır: vaxtı bitib (10 dəqiqə) və ya artıq istifadə olunub.",
+        ),
+        refusal::CANNOT_WAKE => tr(
+            "The server does not know where this computer was last online. Connect to it once while it is on, then try again.",
+            "Server bu kompüterin sonuncu dəfə harada onlayn olduğunu bilmir. Kompüter açıq olanda ona bir dəfə qoşulun, sonra yenidən cəhd edin.",
         ),
         other => return other.to_owned(),
     }
@@ -402,7 +410,7 @@ impl PeerSocket {
         server: &ServerRef,
     ) -> Result<(quinn::Connection, quinn::SendStream, quinn::RecvStream)> {
         let addr = server.resolve().await?;
-        let cfg = tls::client_config_alpn(identity, Some(server.fingerprint()?), &[tls::RENDEZVOUS_ALPN])?;
+        let cfg = tls::client_config_alpn(identity, Some(server.fingerprint()?), tls::RENDEZVOUS_ALPNS)?;
         let conn =
             tokio::time::timeout(Duration::from_secs(10), self.endpoint.connect_with(cfg, addr, tls::SERVER_NAME)?)
                 .await

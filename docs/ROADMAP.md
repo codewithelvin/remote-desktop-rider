@@ -198,8 +198,9 @@ gradual picture repair) moved to a vote: Discussions #38.
 From comparing AnyDesk, TeamViewer and Chrome Remote Desktop (2026-11-28);
 each is designed with the user before it is built:
 
-- [ ] Restart the remote computer from the session and reconnect by itself
-      when it is back, also into Safe Mode with networking.
+- [x] Restart the remote computer from the session and reconnect by itself
+      when it is back (full access, 15 s warning with Cancel on the host)
+- [ ] Restart into Safe Mode with networking
 - [ ] Wake-on-LAN: turn on a sleeping computer.
 - [ ] Draw on the remote screen to point at things.
 

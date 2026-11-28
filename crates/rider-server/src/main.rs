@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 const CODE_LIFETIME: Duration = Duration::from_secs(600);
 const CONNECTS_PER_MINUTE: u32 = 30;
 const REPORTS_PER_HOUR: u32 = 30;
+const MAX_ASLEEP: usize = 10_000;
 
 #[derive(Parser)]
 #[command(name = "rider-server", version, about = "Remote Desktop Rider rendezvous and relay server")]
@@ -164,10 +165,18 @@ struct HostEntry {
     local: Vec<SocketAddr>,
     allowed: HashSet<Fingerprint>,
     pairing: bool,
+    wakes: bool,
+}
+
+struct Asleep {
+    since: Instant,
+    network: IpAddr,
+    allowed: HashSet<Fingerprint>,
 }
 
 struct Server {
     hosts: Mutex<HashMap<Fingerprint, HostEntry>>,
+    asleep: Mutex<HashMap<Fingerprint, Asleep>>,
     codes: Mutex<HashMap<String, (Fingerprint, Instant)>>,
     rate: Mutex<HashMap<IpAddr, (Instant, u32)>>,
     reports: Mutex<HashMap<Fingerprint, (Instant, u32)>>,
@@ -189,11 +198,12 @@ async fn serve(
     let cfg = rider_core::tls::server_config_alpn(
         &identity,
         Arc::new(rider_core::tls::AnyClient),
-        &[rider_core::tls::RENDEZVOUS_ALPN],
+        rider_core::tls::RENDEZVOUS_ALPNS,
     )?;
     let endpoint = quinn::Endpoint::server(cfg, listen).with_context(|| format!("cannot listen on UDP {listen}"))?;
     let server = Arc::new(Server {
         hosts: Mutex::default(),
+        asleep: Mutex::default(),
         codes: Mutex::default(),
         rate: Mutex::default(),
         reports: Mutex::default(),
@@ -282,6 +292,13 @@ async fn stop_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+async fn answer(conn: &quinn::Connection, send: &mut quinn::SendStream, reply: &ServerMsg) -> Result<()> {
+    write_msg(send, reply).await?;
+    let _ = send.finish();
+    let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+    Ok(())
+}
+
 async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
     let fp = rider_core::tls::peer_fingerprint(conn)?;
     let (mut send, mut recv) = tokio::time::timeout(Duration::from_secs(10), conn.accept_bi()).await??;
@@ -298,18 +315,21 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             } else {
                 ServerMsg::Online { online: server.online(&fp, &hosts) }
             };
-            write_msg(&mut send, &reply).await?;
-            let _ = send.finish();
-            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-            Ok(())
+            answer(conn, &mut send, &reply).await
+        }
+        Some(PeerMsg::Wake { version, host, macs }) => {
+            check_version(version, &mut send).await?;
+            let reply = if server.rate_limited(conn.remote_address()) {
+                ServerMsg::Error { message: refusal::BUSY.into() }
+            } else {
+                server.wake(&fp, &host, &macs)
+            };
+            answer(conn, &mut send, &reply).await
         }
         Some(PeerMsg::Connect { version, target, local }) => {
             check_version(version, &mut send).await?;
             let reply = connect(server, conn, fp, target, local).await;
-            write_msg(&mut send, &reply).await?;
-            let _ = send.finish();
-            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-            Ok(())
+            answer(conn, &mut send, &reply).await
         }
         Some(PeerMsg::Join { version, code }) => {
             check_version(version, &mut send).await?;
@@ -324,10 +344,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
                     Err(e) => ServerMsg::Error { message: format!("{e:#}") },
                 }
             };
-            write_msg(&mut send, &reply).await?;
-            let _ = send.finish();
-            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-            Ok(())
+            answer(conn, &mut send, &reply).await
         }
         Some(PeerMsg::Invite { version }) => {
             check_version(version, &mut send).await?;
@@ -344,10 +361,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
                     Err(e) => ServerMsg::Error { message: format!("{e:#}") },
                 }
             };
-            write_msg(&mut send, &reply).await?;
-            let _ = send.finish();
-            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-            Ok(())
+            answer(conn, &mut send, &reply).await
         }
         Some(PeerMsg::Report { version, report }) => {
             if version == VERSION && server.known(&fp) && !server.reports_limited(fp) {
@@ -365,10 +379,7 @@ async fn handle(server: &Arc<Server>, conn: &quinn::Connection) -> Result<()> {
             | PeerMsg::Enroll { .. }),
         ) => {
             let reply = company_request(server, conn, fp, msg);
-            write_msg(&mut send, &reply).await?;
-            let _ = send.finish();
-            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-            Ok(())
+            answer(conn, &mut send, &reply).await
         }
         Some(PeerMsg::HostInfo { .. } | PeerMsg::Place { .. }) | None => Ok(()),
     }
@@ -488,9 +499,11 @@ async fn serve_host(
     {
         tracing::warn!("cannot record member: {e:#}");
     }
+    let wakes = rider_core::tls::speaks_rv2(conn);
+    server.asleep.lock().unwrap().remove(&fp);
     server.hosts.lock().unwrap().insert(
         fp,
-        HostEntry { conn_id, tx: tx.clone(), public, local, allowed: allowed.into_iter().collect(), pairing },
+        HostEntry { conn_id, tx: tx.clone(), public, local, allowed: allowed.into_iter().collect(), pairing, wakes },
     );
     tracing::info!("host {} online from {public}", fp_short(&fp));
     let _ = tx.send(ServerMsg::Registered { public, pairing_code: server.update_code(fp, pairing) });
@@ -518,13 +531,15 @@ async fn serve_host(
     }
     .await;
 
-    let mut hosts = server.hosts.lock().unwrap();
-    if hosts.get(&fp).is_some_and(|h| h.conn_id == conn_id) {
-        hosts.remove(&fp);
+    let gone = {
+        let mut hosts = server.hosts.lock().unwrap();
+        if hosts.get(&fp).is_some_and(|h| h.conn_id == conn_id) { hosts.remove(&fp) } else { None }
+    };
+    if let Some(gone) = gone {
         server.codes.lock().unwrap().retain(|_, (owner, _)| *owner != fp);
+        server.fell_asleep(fp, server.real_ip(gone.public), gone.allowed);
         tracing::info!("host {} offline", fp_short(&fp));
     }
-    drop(hosts);
     server.company.seen(&fp);
     writer.abort();
     result
@@ -578,8 +593,40 @@ impl Server {
         entry.1 > REPORTS_PER_HOUR
     }
 
+    fn real_ip(&self, from: SocketAddr) -> IpAddr {
+        if from.ip().is_loopback() { self.tunnels.real(from).unwrap_or(from.ip()) } else { from.ip() }
+    }
+
+    fn fell_asleep(&self, fp: Fingerprint, network: IpAddr, allowed: HashSet<Fingerprint>) {
+        let mut asleep = self.asleep.lock().unwrap();
+        if asleep.len() >= MAX_ASLEEP
+            && let Some(oldest) = asleep.iter().min_by_key(|(_, a)| a.since).map(|(fp, _)| *fp)
+        {
+            asleep.remove(&oldest);
+        }
+        asleep.insert(fp, Asleep { since: Instant::now(), network, allowed });
+    }
+
+    fn wake(&self, client: &Fingerprint, host: &Fingerprint, macs: &[rider_core::wake::Mac]) -> ServerMsg {
+        let macs = rider_core::wake::usable(macs);
+        let network = match self.asleep.lock().unwrap().get(host) {
+            Some(a) if a.allowed.contains(client) && !macs.is_empty() => a.network,
+            _ => return ServerMsg::Error { message: refusal::CANNOT_WAKE.into() },
+        };
+        let hosts = self.hosts.lock().unwrap();
+        let mut helpers = 0;
+        for (fp, h) in hosts.iter() {
+            if h.wakes && fp != host && self.real_ip(h.public) == network {
+                let _ = h.tx.send(ServerMsg::Wake { macs: macs.clone() });
+                helpers += 1;
+            }
+        }
+        tracing::info!("{} asked to wake {}: {helpers} helper(s)", fp_short(client), fp_short(host));
+        ServerMsg::WakeSent { helpers }
+    }
+
     fn rate_limited(&self, from: SocketAddr) -> bool {
-        let ip = if from.ip().is_loopback() { self.tunnels.real(from).unwrap_or(from.ip()) } else { from.ip() };
+        let ip = self.real_ip(from);
         let mut rate = self.rate.lock().unwrap();
         let now = Instant::now();
         if rate.len() > 10_000 {
@@ -685,6 +732,7 @@ mod tests {
     fn rate_limit_trips_after_quota() {
         let s = Server {
             hosts: Mutex::default(),
+            asleep: Mutex::default(),
             codes: Mutex::default(),
             rate: Mutex::default(),
             reports: Mutex::default(),
@@ -704,11 +752,80 @@ mod tests {
     }
 
     #[test]
+    fn only_a_paired_device_can_wake_and_only_through_its_network() {
+        let s = Server {
+            hosts: Mutex::default(),
+            asleep: Mutex::default(),
+            codes: Mutex::default(),
+            rate: Mutex::default(),
+            reports: Mutex::default(),
+            relays: RelayPool::new(None, 1..=1),
+            tunnels: Arc::default(),
+            members: Members::new(&std::env::temp_dir(), false),
+            company: company::Company::none(),
+        };
+        let (sleeper, laptop, stranger, neighbour, far, old) =
+            ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32], [5u8; 32], [6u8; 32]);
+        let home: SocketAddr = "198.51.100.7:4000".parse().unwrap();
+        let mac = rider_core::wake::Mac([0x08, 0, 0x27, 1, 2, 3]);
+        let mut inboxes = HashMap::new();
+        for (fp, public, wakes) in
+            [(neighbour, home, true), (far, "203.0.113.9:4000".parse().unwrap(), true), (old, home, false)]
+        {
+            let (tx, rx) = mpsc::unbounded_channel();
+            inboxes.insert(fp, rx);
+            let entry =
+                HostEntry { conn_id: 0, tx, public, local: Vec::new(), allowed: HashSet::new(), pairing: false, wakes };
+            s.hosts.lock().unwrap().insert(fp, entry);
+        }
+        let refused =
+            |reply: ServerMsg| matches!(reply, ServerMsg::Error { message } if message == refusal::CANNOT_WAKE);
+        assert!(refused(s.wake(&laptop, &sleeper, &[mac])), "the server never saw it online");
+        s.fell_asleep(sleeper, home.ip(), [laptop].into_iter().collect());
+        assert!(refused(s.wake(&stranger, &sleeper, &[mac])), "not paired with it");
+        assert!(refused(s.wake(&laptop, &sleeper, &[rider_core::wake::Mac([0xFF; 6])])), "no usable address");
+        assert!(matches!(s.wake(&laptop, &sleeper, &[mac]), ServerMsg::WakeSent { helpers: 1 }));
+        assert!(
+            matches!(inboxes.get_mut(&neighbour).unwrap().try_recv(), Ok(ServerMsg::Wake { macs }) if macs == [mac])
+        );
+        assert!(inboxes.get_mut(&far).unwrap().try_recv().is_err(), "a computer on another network is not asked");
+        assert!(
+            inboxes.get_mut(&old).unwrap().try_recv().is_err(),
+            "an older host is never sent a message it cannot read"
+        );
+    }
+
+    #[test]
+    fn the_asleep_list_stays_bounded() {
+        let s = Server {
+            hosts: Mutex::default(),
+            asleep: Mutex::default(),
+            codes: Mutex::default(),
+            rate: Mutex::default(),
+            reports: Mutex::default(),
+            relays: RelayPool::new(None, 1..=1),
+            tunnels: Arc::default(),
+            members: Members::new(&std::env::temp_dir(), false),
+            company: company::Company::none(),
+        };
+        let ip: IpAddr = "198.51.100.7".parse().unwrap();
+        for i in 0..=MAX_ASLEEP {
+            let mut fp = [0u8; 32];
+            fp[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            s.fell_asleep(fp, ip, HashSet::new());
+        }
+        let asleep = s.asleep.lock().unwrap();
+        assert_eq!(asleep.len(), MAX_ASLEEP);
+        assert!(!asleep.contains_key(&[0u8; 32]), "the oldest is dropped first");
+    }
+
+    #[test]
     fn invite_only_serves_members_and_their_devices() {
         let dir = std::env::temp_dir().join(format!("rider-gate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let s = Server {
             hosts: Mutex::default(),
+            asleep: Mutex::default(),
             codes: Mutex::default(),
             rate: Mutex::default(),
             reports: Mutex::default(),
@@ -727,6 +844,7 @@ mod tests {
             local: Vec::new(),
             allowed: allowed.iter().copied().collect(),
             pairing: false,
+            wakes: true,
         };
         let mut hosts = s.hosts.lock().unwrap();
         hosts.insert(member, entry(&[laptop]));
@@ -747,6 +865,7 @@ mod tests {
     fn pairing_code_lifecycle() {
         let s = Server {
             hosts: Mutex::default(),
+            asleep: Mutex::default(),
             codes: Mutex::default(),
             rate: Mutex::default(),
             reports: Mutex::default(),

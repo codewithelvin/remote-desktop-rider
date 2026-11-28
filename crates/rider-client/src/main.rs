@@ -47,6 +47,9 @@ enum Cmd {
     Forget {
         host: String,
     },
+    Wake {
+        host: String,
+    },
     Info,
     SetServer {
         #[arg(required_unless_present = "off")]
@@ -135,6 +138,7 @@ fn main() -> Result<()> {
             cfg.save()?;
             println!("Removed {removed} host(s).");
         }
+        Cmd::Wake { host } => wake(&cfg, &identity, &host)?,
         Cmd::Info => info(&cfg, &identity)?,
         Cmd::SetServer { addr, fingerprint, off } => set_server(&mut cfg, addr, fingerprint, off)?,
         Cmd::Pair { addr, name } => pair(&mut cfg, &identity, &addr, name)?,
@@ -259,6 +263,23 @@ fn reconnect_with(cfg: &ClientConfig, identity: &Identity, known: &KnownHost, pi
         Box::pin(async move { Ok(rider_client::connect(&cfg, &identity, &known, Some(pin)).await?.0) })
             as std::pin::Pin<Box<dyn Future<Output = Result<_>> + Send>>
     })
+}
+
+fn wake(cfg: &ClientConfig, identity: &Identity, host: &str) -> Result<()> {
+    let known = cfg.find(host).with_context(|| format!("\"{host}\" is not paired"))?;
+    let fp = fp_from_hex(&known.fingerprint)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let outcome = rt.block_on(rider_client::wake(identity, cfg.server.as_ref(), fp, &known.wake_macs()))?;
+    match outcome {
+        rider_client::WakeOutcome::Helpers(n) => {
+            println!("Wake-up sent here and through {n} computer(s) on its network.");
+        }
+        rider_client::WakeOutcome::ServerTooOld => {
+            println!("Wake-up sent on this network only: the server is too old to pass it on.");
+        }
+        rider_client::WakeOutcome::NoServer => println!("Wake-up sent on this network."),
+    }
+    Ok(())
 }
 
 fn connect(

@@ -16,8 +16,11 @@ pub const ALPN_V5: &[u8] = b"rider/5";
 pub const ALPN_V6: &[u8] = b"rider/6";
 pub const ALPN_V7: &[u8] = b"rider/7";
 pub const ALPN_V8: &[u8] = b"rider/8";
-const SESSION_ALPNS: &[&[u8]] = &[ALPN_V8, ALPN_V7, ALPN_V6, ALPN_V5, ALPN_V4, ALPN_V3, ALPN_V2, ALPN];
+pub const ALPN_V9: &[u8] = b"rider/9";
+const SESSION_ALPNS: &[&[u8]] = &[ALPN_V9, ALPN_V8, ALPN_V7, ALPN_V6, ALPN_V5, ALPN_V4, ALPN_V3, ALPN_V2, ALPN];
 pub const RENDEZVOUS_ALPN: &[u8] = b"rider-rv/1";
+pub const RENDEZVOUS_ALPN_V2: &[u8] = b"rider-rv/2";
+pub const RENDEZVOUS_ALPNS: &[&[u8]] = &[RENDEZVOUS_ALPN_V2, RENDEZVOUS_ALPN];
 pub const SUPPORT_ALPN: &[u8] = b"rider-support/1";
 pub const SUPPORT_ALPN_V2: &[u8] = b"rider-support/2";
 pub const SUPPORT_ALPN_V3: &[u8] = b"rider-support/3";
@@ -200,6 +203,7 @@ pub fn client_config_alpn(
 pub fn speaks_v2(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
         [
+            ALPN_V9,
             ALPN_V8,
             ALPN_V7,
             ALPN_V6,
@@ -222,6 +226,7 @@ pub fn speaks_v2(conn: &quinn::Connection) -> bool {
 pub fn speaks_v3(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
         [
+            ALPN_V9,
             ALPN_V8,
             ALPN_V7,
             ALPN_V6,
@@ -242,6 +247,7 @@ pub fn speaks_v3(conn: &quinn::Connection) -> bool {
 pub fn speaks_v4(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
         [
+            ALPN_V9,
             ALPN_V8,
             ALPN_V7,
             ALPN_V6,
@@ -259,23 +265,42 @@ pub fn speaks_v4(conn: &quinn::Connection) -> bool {
 
 pub fn speaks_v5(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
-        [ALPN_V8, ALPN_V7, ALPN_V6, ALPN_V5, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5, SUPPORT_ALPN_V4]
-            .contains(&p.as_slice())
+        [
+            ALPN_V9,
+            ALPN_V8,
+            ALPN_V7,
+            ALPN_V6,
+            ALPN_V5,
+            SUPPORT_ALPN_V7,
+            SUPPORT_ALPN_V6,
+            SUPPORT_ALPN_V5,
+            SUPPORT_ALPN_V4,
+        ]
+        .contains(&p.as_slice())
     })
 }
 
 pub fn speaks_v6(conn: &quinn::Connection) -> bool {
     protocol(conn).is_some_and(|p| {
-        [ALPN_V8, ALPN_V7, ALPN_V6, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5].contains(&p.as_slice())
+        [ALPN_V9, ALPN_V8, ALPN_V7, ALPN_V6, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6, SUPPORT_ALPN_V5].contains(&p.as_slice())
     })
 }
 
 pub fn speaks_v7(conn: &quinn::Connection) -> bool {
-    protocol(conn).is_some_and(|p| [ALPN_V8, ALPN_V7, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6].contains(&p.as_slice()))
+    protocol(conn)
+        .is_some_and(|p| [ALPN_V9, ALPN_V8, ALPN_V7, SUPPORT_ALPN_V7, SUPPORT_ALPN_V6].contains(&p.as_slice()))
 }
 
 pub fn speaks_v8(conn: &quinn::Connection) -> bool {
-    protocol(conn).is_some_and(|p| p == ALPN_V8 || p == SUPPORT_ALPN_V7)
+    protocol(conn).is_some_and(|p| [ALPN_V9, ALPN_V8, SUPPORT_ALPN_V7].contains(&p.as_slice()))
+}
+
+pub fn speaks_v9(conn: &quinn::Connection) -> bool {
+    protocol(conn).is_some_and(|p| p == ALPN_V9)
+}
+
+pub fn speaks_rv2(conn: &quinn::Connection) -> bool {
+    protocol(conn).is_some_and(|p| p == RENDEZVOUS_ALPN_V2)
 }
 
 fn protocol(conn: &quinn::Connection) -> Option<Vec<u8>> {

@@ -1,8 +1,9 @@
 use super::{
     ACCENT, AMBER, Align, ClientApp, ClientConfig, Duration, GREEN, GREY, Instant, KnownHost, Layout, RELEASES,
-    RemoteAccess, RichText, ScrollArea, Tab, TextEdit, Ui, config_mtime, egui, host_side, icon, progress_line, sys, tr,
-    trf, updates, vec2, widgets,
+    RemoteAccess, RichText, ScrollArea, Tab, TextEdit, Ui, Wake, config_mtime, egui, host_side, icon, progress_line,
+    sys, tr, trf, updates, vec2, widgets,
 };
+use rider_client::WakeOutcome;
 use rider_core::rendezvous::ServerRef;
 
 impl ClientApp {
@@ -163,6 +164,10 @@ impl ClientApp {
                 ui.add_space(2.0);
                 ui.separator();
                 dismiss = line.show(ui);
+            } else if let Some(wake) = self.waking.get(&h.fingerprint).filter(|_| online == Some(false)) {
+                ui.add_space(2.0);
+                ui.separator();
+                wake_line(ui, wake);
             }
         });
         if let Some(id) = dismiss {
@@ -192,6 +197,19 @@ impl ClientApp {
             let label = if in_session { tr("In session", "Seansdadır") } else { tr("Connect", "Qoşul") };
             let offline = online == Some(false);
             let connect = widgets::primary(ui, !in_session && !offline, label);
+            let sending = matches!(self.waking.get(&h.fingerprint), Some(Wake::Sending));
+            if offline
+                && !h.wake.is_empty()
+                && ui
+                    .add_enabled(!sending, egui::Button::new(format!("{}   {}", icon::POWER, tr("Wake up", "Oyat"))))
+                    .on_hover_text(tr(
+                        "Turn on this computer from sleep over its wired network.",
+                        "Bu kompüteri kabel şəbəkəsi üzərindən yuxu rejimindən oyadın.",
+                    ))
+                    .clicked()
+            {
+                self.wake_host(h);
+            }
             if offline {
                 connect.on_disabled_hover_text(tr(
                     "This computer is offline. Connect becomes available as soon as it is back online.",
@@ -808,6 +826,40 @@ impl SessionLine {
         });
         dismiss
     }
+}
+
+fn wake_line(ui: &mut Ui, wake: &Wake) {
+    let not_on = tr(
+        "If it is not online in two minutes, it may be shut down rather than asleep, on Wi-Fi, or have wake-up turned off in its BIOS.",
+        "İki dəqiqəyə onlayn olmazsa, o, yuxu rejimində deyil, tam söndürülmüş, Wi-Fi-a qoşulu ola və ya BIOS-da oyatma söndürülmüş ola bilər.",
+    );
+    ui.horizontal_wrapped(|ui| match wake {
+        Wake::Sending => {
+            ui.spinner();
+            ui.label(tr("Sending the wake-up…", "Oyatma siqnalı göndərilir…"));
+        }
+        Wake::Sent(outcome) => {
+            let first = match outcome {
+                WakeOutcome::Helpers(0) => tr(
+                    "Wake-up sent from this device only: no other computer on its network is online, so it works only if you are on the same network.",
+                    "Oyatma siqnalı yalnız bu cihazdan göndərildi: onun şəbəkəsində başqa onlayn kompüter yoxdur, ona görə bu, yalnız eyni şəbəkədə olduqda işləyir.",
+                )
+                .to_owned(),
+                WakeOutcome::Helpers(n) => trf!(
+                    "Wake-up sent through {n} computer(s) on its network.",
+                    "Oyatma siqnalı onun şəbəkəsindəki {n} kompüter vasitəsilə göndərildi."
+                ),
+                WakeOutcome::ServerTooOld => tr(
+                    "Wake-up sent from this device only: the server needs an update to pass wake-ups on.",
+                    "Oyatma siqnalı yalnız bu cihazdan göndərildi: serverin oyatma siqnalını ötürməsi üçün yenilənməsi lazımdır.",
+                )
+                .to_owned(),
+                WakeOutcome::NoServer => tr("Wake-up sent on this network.", "Oyatma siqnalı bu şəbəkədə göndərildi.").to_owned(),
+            };
+            widgets::hint(ui, &format!("{first} {not_on}"));
+        }
+        Wake::Failed(e) => widgets::error(ui, e),
+    });
 }
 
 fn host_summary(ui: &mut Ui, h: &KnownHost, online: Option<bool>) {

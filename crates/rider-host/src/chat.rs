@@ -37,6 +37,7 @@ pub struct Chat {
     cancels: Mutex<HashMap<u64, Cancel>>,
     files: Mutex<Option<Arc<SessionFiles>>>,
     tunnel_asks: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    restart_cancel: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl Chat {
@@ -55,6 +56,7 @@ impl Chat {
             cancels: Mutex::default(),
             files: Mutex::default(),
             tunnel_asks: Mutex::default(),
+            restart_cancel: Mutex::default(),
         })
     }
 
@@ -90,6 +92,24 @@ impl Chat {
                 Some(false)
             }
         }
+    }
+
+    pub async fn warn_restart(&self, warning: Duration) -> Option<bool> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.restart_cancel.lock().unwrap();
+            if pending.is_some() {
+                return None;
+            }
+            *pending = Some(tx);
+        }
+        self.emit(&json!({ "event": "restart", "seconds": warning.as_secs() }));
+        let cancelled = matches!(tokio::time::timeout(warning, rx).await, Ok(Ok(())));
+        self.restart_cancel.lock().unwrap().take();
+        if cancelled {
+            self.emit(&json!({ "event": "restart_cancelled" }));
+        }
+        Some(!cancelled)
     }
 
     pub fn tunnel_event(&self, event: &str, target: &str) {
@@ -141,6 +161,12 @@ impl Chat {
             ChatCmd::Tunnel { id, allow } => {
                 if let Some(tx) = self.tunnel_asks.lock().unwrap().remove(&id) {
                     let _ = tx.send(allow);
+                }
+            }
+            ChatCmd::CancelRestart => {
+                if let Some(tx) = self.restart_cancel.lock().unwrap().take() {
+                    tracing::info!("restart cancelled on the host");
+                    let _ = tx.send(());
                 }
             }
             ChatCmd::Text(_) | ChatCmd::Answer(_) => {}

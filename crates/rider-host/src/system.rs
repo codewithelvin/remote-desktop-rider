@@ -221,3 +221,54 @@ pub fn remove_software_sas() {
         let _ = RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, POLICY_KEY, SAS_VALUE);
     }
 }
+
+struct Token(HANDLE);
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+fn enable_shutdown_privilege() -> Result<()> {
+    use windows::Win32::Foundation::{GetLastError, LUID};
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED, SE_SHUTDOWN_NAME,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut raw = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &raw mut raw)
+            .context("opening the process token")?;
+        let token = Token(raw);
+        let mut luid = LUID::default();
+        LookupPrivilegeValueW(None, SE_SHUTDOWN_NAME, &raw mut luid).context("looking up the shutdown privilege")?;
+        let wanted = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }],
+        };
+        AdjustTokenPrivileges(token.0, false, Some(&raw const wanted), 0, None, None)
+            .context("enabling the shutdown privilege")?;
+        if GetLastError() != ERROR_SUCCESS {
+            bail!("this account may not restart the computer");
+        }
+    }
+    Ok(())
+}
+
+pub fn restart() -> Result<()> {
+    use windows::Win32::System::Shutdown::{
+        InitiateShutdownW, SHTDN_REASON_FLAG_PLANNED, SHTDN_REASON_MAJOR_OTHER, SHTDN_REASON_MINOR_OTHER,
+        SHUTDOWN_RESTART,
+    };
+    enable_shutdown_privilege()?;
+    let reason = SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER | SHTDN_REASON_FLAG_PLANNED;
+    let code = unsafe { InitiateShutdownW(None, None, 0, SHUTDOWN_RESTART, reason) };
+    if code != ERROR_SUCCESS.0 {
+        bail!("Windows refused to restart (error {code})");
+    }
+    Ok(())
+}

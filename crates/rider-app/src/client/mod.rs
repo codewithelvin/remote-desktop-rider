@@ -50,6 +50,13 @@ enum Msg {
     Support { id: u64, event: SupportEvent },
     SupportFiles { id: u64, files: Vec<std::path::PathBuf> },
     SupportNotice { id: u64, text: String },
+    Woken { host: String, result: Result<rider_client::WakeOutcome, String> },
+}
+
+enum Wake {
+    Sending,
+    Sent(rider_client::WakeOutcome),
+    Failed(String),
 }
 
 enum SessionUpdate {
@@ -206,6 +213,7 @@ pub struct ClientApp {
     fatal: Option<String>,
     tab: Tab,
     online: HashMap<String, bool>,
+    waking: HashMap<String, Wake>,
     polled: Option<Instant>,
     polling: bool,
     server_error: Option<String>,
@@ -262,6 +270,7 @@ impl ClientApp {
             fatal,
             tab: Tab::Computers,
             online: HashMap::new(),
+            waking: HashMap::new(),
             polled: None,
             polling: false,
             server_error: None,
@@ -401,6 +410,7 @@ impl ClientApp {
                     match r {
                         Ok(list) => {
                             self.online = list.into_iter().collect();
+                            self.waking.retain(|fp, _| self.online.get(fp) != Some(&true));
                             self.server_error = None;
                         }
                         Err(e) => {
@@ -408,6 +418,13 @@ impl ClientApp {
                             self.server_error = Some(e);
                         }
                     }
+                }
+                Msg::Woken { host, result } => {
+                    let state = match result {
+                        Ok(outcome) => Wake::Sent(outcome),
+                        Err(e) => Wake::Failed(e),
+                    };
+                    self.waking.insert(host, state);
                 }
                 Msg::PairPrompt(prompt, answer) => {
                     if let Some(d) = &mut self.add {
@@ -641,6 +658,17 @@ impl ClientApp {
                 .map(|online| hosts.into_iter().map(|(hex, _)| hex).zip(online).collect())
                 .map_err(|e| format!("{e:#}"));
             tx.send(Msg::Online(r));
+        });
+    }
+
+    fn wake_host(&mut self, h: &KnownHost) {
+        let (Some(identity), Ok(fp)) = (self.identity.clone(), fp_from_hex(&h.fingerprint)) else { return };
+        let (server, macs, host) = (self.cfg.server.clone(), h.wake_macs(), h.fingerprint.clone());
+        self.waking.insert(host.clone(), Wake::Sending);
+        let tx = self.bus.tx();
+        self.rt.spawn(async move {
+            let result = rider_client::wake(&identity, server.as_ref(), fp, &macs).await.map_err(|e| format!("{e:#}"));
+            tx.send(Msg::Woken { host, result });
         });
     }
 

@@ -32,6 +32,7 @@ pub mod icon {
     pub const COMPANY: &str = "\u{E716}";
     pub const SEARCH: &str = "\u{E721}";
     pub const REFRESH: &str = "\u{E72C}";
+    pub const POWER: &str = "\u{E7E8}";
 }
 
 #[cfg(not(windows))]
@@ -61,6 +62,7 @@ pub mod icon {
     pub const COMPANY: &str = "👥";
     pub const SEARCH: &str = "🔍";
     pub const REFRESH: &str = "🔄";
+    pub const POWER: &str = "⚡";
 }
 
 pub fn semibold() -> FontFamily {
