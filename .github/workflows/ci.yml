@@ -2,7 +2,7 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "site/**", ".github/workflows/pages.yml"]
+    paths-ignore: ["**.md", "docs/**", "site/**", "test/**", ".github/workflows/pages.yml"]
   pull_request:
 
 concurrency: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'release' || github.run_id }}
